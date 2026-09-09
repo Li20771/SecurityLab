@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Secrets / credentials
+*.key
+*.pem
+*.p12
+*.pfx
+secrets/
+credentials/
+
+# Security lab data
+pcaps/
+firmware/
+artifacts/
+tmp/
+
+# Reverse engineering / large binaries
+*.bin
+*.iso
+*.img
+*.vmdk
+*.vdi
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs
+*.log
