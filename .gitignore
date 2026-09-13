@@ -34,3 +34,10 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Reverse engineering lab build outputs
+labs/reverse/**/hello
+labs/reverse/**/hello_arm64
+
+# Keep reverse-engineering experiment directories trackable
+!labs/reverse/**/hello/
