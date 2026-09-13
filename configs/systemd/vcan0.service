@@ -1,0 +1,13 @@
+[Unit]
+Description=Create and enable SocketCAN vcan0
+After=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c '/sbin/modprobe can; /sbin/modprobe can_raw; /sbin/modprobe vcan; /sbin/modprobe can-isotp; /sbin/ip link show vcan0 >/dev/null 2>&1 || /sbin/ip link add dev vcan0 type vcan; /sbin/ip link set vcan0 up'
+ExecStop=/bin/sh -c '/sbin/ip link delete vcan0 type vcan 2>/dev/null || true'
+
+[Install]
+WantedBy=multi-user.target
