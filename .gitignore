@@ -45,3 +45,7 @@ labs/reverse/**/hello_arm64
 # Firmware lab generated artifacts
 labs/firmware/**/extracted/
 labs/firmware/**/*.squashfs
+
+# Firmware lab generated ELF samples
+labs/firmware/**/rootfs/usr/bin/ecu-demo
+

@@ -1,0 +1,30 @@
+VERSION "SecurityLab CAN Basic Lab"
+
+NS_ :
+
+    NS_DESC_
+    CM_
+    BA_DEF_
+    BA_
+    VAL_
+    CAT_DEF_
+    CAT_
+    FILTER
+    SIG_VALTYPE_
+    SIGTYPE_VALTYPE_
+    BO_TX_BU_
+    BU_SG_REL_
+    BU_EV_REL_
+    BU_BO_REL_
+    SG_MUL_VAL_
+
+BS_:
+
+BU_: ECU_TEST
+
+BO_ 291 EngineData: 8 ECU_TEST
+ SG_ EngineSpeed : 0|16@1+ (1,0) [0|65535] "rpm" ECU_TEST
+ SG_ VehicleSpeed : 16|16@1+ (0.01,0) [0|655.35] "km/h" ECU_TEST
+
+CM_ SG_ 291 EngineSpeed "Engine speed in revolutions per minute";
+CM_ SG_ 291 VehicleSpeed "Vehicle speed in km/h";
