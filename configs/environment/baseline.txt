@@ -1,0 +1,101 @@
+SecurityLab Environment Baseline
+
+Date:
+2026-09-13
+
+Workspace:
+/mnt/d/SecurityLab
+
+System
+------
+Python:
+/home/lilike/.venvs/network/bin/python
+Python version:
+Python 3.12.3
+
+Node:
+v24.21.0
+
+npm:
+11.19.0
+
+DSH:
+0.1.5-rc.1
+
+Reverse Engineering
+-------------------
+file
+readelf
+objdump
+nm
+gdb
+gdb-multiarch
+qemu-aarch64
+
+Firmware
+--------
+binwalk
+mksquashfs
+unsquashfs
+
+Vehicle Security
+----------------
+python-can:
+4.6.1
+
+cantools:
+44.0.0
+
+can-isotp:
+2.0.7
+
+udsoncan:
+1.26.1
+
+Scapy:
+2.7.0
+
+requests:
+2.34.2
+
+httpx:
+0.28.1
+
+CAN
+---
+Interface:
+vcan0
+
+systemd service:
+vcan0.service
+
+CAN tools:
+candump
+cansend
+
+Git
+---
+Repository:
+/mnt/d/SecurityLab
+
+Remote:
+git@github.com:Li20771/SecurityLab.git
+
+Branch:
+main
+
+Agent
+-----
+AGENTS.md
+
+DSH Workspace:
+/mnt/d/SecurityLab
+
+Healthcheck
+-----------
+scripts/healthcheck.sh
+
+Last verified:
+PASS 28
+WARN 0
+FAIL 0
