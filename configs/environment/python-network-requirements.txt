@@ -1,0 +1,8 @@
+can-isotp==2.0.7
+cantools==44.0.0
+httpx==0.28.1
+pwntools==4.15.0
+python-can==4.6.1
+requests==2.34.2
+scapy==2.7.0
+udsoncan==1.26.1
