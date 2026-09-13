@@ -2,6 +2,8 @@
 
 set -u
 
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 PASS=0
 WARN=0
 FAIL=0
@@ -86,6 +88,8 @@ else
     fail "Python interpreter not found"
 fi
 
+PYTHON_REQUIREMENTS="$PROJECT_ROOT/configs/environment/python-network-requirements.txt"
+
 python_check() {
     local package="$1"
     local module="$2"
@@ -114,17 +118,43 @@ python_check() {
     fi
 }
 
-python_check "python-can" "can" "python-can" "4.6.1" 
-python_check "cantools" "cantools" "cantools" "44.0.0" 
-python_check "can-isotp" "isotp" "can-isotp" "2.0.7" 
-python_check "udsoncan" "udsoncan" "udsoncan" "1.26.1" 
-python_check "scapy" "scapy" "Scapy" "2.7.0" 
-python_check "requests" "requests" "requests" "2.34.2" 
-python_check "httpx" "httpx" "httpx" "0.28.1" 
-python_check "pwntools" "pwn" "Pwntools" "4.15.0"
+if [ ! -f "$PYTHON_REQUIREMENTS" ]; then
+    fail "Python requirements file not found"
+else
+    while IFS= read -r requirement || [ -n "$requirement" ]; do
+        case "$requirement" in
+            ""|\#*) continue ;;
+        esac
+
+        package="${requirement%%==*}"
+        expected="${requirement#*==}"
+
+        case "$package" in
+            can-isotp)
+                module="isotp"
+                label="can-isotp"
+                ;;
+            python-can)
+                module="can"
+                label="python-can"
+                ;;
+            pwntools)
+                module="pwn"
+                label="Pwntools"
+                ;;
+            *)
+                module="$package"
+                label="$package"
+                ;;
+        esac
+
+        python_check "$package" "$module" "$label" "$expected"
+    done < "$PYTHON_REQUIREMENTS"
+fi
 
 echo
 echo "=== Reverse Engineering ==="
+
 
 for tool in file readelf objdump nm gdb gdb-multiarch qemu-aarch64; do
     if command -v "$tool" >/dev/null 2>&1; then
