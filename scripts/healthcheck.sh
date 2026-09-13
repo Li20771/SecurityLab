@@ -87,30 +87,41 @@ else
 fi
 
 python_check() {
-    local module="$1"
-    local label="$2"
+    local package="$1"
+    local module="$2"
+    local label="$3"
+    local expected="$4"
 
     if [ -z "$PYTHON_BIN" ]; then
         fail "$label unavailable"
         return
     fi
 
-    if "$PYTHON_BIN" -c "import $module" >/dev/null 2>&1; then
-        local version
-        version=$("$PYTHON_BIN" -c "import $module; print(getattr($module, '__version__', 'installed'))" 2>/dev/null)
-        ok "$label ($version)"
-    else
+    if ! "$PYTHON_BIN" -c "import $module" >/dev/null 2>&1; then
         fail "$label unavailable"
+        return
+    fi
+
+    local actual
+    actual=$("$PYTHON_BIN" -c \
+        "from importlib.metadata import version; print(version('$package'))" \
+        2>/dev/null)
+
+    if [ "$actual" = "$expected" ]; then
+        ok "$label ($actual)"
+    else
+        fail "$label version mismatch: expected $expected, found $actual"
     fi
 }
 
-python_check can "python-can"
-python_check cantools "cantools"
-python_check isotp "can-isotp"
-python_check udsoncan "udsoncan"
-python_check scapy "Scapy"
-python_check requests "requests"
-python_check httpx "httpx"
+python_check "python-can" "can" "python-can" "4.6.1" 
+python_check "cantools" "cantools" "cantools" "44.0.0" 
+python_check "can-isotp" "isotp" "can-isotp" "2.0.7" 
+python_check "udsoncan" "udsoncan" "udsoncan" "1.26.1" 
+python_check "scapy" "scapy" "Scapy" "2.7.0" 
+python_check "requests" "requests" "requests" "2.34.2" 
+python_check "httpx" "httpx" "httpx" "0.28.1" 
+python_check "pwntools" "pwn" "Pwntools" "4.15.0"
 
 echo
 echo "=== Reverse Engineering ==="
