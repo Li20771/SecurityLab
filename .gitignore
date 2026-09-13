@@ -15,7 +15,7 @@ credentials/
 
 # Security lab data
 pcaps/
-firmware/
+/firmware/
 artifacts/
 tmp/
 
@@ -41,3 +41,7 @@ labs/reverse/**/hello_arm64
 
 # Keep reverse-engineering experiment directories trackable
 !labs/reverse/**/hello/
+
+# Firmware lab generated artifacts
+labs/firmware/**/extracted/
+labs/firmware/**/*.squashfs

@@ -1,0 +1,2 @@
+device=ecu-demo
+model=demo-ecu
