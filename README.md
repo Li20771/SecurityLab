@@ -187,15 +187,23 @@ SecurityLab 主工作区：
 9. vcan0 systemd 自动启动
 10. DSH + SecurityLab Workspace
 11. AGENTS.md Agent 工作规范
+12. UDS Basic 虚拟 ECU（0x10 / 0x11 / 0x22 + NRC）
+13. UDS Basic 自动化测试（离线单元 39 例 + vcan0 端到端 30 例）
+
+UDS Basic 实验位于 `labs/vehicle/uds-basic/`，详见该目录 README。
+
+运行测试：
+
+```bash
+bash labs/vehicle/uds-basic/tests/run_tests.sh
+```
 
 后续方向：
 
-- 完善 UDS / ISO-TP 实验环境
-- 建立虚拟 ECU
+- UDS 扩展服务（0x27 SecurityAccess / 0x2E 写入 / 0x19 DTC）
+- UDS / CAN Fuzzing
 - ARM / Embedded Linux 固件分析
 - QEMU 固件仿真
 - GDB 动态调试
-- CAN Fuzzing
-- UDS 诊断实验
 - 自动化安全测试
 - 车联网安全漏洞研究
