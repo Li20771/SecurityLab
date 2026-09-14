@@ -209,21 +209,35 @@ echo "=== Vehicle Lab Tests ==="
 
 UDS_LAB_DIR="$PROJECT_ROOT/labs/vehicle/uds-basic"
 UDS_UNIT_TEST="$UDS_LAB_DIR/tests/test_ecu_unit.py"
+KEYGEN_UNIT_TEST="$UDS_LAB_DIR/tests/test_keygen_unit.py"
 
-if [ ! -f "$UDS_UNIT_TEST" ]; then
-    warn "UDS unit test not found"
-elif [ -z "$PYTHON_BIN" ]; then
-    fail "UDS unit test skipped: no Python interpreter"
-else
-    # 离线单元测试：不依赖 vcan0，直接验证 ECU 的 UDS 分发逻辑
-    if "$PYTHON_BIN" "$UDS_UNIT_TEST" >/dev/null 2>&1; then
-        UNIT_COUNT=$("$PYTHON_BIN" "$UDS_UNIT_TEST" 2>&1 \
-            | sed -n 's/^Ran \([0-9]\+\) tests\?.*/\1/p' | tail -1)
-        ok "UDS unit tests passed (${UNIT_COUNT:-?} tests)"
-    else
-        fail "UDS unit tests failed (run: python $UDS_UNIT_TEST)"
+run_offline_test() {
+    local script="$1"
+    local label="$2"
+
+    if [ ! -f "$script" ]; then
+        warn "$label test not found"
+        return
     fi
-fi
+
+    if [ -z "$PYTHON_BIN" ]; then
+        fail "$label test skipped: no Python interpreter"
+        return
+    fi
+
+    if "$PYTHON_BIN" "$script" >/dev/null 2>&1; then
+        local count
+        count=$("$PYTHON_BIN" "$script" 2>&1 \
+            | sed -n 's/^Ran \([0-9]\+\) tests\?.*/\1/p' | tail -1)
+        ok "$label tests passed (${count:-?} tests)"
+    else
+        fail "$label tests failed (run: python $script)"
+    fi
+}
+
+# 离线测试：不依赖 vcan0
+run_offline_test "$UDS_UNIT_TEST" "UDS unit"
+run_offline_test "$KEYGEN_UNIT_TEST" "UDS keygen unit"
 
 if [ -f "$UDS_LAB_DIR/tests/test_e2e_vcan.py" ]; then
     if ip link show vcan0 >/dev/null 2>&1; then

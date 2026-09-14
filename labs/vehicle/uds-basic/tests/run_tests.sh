@@ -84,9 +84,17 @@ run_unit() {
     echo
 
     if "$PYTHON_BIN" "$TESTS_DIR/test_ecu_unit.py"; then
-        ok "unit tests passed"
+        ok "ECU unit tests passed"
     else
-        fail "unit tests failed"
+        fail "ECU unit tests failed"
+    fi
+
+    echo
+
+    if "$PYTHON_BIN" "$TESTS_DIR/test_keygen_unit.py"; then
+        ok "keygen unit tests passed"
+    else
+        fail "keygen unit tests failed"
     fi
 
     echo

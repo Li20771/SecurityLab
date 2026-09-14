@@ -188,7 +188,11 @@ SecurityLab 主工作区：
 10. DSH + SecurityLab Workspace
 11. AGENTS.md Agent 工作规范
 12. UDS Basic 虚拟 ECU（0x10 / 0x11 / 0x22 + NRC）
-13. UDS Basic 自动化测试（离线单元 39 例 + vcan0 端到端 30 例）
+13. UDS Basic 自动化测试（离线单元 + vcan0 端到端）
+14. UDS SecurityAccess（0x27）：seed/key、失败计数、锁定、防重放
+15. 教学用 seed/key 算法模块（`ecu/keygen.py`，无 CAN 依赖）
+16. 受保护 DID 的 Session × Security 权限模型
+17. 测试规模：离线单元 104 + 34 例，vcan0 端到端 65 例（共 203）
 
 UDS Basic 实验位于 `labs/vehicle/uds-basic/`，详见该目录 README。
 
@@ -200,8 +204,9 @@ bash labs/vehicle/uds-basic/tests/run_tests.sh
 
 后续方向：
 
-- UDS 扩展服务（0x27 SecurityAccess / 0x2E 写入 / 0x19 DTC）
-- UDS / CAN Fuzzing
+- UDS 扩展服务（0x2E 写入 / 0x19 DTC / 0x31 例程 / 0x3E TesterPresent）
+- 服务注册表重构（当前 4 个服务为 if/elif 分发）
+- UDS / SecurityAccess Fuzzing
 - ARM / Embedded Linux 固件分析
 - QEMU 固件仿真
 - GDB 动态调试
