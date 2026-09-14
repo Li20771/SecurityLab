@@ -21,6 +21,7 @@ import time
 import isotp
 
 import keygen
+import uds_types
 from did_database import DID_DATABASE, PROTECTED_DIDS
 
 
@@ -197,30 +198,40 @@ def _security_access(request: bytes) -> bytes:
 
     # ---- 1. 基础格式：必须能取到子功能字节 ----
     if len(request) < 2:
-        return bytes([0x7F, 0x27, 0x13])
+        return uds_types.negative_response(
+            0x27, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+        )
 
     subfunction = request[1]
 
     # ---- 2. 子功能：本实验只实现 Level 1（0x01 / 0x02）----
     if subfunction not in (0x01, 0x02):
-        return bytes([0x7F, 0x27, 0x12])
+        return uds_types.negative_response(
+            0x27, uds_types.NRC_SUBFUNCTION_NOT_SUPPORTED
+        )
 
     # ---- 3. 子功能对应长度 ----
     if subfunction == 0x01:
         # RequestSeed: 27 <subfunction>
         if len(request) != 2:
-            return bytes([0x7F, 0x27, 0x13])
+            return uds_types.negative_response(
+                0x27, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+            )
     else:
         # SendKey: 27 <subfunction> <key:4>
         if len(request) != 2 + keygen.KEY_LENGTH:
-            return bytes([0x7F, 0x27, 0x13])
+            return uds_types.negative_response(
+                0x27, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+            )
 
     # ---- 4. lockout：锁定期间任何 0x27 请求都返回 0x37 ----
     now = _now()
 
     if LOCKOUT_UNTIL is not None:
         if now < LOCKOUT_UNTIL:
-            return bytes([0x7F, 0x27, 0x37])
+            return uds_types.negative_response(
+                0x27, uds_types.NRC_REQUIRED_TIME_DELAY_NOT_EXPIRED
+            )
 
         # 锁定到期：清零惩罚状态，允许重新尝试
         LOCKOUT_UNTIL = None
@@ -229,7 +240,9 @@ def _security_access(request: bytes) -> bytes:
     # ---- 5. session / security 条件 ----
     if subfunction == 0x01 and CURRENT_SECURITY_LEVEL != SECURITY_LOCKED:
         # 已解锁时再次请求 seed 属于条件不满足
-        return bytes([0x7F, 0x27, 0x22])
+        return uds_types.negative_response(
+            0x27, uds_types.NRC_CONDITIONS_NOT_CORRECT
+        )
 
     # ---- RequestSeed ----
     if subfunction == 0x01:
@@ -240,19 +253,23 @@ def _security_access(request: bytes) -> bytes:
         SEED_ISSUED_AT = now
         SEED_CONSUMED = False
 
-        return bytes([0x67, 0x01]) + seed
+        return uds_types.positive_response(0x27, bytes([0x01]) + seed)
 
     # ---- SendKey ----
     # ---- 6. sequence ----
     if PENDING_SEED is None or SEED_CONSUMED:
         # 要么从未请求 seed，要么 seed 已被成功消费（重放）
-        return bytes([0x7F, 0x27, 0x24])
+        return uds_types.negative_response(
+            0x27, uds_types.NRC_REQUEST_SEQUENCE_ERROR
+        )
 
     if SEED_ISSUED_AT is None or (
         now - SEED_ISSUED_AT > SECURITY_CONFIG["seed_expiry_seconds"]
     ):
         # seed 超时作废
-        return bytes([0x7F, 0x27, 0x24])
+        return uds_types.negative_response(
+            0x27, uds_types.NRC_REQUEST_SEQUENCE_ERROR
+        )
 
     # ---- 7. key ----
     key = bytes(request[2:])
@@ -267,9 +284,11 @@ def _security_access(request: bytes) -> bytes:
             SEED_ISSUED_AT = None
             SEED_CONSUMED = False
 
-            return bytes([0x7F, 0x27, 0x36])
+            return uds_types.negative_response(
+                0x27, uds_types.NRC_EXCEED_NUMBER_OF_ATTEMPTS
+            )
 
-        return bytes([0x7F, 0x27, 0x35])
+        return uds_types.negative_response(0x27, uds_types.NRC_INVALID_KEY)
 
     # ---- 8. 肯定响应 ----
     CURRENT_SECURITY_LEVEL = SECURITY_LEVEL1
@@ -278,7 +297,7 @@ def _security_access(request: bytes) -> bytes:
     SEED_ISSUED_AT = None
     FAILED_ATTEMPTS = 0
 
-    return bytes([0x67, 0x02])
+    return uds_types.positive_response(0x27, bytes([0x02]))
 
 
 # ======================================================================
@@ -290,7 +309,9 @@ def handle_uds_request(request: bytes) -> bytes:
     global CURRENT_SESSION
 
     if not request:
-        return bytes([0x7F, 0x00, 0x13])
+        return uds_types.negative_response(
+            0x00, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+        )
 
     service = request[0]
 
@@ -299,12 +320,16 @@ def handle_uds_request(request: bytes) -> bytes:
     # ============================================================
     if service == 0x10:
         if len(request) != 2:
-            return bytes([0x7F, 0x10, 0x13])
+            return uds_types.negative_response(
+                0x10, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+            )
 
         session_type = request[1]
 
         if session_type not in SUPPORTED_SESSIONS:
-            return bytes([0x7F, 0x10, 0x12])
+            return uds_types.negative_response(
+                0x10, uds_types.NRC_SUBFUNCTION_NOT_SUPPORTED
+            )
 
         CURRENT_SESSION = session_type
 
@@ -315,19 +340,22 @@ def handle_uds_request(request: bytes) -> bytes:
 
         p2_server_max, p2_star_server_max = SESSION_TIMING[session_type]
 
-        return bytes([
-            0x50,
+        payload = bytes([
             session_type,
             (p2_server_max >> 8) & 0xFF, p2_server_max & 0xFF,
             (p2_star_server_max >> 8) & 0xFF, p2_star_server_max & 0xFF,
         ])
+
+        return uds_types.positive_response(0x10, payload)
 
     # ============================================================
     # ECUReset (0x11)
     # ============================================================
     if service == 0x11:
         if len(request) != 2:
-            return bytes([0x7F, 0x11, 0x13])
+            return uds_types.negative_response(
+                0x11, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+            )
 
         reset_type = request[1]
 
@@ -336,13 +364,12 @@ def handle_uds_request(request: bytes) -> bytes:
             CURRENT_SESSION = DEFAULT_SESSION
             reset_security_state()
 
-            return bytes([
-                0x51,
-                reset_type,
-            ])
+            return uds_types.positive_response(0x11, bytes([reset_type]))
 
         # unsupported reset type
-        return bytes([0x7F, 0x11, 0x12])
+        return uds_types.negative_response(
+            0x11, uds_types.NRC_SUBFUNCTION_NOT_SUPPORTED
+        )
 
     # ============================================================
     # ReadDataByIdentifier (0x22)
@@ -354,7 +381,9 @@ def handle_uds_request(request: bytes) -> bytes:
         # 多个 DID：
         # 0x22 + DID + DID + ...
         if len(request) < 3 or (len(request) - 1) % 2 != 0:
-            return bytes([0x7F, 0x22, 0x13])
+            return uds_types.negative_response(
+                0x22, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+            )
 
         # 先在独立缓冲区累积，确认全部 DID 合法后再整体返回：
         # 任何一个 DID 未知或权限不足，都整体拒绝，不返回部分数据。
@@ -366,19 +395,23 @@ def handle_uds_request(request: bytes) -> bytes:
             data = DID_DATABASE.get(did)
 
             if data is None:
-                return bytes([0x7F, 0x22, 0x31])
+                return uds_types.negative_response(
+                    0x22, uds_types.NRC_REQUEST_OUT_OF_RANGE
+                )
 
             if CURRENT_SECURITY_LEVEL < required_security_level(did):
                 # 权限不足：返回 SecurityAccessDenied
                 #
                 # 另一种可选设计是返回 0x31 以隐藏 DID 存在性（防枚举），
                 # 本实验刻意选择 0x33 使权限语义更清晰。
-                return bytes([0x7F, 0x22, 0x33])
+                return uds_types.negative_response(
+                    0x22, uds_types.NRC_SECURITY_ACCESS_DENIED
+                )
 
             payload.extend([request[offset], request[offset + 1]])
             payload.extend(data)
 
-        return bytes([0x62]) + bytes(payload)
+        return uds_types.positive_response(0x22, payload)
 
     # ============================================================
     # SecurityAccess (0x27)
@@ -389,7 +422,7 @@ def handle_uds_request(request: bytes) -> bytes:
     # ============================================================
     # Service not supported
     # ============================================================
-    return bytes([0x7F, service, 0x11])
+    return uds_types.negative_response(service, uds_types.NRC_SERVICE_NOT_SUPPORTED)
 
 
 def main() -> None:
