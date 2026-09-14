@@ -1,0 +1,10 @@
+can:
+  interface: socketcan
+  channel: vcan0
+
+isotp:
+  txid: 0x7E0
+  rxid: 0x7E8
+
+uds:
+  default_session: default
