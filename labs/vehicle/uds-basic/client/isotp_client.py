@@ -1,43 +1,60 @@
 #!/usr/bin/env python3
 
 import isotp
-import udsoncan
-
-from udsoncan.client import Client
-from udsoncan.connections import IsoTPSocketConnection
 
 
 INTERFACE = "vcan0"
-TX_ID = 0x7E0
 RX_ID = 0x7E8
+TX_ID = 0x7E0
+
+
+def read_did(sock, did: int) -> None:
+    request = bytes([
+        0x22,
+        (did >> 8) & 0xFF,
+        did & 0xFF,
+    ])
+
+    print(f"\nTX UDS: {request.hex(' ')}")
+    sock.send(request)
+
+    response = sock.recv()
+
+    if response is None:
+        print("RX UDS: timeout")
+        return
+
+    print(f"RX UDS: {response.hex(' ')}")
+
+    if len(response) >= 3 and response[0] == 0x62:
+        response_did = (response[1] << 8) | response[2]
+        data = response[3:]
+
+        print(f"DID: 0x{response_did:04X}")
+        print(f"DATA: {data.hex(' ')}")
+        print(f"ASCII: {data.decode('ascii', errors='replace')}")
+    elif len(response) >= 3 and response[0] == 0x7F:
+        print(f"Negative Response: NRC=0x{response[2]:02X}")
 
 
 def main() -> None:
-    print("udsoncan:", udsoncan.__version__)
-    print(f"CAN interface: {INTERFACE}")
-    print(f"TX ID: 0x{TX_ID:03X}")
-    print(f"RX ID: 0x{RX_ID:03X}")
-
     address = isotp.Address(
         isotp.AddressingMode.Normal_11bits,
         rxid=RX_ID,
         txid=TX_ID,
     )
 
-    connection = IsoTPSocketConnection(
-        interface=INTERFACE,
-        address=address,
-    )
+    sock = isotp.socket()
+    sock.bind(INTERFACE, address)
 
-    with Client(connection) as client:
-        print("UDS client connected.")
+    try:
+        read_did(sock, 0xF190)
+        read_did(sock, 0xF180)
 
-        response = client.change_session(
-            udsoncan.DiagnosticSessionControl.Session.extendedDiagnosticSession
-        )
-
-        print("UDS response:", response)
+    finally:
+        sock.close()
 
 
 if __name__ == "__main__":
     main()
+

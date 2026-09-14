@@ -5,7 +5,7 @@ import udsoncan
 
 from udsoncan.client import Client
 from udsoncan.connections import IsoTPSocketConnection
-from udsoncan.services import DiagnosticSessionControl
+from udsoncan.services import ReadDataByIdentifier
 
 
 INTERFACE = "vcan0"
@@ -35,17 +35,30 @@ def main() -> None:
         address=address,
     )
 
-    with Client(connection) as client:
+    client_config = {
+        "data_identifiers": {
+            0xF190: udsoncan.AsciiCodec(17),
+            0xF180: udsoncan.AsciiCodec(13),
+        }
+    }
+
+    with Client(connection, config=client_config) as client:
         print("UDS client connected.")
 
-        response = client.change_session(
-            DiagnosticSessionControl.Session.extendedDiagnosticSession
-        )
+        response = client.read_data_by_identifier([0xF190, 0xF180])
+
+        if response is None:
+            print("No UDS response.")
+            return
 
         print("UDS response:")
         print(response)
 
+        print("Parsed values:")
+
+        for did, value in response.service_data.values.items():
+            print(f"  0x{did:04X}: {value!r}")
+
 
 if __name__ == "__main__":
     main()
-

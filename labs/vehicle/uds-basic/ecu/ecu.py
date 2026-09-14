@@ -2,6 +2,8 @@
 
 import isotp
 
+from did_database import DID_DATABASE
+
 
 INTERFACE = "vcan0"
 RX_ID = 0x7E0
@@ -37,14 +39,40 @@ def handle_uds_request(request: bytes) -> bytes:
 
         CURRENT_SESSION = session_type
 
-        # Positive response:
-        # 50 <session> <P2 high> <P2 low> <P2* high> <P2* low>
         return bytes([
             0x50,
             session_type,
-            0x00, 0x32,  # P2ServerMax = 50 ms
-            0x00, 0x64,  # P2*ServerMax = 1 s
+            0x00, 0x32,
+            0x00, 0x64,
         ])
+
+    # ReadDataByIdentifier (0x22)
+    if service == 0x22:
+        # 至少需要：
+        # 0x22 + 2-byte DID
+        #
+        # 多个 DID：
+        # 0x22 + DID + DID + ...
+        if len(request) < 3 or (len(request) - 1) % 2 != 0:
+            return bytes([0x7F, 0x22, 0x13])
+
+        response = bytearray([0x62])
+
+        for offset in range(1, len(request), 2):
+            did = (request[offset] << 8) | request[offset + 1]
+
+            data = DID_DATABASE.get(did)
+
+            if data is None:
+                return bytes([0x7F, 0x22, 0x31])
+
+            response.extend([
+                request[offset],
+                request[offset + 1],
+            ])
+            response.extend(data)
+
+        return bytes(response)
 
     # Service not supported
     return bytes([0x7F, service, 0x11])
