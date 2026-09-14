@@ -23,6 +23,7 @@ import isotp
 import keygen
 import uds_types
 from did_database import DID_DATABASE, PROTECTED_DIDS
+from uds_server import STATE
 
 
 def _env_int(name: str, default: int) -> int:
@@ -66,7 +67,12 @@ SESSION_TIMING = {
     SESSION_EXTENDED: (0x0064, 0x03E8),
 }
 
-CURRENT_SESSION = DEFAULT_SESSION
+# 运行时会话状态不再以模块级变量保存。
+# 唯一 source of truth 是 uds_server.STATE（EcuState 实例）：
+#     STATE.session          当前会话
+#     STATE.security_level   当前安全等级
+#     STATE.pending_seed     ...
+# 这样避免了"模块级变量 + 状态对象"双份状态。
 
 
 # ======================================================================
@@ -75,26 +81,6 @@ CURRENT_SESSION = DEFAULT_SESSION
 
 SECURITY_LOCKED = 0x00
 SECURITY_LEVEL1 = 0x01
-
-CURRENT_SECURITY_LEVEL = SECURITY_LOCKED
-
-#: 已下发但尚未被使用的 seed（bytes 或 None）
-PENDING_SEED = None
-
-#: seed 下发时刻（time.monotonic() 基准，float 或 None）
-SEED_ISSUED_AT = None
-
-#: seed 是否已被成功消费（用于检测重放）
-SEED_CONSUMED = False
-
-#: 连续失败次数
-FAILED_ATTEMPTS = 0
-
-#: 锁定解除时刻（float 或 None）
-LOCKOUT_UNTIL = None
-
-#: seed 序号，每次 RequestSeed 递增，使 seed 每次不同
-SEED_COUNTER = 0
 
 #: 安全访问参数。测试可直接改写本 dict 以构造边界场景。
 #:
@@ -129,15 +115,10 @@ def reset_security_state() -> None:
     复位 ECU 来刷掉暴力破解的惩罚状态。注意这**不是所有真实 ECU
     都必然如此**，部分真实 ECU 会在复位时清空失败计数。
     """
-    global CURRENT_SECURITY_LEVEL
-    global PENDING_SEED
-    global SEED_ISSUED_AT
-    global SEED_CONSUMED
-
-    CURRENT_SECURITY_LEVEL = SECURITY_LOCKED
-    PENDING_SEED = None
-    SEED_ISSUED_AT = None
-    SEED_CONSUMED = False
+    STATE.security_level = SECURITY_LOCKED
+    STATE.pending_seed = None
+    STATE.seed_issued_at = None
+    STATE.seed_consumed = False
 
 
 def reset_all_security_state() -> None:
@@ -146,15 +127,11 @@ def reset_all_security_state() -> None:
 
     仅供测试使用，协议处理流程中不会调用。
     """
-    global FAILED_ATTEMPTS
-    global LOCKOUT_UNTIL
-    global SEED_COUNTER
-
     reset_security_state()
 
-    FAILED_ATTEMPTS = 0
-    LOCKOUT_UNTIL = None
-    SEED_COUNTER = 0
+    STATE.failed_attempts = 0
+    STATE.lockout_until = None
+    STATE.seed_counter = 0
 
 
 # ======================================================================
@@ -188,14 +165,6 @@ def _security_access(request: bytes) -> bytes:
         7. key             → 0x35 / 0x36
         8. 肯定响应
     """
-    global CURRENT_SECURITY_LEVEL
-    global PENDING_SEED
-    global SEED_ISSUED_AT
-    global SEED_CONSUMED
-    global FAILED_ATTEMPTS
-    global LOCKOUT_UNTIL
-    global SEED_COUNTER
-
     # ---- 1. 基础格式：必须能取到子功能字节 ----
     if len(request) < 2:
         return uds_types.negative_response(
@@ -227,18 +196,18 @@ def _security_access(request: bytes) -> bytes:
     # ---- 4. lockout：锁定期间任何 0x27 请求都返回 0x37 ----
     now = _now()
 
-    if LOCKOUT_UNTIL is not None:
-        if now < LOCKOUT_UNTIL:
+    if STATE.lockout_until is not None:
+        if now < STATE.lockout_until:
             return uds_types.negative_response(
                 0x27, uds_types.NRC_REQUIRED_TIME_DELAY_NOT_EXPIRED
             )
 
         # 锁定到期：清零惩罚状态，允许重新尝试
-        LOCKOUT_UNTIL = None
-        FAILED_ATTEMPTS = 0
+        STATE.lockout_until = None
+        STATE.failed_attempts = 0
 
     # ---- 5. session / security 条件 ----
-    if subfunction == 0x01 and CURRENT_SECURITY_LEVEL != SECURITY_LOCKED:
+    if subfunction == 0x01 and STATE.security_level != SECURITY_LOCKED:
         # 已解锁时再次请求 seed 属于条件不满足
         return uds_types.negative_response(
             0x27, uds_types.NRC_CONDITIONS_NOT_CORRECT
@@ -246,25 +215,25 @@ def _security_access(request: bytes) -> bytes:
 
     # ---- RequestSeed ----
     if subfunction == 0x01:
-        seed = keygen.generate_seed(SEED_COUNTER, subfunction)
-        SEED_COUNTER += 1
+        seed = keygen.generate_seed(STATE.seed_counter, subfunction)
+        STATE.seed_counter += 1
 
-        PENDING_SEED = seed
-        SEED_ISSUED_AT = now
-        SEED_CONSUMED = False
+        STATE.pending_seed = seed
+        STATE.seed_issued_at = now
+        STATE.seed_consumed = False
 
         return uds_types.positive_response(0x27, bytes([0x01]) + seed)
 
     # ---- SendKey ----
     # ---- 6. sequence ----
-    if PENDING_SEED is None or SEED_CONSUMED:
+    if STATE.pending_seed is None or STATE.seed_consumed:
         # 要么从未请求 seed，要么 seed 已被成功消费（重放）
         return uds_types.negative_response(
             0x27, uds_types.NRC_REQUEST_SEQUENCE_ERROR
         )
 
-    if SEED_ISSUED_AT is None or (
-        now - SEED_ISSUED_AT > SECURITY_CONFIG["seed_expiry_seconds"]
+    if STATE.seed_issued_at is None or (
+        now - STATE.seed_issued_at > SECURITY_CONFIG["seed_expiry_seconds"]
     ):
         # seed 超时作废
         return uds_types.negative_response(
@@ -274,15 +243,15 @@ def _security_access(request: bytes) -> bytes:
     # ---- 7. key ----
     key = bytes(request[2:])
 
-    if not keygen.verify_key(PENDING_SEED, key):
-        FAILED_ATTEMPTS += 1
+    if not keygen.verify_key(STATE.pending_seed, key):
+        STATE.failed_attempts += 1
 
-        if FAILED_ATTEMPTS >= SECURITY_CONFIG["max_attempts"]:
+        if STATE.failed_attempts >= SECURITY_CONFIG["max_attempts"]:
             # 达到上限：设置锁定，本次返回 0x36
-            LOCKOUT_UNTIL = now + SECURITY_CONFIG["lockout_seconds"]
-            PENDING_SEED = None
-            SEED_ISSUED_AT = None
-            SEED_CONSUMED = False
+            STATE.lockout_until = now + SECURITY_CONFIG["lockout_seconds"]
+            STATE.pending_seed = None
+            STATE.seed_issued_at = None
+            STATE.seed_consumed = False
 
             return uds_types.negative_response(
                 0x27, uds_types.NRC_EXCEED_NUMBER_OF_ATTEMPTS
@@ -291,11 +260,11 @@ def _security_access(request: bytes) -> bytes:
         return uds_types.negative_response(0x27, uds_types.NRC_INVALID_KEY)
 
     # ---- 8. 肯定响应 ----
-    CURRENT_SECURITY_LEVEL = SECURITY_LEVEL1
-    SEED_CONSUMED = True
-    PENDING_SEED = None
-    SEED_ISSUED_AT = None
-    FAILED_ATTEMPTS = 0
+    STATE.security_level = SECURITY_LEVEL1
+    STATE.seed_consumed = True
+    STATE.pending_seed = None
+    STATE.seed_issued_at = None
+    STATE.failed_attempts = 0
 
     return uds_types.positive_response(0x27, bytes([0x02]))
 
@@ -306,8 +275,6 @@ def _security_access(request: bytes) -> bytes:
 
 def handle_uds_request(request: bytes) -> bytes:
     """处理一条 UDS 请求，返回响应字节。"""
-    global CURRENT_SESSION
-
     if not request:
         return uds_types.negative_response(
             0x00, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
@@ -331,7 +298,7 @@ def handle_uds_request(request: bytes) -> bytes:
                 0x10, uds_types.NRC_SUBFUNCTION_NOT_SUPPORTED
             )
 
-        CURRENT_SESSION = session_type
+        STATE.session = session_type
 
         # 会话切换后必须重新解锁：
         # 否则 Tester 可在 extended session 解锁后切回 default session
@@ -361,7 +328,7 @@ def handle_uds_request(request: bytes) -> bytes:
 
         # hardReset
         if reset_type == 0x01:
-            CURRENT_SESSION = DEFAULT_SESSION
+            STATE.session = DEFAULT_SESSION
             reset_security_state()
 
             return uds_types.positive_response(0x11, bytes([reset_type]))
@@ -399,7 +366,7 @@ def handle_uds_request(request: bytes) -> bytes:
                     0x22, uds_types.NRC_REQUEST_OUT_OF_RANGE
                 )
 
-            if CURRENT_SECURITY_LEVEL < required_security_level(did):
+            if STATE.security_level < required_security_level(did):
                 # 权限不足：返回 SecurityAccessDenied
                 #
                 # 另一种可选设计是返回 0x31 以隐藏 DID 存在性（防枚举），
@@ -441,8 +408,8 @@ def main() -> None:
     sock.bind(INTERFACE, address)
 
     print("ISO-TP socket bound successfully.")
-    print(f"Current UDS session: 0x{CURRENT_SESSION:02X}")
-    print(f"Current security level: 0x{CURRENT_SECURITY_LEVEL:02X}")
+    print(f"Current UDS session: 0x{STATE.session:02X}")
+    print(f"Current security level: 0x{STATE.security_level:02X}")
     print(f"Protected DIDs: {', '.join(f'0x{d:04X}' for d in sorted(PROTECTED_DIDS))}")
     print("Virtual ECU is waiting for UDS requests...")
 
