@@ -237,6 +237,136 @@ python3 isotp_send.py --timeout 0.5 22 F1 90        # 没有 ECU 时 0.5s 干净
 最后一行就是"覆盖"的直接证据：对端 FC 要求 20 ms，但本端强制 2 ms，
 实际节拍是 2 ms。默认情况下则是微秒级（无间隔要求）。
 
+### ISO-TP 畸形分帧实验（Phase 4-P3）
+
+用 **raw CAN 注入**绕过内核的正常 ISO-TP 封装，研究虚拟 ECU 对异常帧序列
+的真实处理。测试文件：
+
+```text
+tests/test_isotp_malformed_vcan.py     # 40 个用例，需要 vcan0
+```
+
+运行：
+
+```bash
+bash tests/run_tests.sh malformed
+# 或
+/home/lilike/.venvs/network/bin/python tests/test_isotp_malformed_vcan.py
+```
+
+每个 case 都输出五段式实验记录（``CASE / INJECT / CAPTURE / ECU / RESULT /
+RECOVERY``），不做"裸 PASS/FAIL"。方法论要点：
+
+> **"没有 UDS 响应"不等于失败。** 非法 PCI 很可能在内核 CAN_ISOTP 层就被
+> 丢弃，根本没进入 ``handle_uds_request()``——这正是实验价值所在。
+
+另外必须区分**帧字节**与**payload**：CAN 帧首字节是 PCI，
+ECU 的 ``10 01`` 响应在总线上是 ``06 50 01 00 32 00 64``。
+拿帧字节直接和 ``50 01`` 比较永远不相等。
+
+#### 实测结果汇总
+
+图例：✅ 已实测 ｜ ⚠️ 已实测但结论依赖内核实现 ｜ ❗ 已实测且为**缺陷** ｜ ❓ 未测
+
+| 层次 | Case | 实测结果 |
+|---|---|---|
+| — | **baseline 合法单帧** `10 01` | ✅ `50 01 00 32 00 64` |
+| — | **baseline 合法多帧** FF+CF（22 字节） | ✅ ECU 正确重组，返回 `7f 22 13`（未知 DID 的 NRC） |
+| — | **baseline 合法顺序 SN 1,2,3** | ✅ 完整重组并响应 |
+| — | **baseline 多帧响应（无注入）** | ✅ 20 字节响应完整，ECU 存活 |
+| PCI | 非法 PCI `0x40/0x50/0x60/0x70/0xF0` | ✅ 全部静默丢弃：无 ISO-TP 响应、无 UDS 请求、ECU 存活可恢复 |
+| SF | 声明 2 字节、实给 3 字节 | ✅ 按声明长度**截断**：`10 03` 正常交付 → `50 03 00 64 03 e8` |
+| SF | 声明 4 字节、实给 2 字节 | ✅ **无任何响应**（2.5s 观察窗口），ECU 存活可恢复 |
+| SF | 声明 0 字节 | ✅ **无任何响应**，ECU 存活可恢复 |
+| SF | 声明 7 字节、DLC=3 | ✅ **无任何响应**，ECU 存活可恢复 |
+| FF | 声明 32 字节但**不发 CF** | ⚠️ 立刻无响应、ECU 存活；但**内核 N_Bs 超时（约 1.2s）后** 抛出 `OSError: [Errno 70]` 并**杀死 ECU 进程** |
+| FF | 声明 3 字节却继续发 CF | ✅ 多余 CF 被忽略，无响应，ECU 存活可恢复 |
+| FF | 声明 16 字节、只补 8 字节 | ✅ 重组不完成 → 无响应，ECU 存活可恢复 |
+| CF | 孤立 CF（无 FF），SN=1 / 1,2,3 | ✅ 静默丢弃，无响应，ECU 存活可恢复 |
+| SN | 顺序 1,2,3 | ✅ 正常重组并响应（对照组） |
+| SN | 跳号 1→3（缺 2） | ❗ **ECU 进程被杀死**：`OSError: [Errno 84]` |
+| SN | 重复 1,1 | ❗ **ECU 进程被杀死**：`OSError: [Errno 84]` |
+| SN | 回退 1,0 | ❗ **ECU 进程被杀死**：`OSError: [Errno 84]` |
+| SN | 跳到 0xF | ❗ **ECU 进程被杀死**：`OSError: [Errno 84]` |
+| FC | 无对应传输时的 FC：CTS / WAIT / OVERFLOW | ✅ 全部忽略，无响应，ECU 存活可恢复 |
+| FC | ECU 发送中额外注入 WAIT / OVERFLOW | ✅ 内核忽略重复 FC，20 字节响应依然完整，ECU 存活 |
+| FC | ECU 发送中额外注入**参数异常** FC（BS/STmin） | ✅ 同上：存活、响应完整 |
+| FC | **只用一个** BS=1 + STmin=0x80（保留值）的 CTS | ❗ **ECU 进程被杀死**：`OSError: [Errno 70]`（连续 5/5 复现） |
+| FC | **只回一个正常 CTS**（对照） | ✅ 响应完整，ECU 存活 |
+| DLC | 声明的长度与实际不符（见 SF 各行） | ✅ 见上 |
+| Padding | 单帧带 5 字节 `00` 填充 | ✅ 按 SF 长度截断，正常 `50 01` 响应 |
+| Padding | 单帧带 5 字节 `0xAA` 填充 | ✅ 同上（与 P2 的 TX_PAD/RX_PAD 结论一致） |
+| Padding | 多帧请求 CF 填充到 DLC=8 | ✅ 请求仍被正确重组 |
+
+#### 关于 STmin 保留值（不要一律叫"非法"）
+
+ISO 15765-2 的 STmin 是**一个字节**，编码分段如下：
+
+```text
+0x00–0x7F   →  0–127 ms        （合法）
+0xF1–0xF9   →  100–900 us      （合法）
+0x80–0xF0   →  保留
+0xFA–0xFF   →  保留
+```
+
+因此本实验把 ``0xF1`` 当作**合法**档位，只把 ``0x80`` / ``0xF0`` 标注为
+保留值。⚠️ 实测：**本机内核对保留值没有特殊处理**——``30 00 80`` 与
+``30 00 00`` 观察到的行为相同（响应完整、ECU 存活），并没有出现
+"回退到 127 ms"的可观察差异。
+
+#### 关键发现：畸形输入可杀死 ECU 进程（尚未修复）
+
+**现象**：两类确定性输入让 ECU 子进程直接退出（returncode 1）：
+
+```text
+A. CF 序号异常（跳号 / 重复 / 回退 / 大跳）
+   → OSError: [Errno 84] Invalid or incomplete multibyte or wide character
+
+B. 传输未按内核预期完成
+   → OSError: [Errno 70] Communication error on send
+     触发条件（最小复现）：对 ECU 的多帧响应只回一个
+     30 01 80（BS=1, STmin=0x80）的 CTS，不再回后续 FC
+```
+
+**最小复现**（P3 已固化为用例 ``TestFcParamOnlyCts``）：
+
+```text
+1. 注入 SF: 03 22 f1 90          # 触发 ECU 的多帧响应
+2. ECU 回 FF: 10 14 62 f1 90 54 45 53
+3. 只注入一个 FC: 30 01 80        # 不再回任何后续 FC
+4. 约 1.2s 后（内核 N_Bs 超时）ECU 进程退出
+```
+
+**机理**：内核在超时/重组失败后通过 socket 向用户态抛错，而
+``ecu/ecu.py`` 的接收循环只捕获 ``TimeoutError``：
+
+```python
+try:
+    data = sock.recv()
+except TimeoutError:
+    continue
+```
+
+``OSError`` 不在捕获范围内，于是异常沿 ``main()`` 冒泡并终止进程。
+
+**状态**：❗ **未修复**（Phase 4-P3 明确要求"不要急着修"）。
+这两个最小复现条件已保留在测试中，作为后续漏洞研究的入口。
+带 ``@unittest.expectedFailure`` 的用例断言的是"ECU 应当存活"，
+因此它失败的原因就是真实的进程死亡。
+
+> 观察到的**非**问题：所有 malformed 输入都**没有**造成状态污染——
+> 只要 ECU 还活着，后续正常 UDS 请求全部成功（每个 case 都做了恢复检查）。
+> 唯一的失败模式是进程直接死亡。
+
+#### ❓ 尚未测试（不要当成结论）
+
+- 随机 / 覆盖引导 fuzzing（P3 明确不做）
+- 并发注入、多 ECU、CAN-FD、DoIP
+- 其他内核版本 / 其他 ISO-TP 实现（本次结论绑定当前 WSL2 内核
+  ``6.18.33.2-microsoft-standard-WSL2`` + python-isotp 2.0.7）
+- CAN ID 错误（0x7E1 / 0x7DF / 0x000）—— 属于 CAN addressing 实验，
+  不是 ISO-TP malformed，本阶段未纳入
+
 ### 不做 UDS 解释
 
 本工具**不解析** SID、NRC、DID 或 SecurityAccess，只原样打印响应字节。
@@ -330,8 +460,10 @@ can-tools/
 ├── can_inject.py         # raw CAN 帧注入
 ├── isotp_send.py         # ISO-TP payload 发送（含显式传输参数）
 └── tests/
-    ├── test_parsers.py              # 34 个离线单元测试（不依赖 vcan0）
-    └── test_isotp_send_options.py   # 50 个 ISO-TP 参数测试（不需 vcan0）
+    ├── run_tests.sh                   # 测试入口（all / offline / malformed）
+    ├── test_parsers.py                # 34 个离线单元测试（不依赖 vcan0）
+    ├── test_isotp_send_options.py     # 50 个 ISO-TP 参数测试（不需 vcan0）
+    └── test_isotp_malformed_vcan.py   # 44 个畸形分帧实验（需要 vcan0）
 ```
 
 `parsers.py` 是三个 CLI 共用的输入校验层。它刻意保持**纯函数、无 I/O、
@@ -345,6 +477,8 @@ can-tools/
 工具自身的离线单元测试（**不需要 vcan0**）：
 
 ```bash
+bash tests/run_tests.sh offline
+# 或分别运行
 /home/lilike/.venvs/network/bin/python tests/test_parsers.py
 /home/lilike/.venvs/network/bin/python tests/test_isotp_send_options.py
 ```
@@ -359,10 +493,22 @@ can-tools/
   **全部未指定时不下发任何 socket 选项**（默认行为不变的回归点）、
   以及 `--timeout` 在没有 ECU 时干净退出。
 
-> `test_isotp_send_options.py` 需要 python-isotp（会 import `isotp_send`），
-> 但不打开任何 socket，仍然不需要 vcan0。
-> 需要 vcan0 的**在网实验**见
-> `../uds-basic/tests/test_isotp_options_vcan.py`（14 个用例）。
+需要 vcan0 的在网实验（Phase 4-P3，会自动启停虚拟 ECU 子进程）：
+
+```bash
+bash tests/run_tests.sh malformed
+# 或
+/home/lilike/.venvs/network/bin/python tests/test_isotp_malformed_vcan.py
+```
+
+- `test_isotp_malformed_vcan.py`（44）：畸形 PCI、SF 长度不一致、
+  FF 不完整 / 长度异常、孤立 CF、SN 跳号 / 重复 / 回退、无对应传输的 FC、
+  发送中注入 WAIT / OVERFLOW / 异常 BS / 保留 STmin、padding 与 DLC 异常、
+  CAN addressing 对照。结果见上一节"ISO-TP 畸形分帧实验"。
+
+> 注意：该套件包含 **1 个 `@unittest.expectedFailure`**——它记录的是
+> 一个**尚未修复的真实缺陷**（某些畸形输入会杀死 ECU 进程）。
+> 因此汇总行会显示 `OK (expected failures=1)`，这是预期状态。
 
 UDS 实验的完整回归（与本目录相互独立）：
 
@@ -379,14 +525,15 @@ bash ../uds-basic/tests/run_tests.sh all
 ```text
 Phase 4-P1  观察（capture） · 注入（inject） · ISO-TP 发送（isotp_send）
 Phase 4-P2  ISO-TP 传输参数显式化（padding / stmin / blocksize / timeout）
+Phase 4-P3  确定性畸形分帧实验（PCI / SF / FF / CF-SN / FC / padding-DLC）
 ```
 
 明确尚未实现：
 
-- 异常 / 畸形 ISO-TP 实验（非法 PCI、错误长度、序号错乱、流控滥用）
+- 随机 / 覆盖引导 / 有状态 fuzzing 与 mutation engine（Phase 4-P3 明确不做）
 - CAN replay、PCAP / BLF 日志
-- UDS 层与 raw CAN 层 fuzzing
 - 传输层抽象（`transport.py`）—— 当前无此必要
+- 对 P3 发现的进程崩溃做**修复**（属协议层改动，需单独阶段 + 单独提交）
 
 `can_inject.py` 已经提供了后续这些实验所需的**链路层注入能力**，
 但它本身只负责“把一帧按你写的字节发出去”，不判断内容是否合法。

@@ -7,10 +7,14 @@
 #   1. test_parsers.py             纯解析逻辑（不需要 python-isotp / vcan0）
 #   2. test_isotp_send_options.py  ISO-TP 参数解析与下发（需要 python-isotp，
 #                                  但不打开 CAN socket，不需要 vcan0）
+#   3. test_isotp_malformed_vcan.py 畸形 ISO-TP 分帧实验（需要 vcan0，
+#                                  会自动启动 / 结束虚拟 ECU 子进程）
 #
 # 用法：
 #
-#   bash tests/run_tests.sh
+#   bash tests/run_tests.sh            # 全部
+#   bash tests/run_tests.sh offline    # 只跑前两组（不需要 vcan0）
+#   bash tests/run_tests.sh malformed  # 只跑畸形分帧实验（需要 vcan0）
 #
 # 环境变量：
 #
@@ -18,19 +22,29 @@
 #
 # 安全边界：
 #
-#   本脚本只跑离线测试，不打开 CAN socket，不接触真实车辆 / 真实 ECU。
-#   需要 vcan0 的在网实验见 ../../uds-basic/tests/test_isotp_options_vcan.py。
+#   只使用 vcan0（虚拟 CAN），只与本机虚拟 ECU 子进程通信。
+#   不接触真实车辆 / 真实 ECU / 真实 CAN 适配器。
 
 set -u
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+MODE="${1:-all}"
+
+VCAN_INTERFACE="vcan0"
+
 PASS=0
+WARN=0
 FAIL=0
 
 ok() {
     echo "[ OK ] $1"
     PASS=$((PASS + 1))
+}
+
+warn() {
+    echo "[WARN] $1"
+    WARN=$((WARN + 1))
 }
 
 fail() {
@@ -53,27 +67,74 @@ echo "========================================"
 echo " CAN / ISO-TP Tools Test Runner"
 echo "========================================"
 echo "Python: $PYTHON_BIN"
+echo "Mode:   $MODE"
 echo
 
-if "$PYTHON_BIN" "$TESTS_DIR/test_parsers.py"; then
-    ok "parser unit tests passed"
-else
-    fail "parser unit tests failed"
-fi
+run_offline() {
+    if "$PYTHON_BIN" "$TESTS_DIR/test_parsers.py"; then
+        ok "parser unit tests passed"
+    else
+        fail "parser unit tests failed"
+    fi
 
-echo
+    echo
 
-if "$PYTHON_BIN" "$TESTS_DIR/test_isotp_send_options.py"; then
-    ok "ISO-TP option tests passed"
-else
-    fail "ISO-TP option tests failed"
-fi
+    if "$PYTHON_BIN" "$TESTS_DIR/test_isotp_send_options.py"; then
+        ok "ISO-TP option tests passed"
+    else
+        fail "ISO-TP option tests failed"
+    fi
 
-echo
+    echo
+}
+
+run_malformed() {
+    if ! ip link show "$VCAN_INTERFACE" >/dev/null 2>&1; then
+        warn "$VCAN_INTERFACE 不存在，跳过畸形分帧实验"
+        warn "请先启动 vcan0：sudo systemctl start vcan0.service"
+        echo
+        return
+    fi
+
+    if ! ip link show "$VCAN_INTERFACE" | grep -q "UP"; then
+        warn "$VCAN_INTERFACE 存在但未 UP，跳过畸形分帧实验"
+        echo
+        return
+    fi
+
+    ok "$VCAN_INTERFACE 可用"
+
+    if "$PYTHON_BIN" "$TESTS_DIR/test_isotp_malformed_vcan.py"; then
+        ok "malformed ISO-TP experiments passed"
+    else
+        fail "malformed ISO-TP experiments failed"
+    fi
+
+    echo
+}
+
+case "$MODE" in
+    offline)
+        run_offline
+        ;;
+    malformed)
+        run_malformed
+        ;;
+    all)
+        run_offline
+        run_malformed
+        ;;
+    *)
+        echo "未知模式：$MODE（可用：all | offline | malformed）" >&2
+        exit 2
+        ;;
+esac
+
 echo "========================================"
 echo " Summary"
 echo "========================================"
 echo "PASS: $PASS"
+echo "WARN: $WARN"
 echo "FAIL: $FAIL"
 echo
 
