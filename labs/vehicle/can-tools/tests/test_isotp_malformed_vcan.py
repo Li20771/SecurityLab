@@ -295,6 +295,21 @@ def ecu_log_lines() -> list:
         return list(_ECU_LINES)
 
 
+def clear_ecu_log() -> None:
+    """清空已收集的 ECU 输出（用于只看某一个 case 的日志）。"""
+    with _ECU_LOG_LOCK:
+        _ECU_LINES.clear()
+
+
+def ecu_container_errors() -> list:
+    """
+    返回 ECU 记录到的 transport error containment 日志行。
+
+    修复后这些行是"异常被接住"的直接证据（而不是进程 traceback）。
+    """
+    return [line for line in ecu_log_lines() if "ISO-TP" in line and "error" in line]
+
+
 def ecu_uds_exchanges() -> list:
     """ECU 视角的 (请求, 响应) 列表。"""
     requests = []
@@ -1382,7 +1397,14 @@ class SequentialSnBase(MalformedCaseTest):
         ]
 
     def _run_sn_case(self, frames: list, case: str,
-                     expect_crash: bool = True) -> tuple:
+                     expect_crash: bool = False) -> tuple:
+        """
+        执行一个 SN 异常 case。
+
+        P3R 之后 ``expect_crash`` 默认为 False —— 即**期望 ECU 存活并恢复**。
+        P3 阶段该参数默认为 True（当时序号异常确实会杀死 ECU）；
+        保留这个开关是为了让"缺陷是否复发"可以显式对照，而不是隐含在断言里。
+        """
         mark = self.harness.mark()
         self.harness.send_sequence(frames, gap=FRAME_GAP)
         self.harness.wait(RESPONSE_WAIT)
@@ -1477,12 +1499,86 @@ class TestSnBaseline(SequentialSnBase):
         )
 
 
+class TestTransportErrorContainmentEilseq(SequentialSnBase):
+    """
+    P3R 最小回归实验 A：错误 CF 序号（EILSEQ / Errno 84）。
+
+    修复前：内核序号不匹配 → ``OSError EILSEQ`` → 未捕获 → ECU 进程退出。
+    修复后期望：错误被接住、当前传输被丢弃、ECU 存活、后续正常请求可恢复。
+
+    两个 case **分开写**（跳号 / 重复）：它们是两条独立输入，
+    合成一个用例会掩盖其中一条的回归。
+    """
+
+    def _containment_case(self, frames: list, case: str, expected_errno: int) -> None:
+        clear_ecu_log()
+
+        mark = self.harness.mark()
+        self.harness.send_sequence(frames, gap=FRAME_GAP)
+        self.harness.wait(RESPONSE_WAIT)
+
+        captured = self.collect(mark)
+        payloads = self.harness.payloads_from(mark, ECU_TX_ID)
+
+        # EILSEQ 由内核在 recv() 上报，属于即时错误；留一点余量但不必等 N_Bs
+        self.harness.wait(0.5)
+
+        alive = ecu_alive()
+        container_lines = ecu_container_errors()
+        signature = self.ecu_crash_signature() if not alive else ""
+
+        # 恢复检查：必须能继续正常服务
+        ok, recovery = self.recovery_check()
+
+        self.emit(
+            case,
+            self.harness.injected[-len(frames):],
+            captured,
+            result=(
+                f"ISO-TP response: {'none' if not payloads else [p.hex(' ') for p in payloads]} | "
+                f"ECU alive: {alive} | "
+                f"containment log: {[l.strip() for l in container_lines]}"
+            ),
+            recovery=recovery,
+        )
+
+        # ---- 期望行为（修复后必须成立）----
+        self.assertTrue(
+            alive,
+            f"[{case}] ECU 进程被 transport error 杀死（回归）：{signature}",
+        )
+        self.assertFalse(
+            payloads,
+            f"[{case}] transport 层错误不应产生 UDS 响应，实际 {[p.hex(' ') for p in payloads]}",
+        )
+        self.assertTrue(
+            any(f"errno={expected_errno}" in line for line in container_lines),
+            f"[{case}] 未看到 errno={expected_errno} 的 containment 日志：{container_lines}",
+        )
+        self.assertTrue(ok, f"[{case}] 之后 ECU 无法恢复正常通信：{recovery}")
+
+    def test_wrong_cf_sn_does_not_kill_ecu(self) -> None:
+        """最小回归 A-1：FF + CF1 + CF3（缺 SN=2）不应杀死 ECU（EILSEQ）。"""
+        self._containment_case(
+            self._frames(3, note="CF SN=3 (skips SN=2)"),
+            "P3R-EILSEQ CF SN skip 1->3",
+            expected_errno=84,
+        )
+
+    def test_repeated_cf_sn_does_not_kill_ecu(self) -> None:
+        """最小回归 A-2：FF + CF1 + CF1（重复 SN）不应杀死 ECU（EILSEQ）。"""
+        self._containment_case(
+            self._frames(1, note="CF SN=1 repeated"),
+            "P3R-EILSEQ CF SN repeat 1,1",
+            expected_errno=84,
+        )
+
+
 class TestSnSkip(SequentialSnBase):
     """Case 6a 隔离：SN 从 1 跳到 3（缺失 SN=2）。
 
-    **已记录的崩溃**：实测该输入让内核向 ECU 抛出
-    ``OSError: [Errno 84]``，ECU 进程随之退出。用例显式断言这个签名，
-    因此它不会因为别的原因"看起来通过"。
+    P3 实测该输入会让内核抛出 ``OSError: [Errno 84]``（EILSEQ）；
+    P3R 修复后错误被 transport 层 containment 接住，ECU 必须存活。
     """
 
     def test_sn_skip_1_to_3(self) -> None:
@@ -1492,7 +1588,7 @@ class TestSnSkip(SequentialSnBase):
 
 
 class TestSnRepeat(SequentialSnBase):
-    """Case 6b 隔离：SN 重复（CF1 + CF1）。已记录崩溃（Errno 84）。"""
+    """Case 6b 隔离：SN 重复（CF1 + CF1）。P3R 后 ECU 必须存活。"""
 
     def test_sn_repeat_1_1(self) -> None:
         frames = self._frames(1, note="CF SN=1 repeated")
@@ -1501,7 +1597,7 @@ class TestSnRepeat(SequentialSnBase):
 
 
 class TestSnBackward(SequentialSnBase):
-    """Case 6c 隔离：SN 回退（CF1 + CF0）。已记录崩溃（Errno 84）。"""
+    """Case 6c 隔离：SN 回退（CF1 + CF0）。P3R 后 ECU 必须存活。"""
 
     def test_sn_backward_1_0(self) -> None:
         frames = self._frames(0, note="CF SN=0 (backward)")
@@ -1510,7 +1606,7 @@ class TestSnBackward(SequentialSnBase):
 
 
 class TestSnLargeJump(SequentialSnBase):
-    """Case 6d 隔离：SN 跳到 0xF。已记录崩溃（Errno 84）。"""
+    """Case 6d 隔离：SN 跳到 0xF。P3R 后 ECU 必须存活。"""
 
     def test_sn_jump_to_f(self) -> None:
         frames = self._frames(0xF, note="CF SN=0xF (large jump)")
@@ -1746,36 +1842,29 @@ class TestFcParamStmin127ms(FcParamCase):
 
 class TestFcParamOnlyCts(FcParamCase):
     """
-    最小复现（P3 关键发现）：**只用一个**参数受限的 CTS 完成整段传输。
+    P3R 最小回归实验 B：发送侧 FC 超时（ECOMM / Errno 70）。
 
-    与上面各用例的区别只有一点：**不**先回一个正常 CTS。
-    实测该构造稳定杀死 ECU（连续 5/5 复现）::
+    构造（P3 已固化的最小复现）::
 
-        OSError: [Errno 70] Communication error on send
+        1. 注入 SF 03 22 f1 90        → 触发 ECU 的多帧响应
+        2. ECU 回 FF 10 14 ...
+        3. 只注入一个 FC 30 01 80      → 不再回后续 FC
+        4. 约 1.2s 后内核报 FC 接收超时
 
-    机理：传输未能按内核预期完成（我们只回了一个 BS=1 / STmin=保留值
-    的 CTS，没有继续回后续 FC），内核在 N_Bs 超时后向 socket 抛错；
-    ``ecu.py`` 的 recv 循环只捕获 ``TimeoutError``，于是该异常
-    直接终止 ECU 进程。
+    修复前：``OSError ECOMM`` 未捕获 → ECU 进程退出。
+    修复后期望：错误被接住、本次响应发送被丢弃、ECU 存活、后续请求可恢复。
 
-    保留为 expectedFailure：它记录的是**尚未修复的真实缺陷**，
-    修复后本用例应当变成正常通过。
+    本用例在 P3 阶段以 ``@unittest.expectedFailure`` 记录缺陷；
+    P3R 修复后转为**普通通过用例**，以免未来回归被 expectedFailure 掩盖。
     """
 
     BLOCK_SIZE = 1
     STMIN = 0x80
-    LABEL = "FC-PARAMS-ISOLATED BS=1 STmin=0x80 with single CTS only"
+    LABEL = "P3R-ECOMM FC timeout (BS=1, STmin=0x80, single CTS only)"
 
-    @unittest.expectedFailure
-    def test_single_param_cts_kills_ecu(self) -> None:
-        """
-        期望的正确行为：ECU 应当存活并继续服务。
+    def test_fc_timeout_does_not_kill_ecu(self) -> None:
+        clear_ecu_log()
 
-        实测（连续 5/5）：ECU 进程被内核错误杀死，因此本用例以
-        expectedFailure 记录一个**尚未修复的真实缺陷**。
-        断言的是"应当存活"，所以失败原因是真实的进程死亡，
-        而不是断言写反、也不是别的用例把 ECU 弄死（每个类独立进程）。
-        """
         info = self.inject_during_active_send(
             abnormal_fc=None,
             note="parameter-only CTS (no normal CTS first)",
@@ -1795,15 +1884,18 @@ class TestFcParamOnlyCts(FcParamCase):
 
         self.harness.wait(MULTIFRAME_WAIT)
 
-        # 关键：Errno 70 出现在内核 N_Bs 超时之后，必须显式等待
-        died = self.wait_for_ecu_death(timeout=3.0)
+        # ECOMM 出现在内核 N_Bs 超时之后（实测约 1.2s），必须显式等待
+        self.wait_for_ecu_death(timeout=2.5)
 
         captured = self.harness.since(info["mark"])
         payloads = self.harness.payloads_from(info["mark"], ECU_TX_ID)
         complete = [p for p in payloads if len(p) >= 20]
 
         alive = ecu_alive()
-        signature = "" if alive else self.ecu_crash_signature()
+        container_lines = ecu_container_errors()
+        signature = self.ecu_crash_signature() if not alive else ""
+
+        ok, recovery = self.recovery_check()
 
         self.emit(
             f"{self.LABEL} (MINIMAL REPRO)",
@@ -1811,24 +1903,31 @@ class TestFcParamOnlyCts(FcParamCase):
             captured,
             result=(
                 f"complete 20B payload: {[p.hex(' ') for p in complete]} | "
-                f"ECU alive: {alive} | crash signature: {signature or '(none)'}"
+                f"all payloads: {[p.hex(' ') for p in payloads]} | "
+                f"ECU alive: {alive} | "
+                f"containment log: {[l.strip() for l in container_lines]}"
             ),
-            recovery=(
-                f"ECU 进程已退出（returncode={ecu_returncode()}）：{signature}"
-                if died
-                else "n/a"
-            ),
+            recovery=recovery,
         )
 
-        # ---- 期望的正确行为 ----
+        # ---- 期望行为（修复后必须成立）----
         self.assertTrue(
-            complete, "收到带参数的 CTS 后，20 字节响应应当完整"
+            alive,
+            f"[{self.LABEL}] ECU 进程被 transport error 杀死（回归）：{signature}",
         )
+        self.assertTrue(
+            any("errno=70" in line for line in container_lines),
+            f"[{self.LABEL}] 未看到 errno=70 的 containment 日志：{container_lines}",
+        )
+        # 注意：**不能**要求"完全没有 payload"。传输被中断时对端会在总线上
+        # 看到半截 FF（如 '62 f1 90 54 45 53'），那是传输失败的表现，
+        # 不是伪造的 UDS 响应。要求的是"没有完整交付"。
         self.assertFalse(
-            died,
-            f"该输入不应杀死 ECU，但进程退出了：{signature}",
+            complete,
+            f"[{self.LABEL}] FC 超时导致发送被丢弃，不应完整交付 20 字节响应："
+            f"{[p.hex(' ') for p in complete]}",
         )
-        self.assert_ecu_alive(self.LABEL)
+        self.assertTrue(ok, f"[{self.LABEL}] 之后 ECU 无法恢复正常通信：{recovery}")
 
 
 class TestFlowControlNormalBaseline(MalformedCaseTest):

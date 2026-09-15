@@ -35,6 +35,7 @@ dispatcher、NRC/response 组装）位于 ``uds_server.py``。
 - 0x27 依赖注入：``_security_services()``（每请求现场求值 ``_now()``）
 """
 
+import errno
 import os
 import time
 from typing import Optional
@@ -403,6 +404,34 @@ def handle_uds_request(request: bytes) -> bytes:  # noqa: F811
 handle_uds_request_protocol = uds_server.handle_uds_request
 
 
+def _is_recoverable_isotp_error(exc: OSError) -> bool:
+    """
+    判断一个 ``OSError`` 是否属于**当前 transaction 可丢弃**的
+    ISO-TP 传输错误（内核 CAN_ISOTP 的 error contract）。
+
+    已实测确认的两条（Phase 4-P3 / P3R）::
+
+        EILSEQ (84)  接收侧序号不匹配 —— wrong CF sequence number
+        ECOMM  (70)  发送侧流控接收超时 —— FC reception timeout
+
+    语义都是"这一次 ISO-TP 传输坏了"，而不是"这个 socket / 接口坏了"。
+    因此正确的处置是**丢弃当前传输**并继续服务下一个请求。
+
+    刻意**不**把 ``ETIMEDOUT`` / ``EBADMSG`` / ``EMSGSIZE`` 一并加入：
+    内核文档列出它们属于 ISO-TP 传输错误类别，但本项目尚未实际观测到。
+    在没有实测证据前扩大捕获范围，会掩盖真正的 socket / 接口故障。
+    如果后续实验真的观察到，再按实测语义逐个加入（见 README）。
+    """
+    return exc.errno in (errno.EILSEQ, errno.ECOMM)
+
+
+def _isotp_error_detail(exc: OSError) -> str:
+    """格式化 transport error 细节（errno + 助记符 + 异常文本）。"""
+    name = errno.errorcode.get(exc.errno, "?")
+
+    return f"errno={exc.errno} ({name}) {exc}"
+
+
 def main() -> None:
     print(f"ISO-TP version: {isotp.__version__}")
     print(f"CAN interface: {INTERFACE}")
@@ -463,7 +492,27 @@ def main() -> None:
                 # （而不是返回 None），必须在这里接住，否则空闲一个周期
                 # 就会让整个 ECU 退出。这也是 `data is None` 分支之外
                 # 真正需要处理的"没收到请求"路径。
+                #
+                # 顺序很重要：TimeoutError 是 OSError 的子类，
+                # 必须排在 OSError 之前，否则永远不可达。
                 continue
+            except OSError as exc:
+                if _is_recoverable_isotp_error(exc):
+                    # 本次传输被内核判定为损坏。实测两条都已走到这里：
+                    #   EILSEQ(84) CF 序号不匹配
+                    #   ECOMM(70)  发送侧 FC 超时（内核在后续操作上报）
+                    # 丢弃当前 transaction 并继续服务，**不**伪造 UDS NRC：
+                    # 错误发生在 payload transport 层，不是 service handler 层，
+                    # 因此"没有 UDS 响应"才是正确结果。
+                    print(
+                        f"ISO-TP RX error: {_isotp_error_detail(exc)} "
+                        f"— 丢弃当前传输，继续运行"
+                    )
+                    continue
+
+                # 非预期错误（接口被删、socket 真损坏等）必须暴露出来，
+                # 不能被静默吞掉。
+                raise
 
             if data is None:
                 continue
@@ -474,7 +523,23 @@ def main() -> None:
 
             print(f"TX UDS: {response.hex(' ')}")
 
-            sock.send(response)
+            try:
+                sock.send(response)
+            except OSError as exc:
+                if _is_recoverable_isotp_error(exc):
+                    # UDS 响应已生成，失败发生在 UDS → ISO-TP 发送阶段，
+                    # 因此只记录发送失败，不重新调用 uds_server。
+                    #
+                    # 说明：实测 ECOMM 是在**后续 recv()** 上浮现的（内核在
+                    # 下一次 socket 操作上报 FC 超时），send() 本身未抛出。
+                    # 这里保留同等处置，避免内核行为变化时又变成未处理异常。
+                    print(
+                        f"ISO-TP TX error: {_isotp_error_detail(exc)} "
+                        f"— 丢弃本次响应发送，继续运行"
+                    )
+                    continue
+
+                raise
 
     except KeyboardInterrupt:
         print("\nStopping virtual ECU...")

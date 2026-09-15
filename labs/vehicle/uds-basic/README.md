@@ -1186,6 +1186,30 @@ UDS_ISOTP_TIMEOUT=0.3 python3 ecu/ecu.py
 6. **recv 超时是异常**：设置了 `UDS_ISOTP_TIMEOUT` 后，
    python-isotp 的 `recv()` 超时会**抛 `TimeoutError`**（不是返回 `None`），
    所以 `main()` 必须接住它，否则 ECU 空闲一个周期就会退出。
+7. **transport error 必须被 containment**（Phase 4-P3R）：内核 CAN_ISOTP
+   在传输损坏时通过 socket 抛 `OSError`，若不管就会杀死 ECU 进程。
+   已实测两条并接住：
+
+   | errno | 名称 | 触发场景 |
+   |---|---|---|
+   | 84 | `EILSEQ` | 接收侧 CF 序号不匹配（跳号 / 重复 / 回退） |
+   | 70 | `ECOMM` | 发送侧 FC 接收超时（`N_Bs` 超时，约 1.2s 后上报） |
+
+   处理原则（详见第 14.9 节）：
+
+   ```python
+   except TimeoutError:      # 必须排在 OSError 之前（它是 OSError 的子类）
+       continue
+   except OSError as exc:
+       if _is_recoverable_isotp_error(exc):
+           print(f"ISO-TP RX error: ... — 丢弃当前传输，继续运行")
+           continue
+       raise                 # 其余 OSError 仍暴露，不被静默吞掉
+   ```
+
+   注意 **不能**把 transport error 转换成 `7F xx NRC`：错误发生在
+   payload transport 层，不是 UDS service handler 层，
+   因此"没有 UDS 响应"才是正确结果。
 
 #### 实测：填充只改 DLC，不改 payload
 
@@ -1222,7 +1246,96 @@ ECU 返回 35 字节响应时，测量其连续帧（CF）之间的间隔：
 RX 填充容错、FC 的 BS 生效、FC 的 STmin 生效（时间量级断言）、
 `FORCE_TXSTMIN` 覆盖、以及 `UDS_ISOTP_TIMEOUT` 下"空闲不发帧 + 仍能应答"。
 
-### 14.9 Phase 3 架构重构说明
+### 14.9 ISO-TP transport error containment（Phase 4-P3R）
+
+**背景**：Phase 4-P3 的畸形分帧实验发现两类确定性输入会让 ECU 进程
+直接退出（returncode 1）。这不是 UDS 逻辑问题，而是内核 CAN_ISOTP
+在传输损坏时向用户态抛 `OSError`，而 `main()` 当时只捕获 `TimeoutError`。
+
+| 方向 | errno | 名称 | 触发场景 |
+|---|---|---|---|
+| RX | 84 | `EILSEQ` | CF 序号不匹配（跳号 / 重复 / 回退 / 大跳） |
+| TX→RX | 70 | `ECOMM` | FC 接收超时（`N_Bs` 超时，实测约 1.2s 后上报） |
+
+> 实测细节：`ECOMM` **不是在 `send()` 当场抛出的**，而是在内核
+> `N_Bs` 超时后由**后续 socket 操作**（`recv()`）上报。
+> `send()` 侧仍保留同等处置，避免内核行为变化时又变成未处理异常。
+
+**修复**（只改 `ecu.py`，内核与 `uds_server.py` 均未动）：
+
+```python
+def _is_recoverable_isotp_error(exc: OSError) -> bool:
+    """当前 transaction 可丢弃的 ISO-TP 传输错误。"""
+    return exc.errno in (errno.EILSEQ, errno.ECOMM)
+```
+
+```python
+try:
+    data = sock.recv()
+except TimeoutError:                    # 顺序：TimeoutError 是 OSError 子类
+    continue
+except OSError as exc:
+    if _is_recoverable_isotp_error(exc):
+        print(f"ISO-TP RX error: {_isotp_error_detail(exc)} — 丢弃当前传输，继续运行")
+        continue
+    raise                               # 非预期错误仍然暴露
+```
+
+```python
+try:
+    sock.send(response)
+except OSError as exc:
+    if _is_recoverable_isotp_error(exc):
+        print(f"ISO-TP TX error: {_isotp_error_detail(exc)} — 丢弃本次响应发送，继续运行")
+        continue
+    raise
+```
+
+**设计取舍**：
+
+1. **不吞掉所有 `OSError`**：接口被删、socket 真损坏等必须暴露，
+   否则会掩盖真实故障。只接住实测确认的两条 errno。
+2. **不伪造 NRC**：错误发生在 payload transport 层，不是 service handler 层，
+   因此"只记录、不回 `7F xx`"是正确行为。
+3. **不重建 socket**（第一版）：实测 `catch + continue` 之后 socket 仍然可用
+   （后续 `10 01` / `22 F1 80` 均正常），因此不引入 close/recreate 的复杂度。
+4. **不预先扩大 errno 集合**：内核文档还列出 `ETIMEDOUT` / `EBADMSG` /
+   `EMSGSIZE`，但本项目尚未实际观测到，因此没有加入——避免把真实
+   socket / 接口故障误判为"可丢弃传输错误"。
+
+**修复后实测**：
+
+```text
+EILSEQ（SN 跳号 / 重复）
+  ISO-TP RX error: errno=84 (EILSEQ) ... — 丢弃当前传输，继续运行
+  ECU alive = True
+  recovery: 10 01 -> 50 01 00 32 00 64
+
+ECOMM（FC 超时最小复现：只回一个 30 01 80）
+  ISO-TP RX error: errno=70 (ECOMM) ... — 丢弃当前传输，继续运行
+  ECU alive = True
+  recovery: 10 01 -> 50 01 00 32 00 64
+  （总线上会看到半截 FF 62 f1 90 54 45 53 —— 那是传输被丢弃的表现，
+    不是伪造的 UDS 响应）
+```
+
+**范围声明**：本修复**只是进程级 containment**，不代表"ISO-TP 已完全加固"。
+内核仍会如常产生这些传输错误，只是 ECU 不再因此退出。
+内核侧为何产生 `EILSEQ` / `ECOMM`（CAN_ISOTP 状态机行为）不在本阶段范围，
+属后续 `Phase 4-P3K`。
+
+**对应测试**（`labs/vehicle/can-tools/tests/test_isotp_malformed_vcan.py`）：
+
+```text
+test_wrong_cf_sn_does_not_kill_ecu      # EILSEQ 路径 A-1（跳号）
+test_repeated_cf_sn_does_not_kill_ecu   # EILSEQ 路径 A-2（重复）
+test_fc_timeout_does_not_kill_ecu       # ECOMM 路径 B
+```
+
+三条用例都断言：ECU 存活 + 出现对应 errno 的 containment 日志 + 后续正常
+UDS 请求可恢复。P3 阶段的 `@unittest.expectedFailure` 已全部移除。
+
+### 14.10 Phase 3 架构重构说明
 
 Phase 3 完成的是一次**结构性重构**（行为保持不变）：
 
