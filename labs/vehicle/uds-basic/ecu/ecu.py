@@ -22,8 +22,14 @@ import isotp
 
 import keygen
 import uds_types
-from did_database import DID_DATABASE, PROTECTED_DIDS
-from uds_server import STATE
+from did_database import PROTECTED_DIDS
+from uds_server import (
+    STATE,
+    reset_security_state,
+    service_diagnostic_session_control,
+    service_ecu_reset,
+    service_read_data_by_identifier,
+)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -47,25 +53,9 @@ TX_ID = _env_int("UDS_TX_ID", 0x7E8)
 # 会话
 # ======================================================================
 
+#: defaultSession 常量（保留供 main() 与外部引用使用）。
+#: 会话支持集与 P2/P2* 参数已随 0x10 handler 迁移到 uds_server.py。
 DEFAULT_SESSION = 0x01
-
-SESSION_DEFAULT = 0x01
-SESSION_PROGRAMMING = 0x02
-SESSION_EXTENDED = 0x03
-
-SUPPORTED_SESSIONS = {
-    SESSION_DEFAULT,
-    SESSION_PROGRAMMING,
-    SESSION_EXTENDED,
-}
-
-# 每个会话的 (P2ServerMax, P2*ServerMax)，单位毫秒。
-# defaultSession 保持 00 32 / 00 64 不变，以兼容既有行为与测试。
-SESSION_TIMING = {
-    SESSION_DEFAULT: (0x0032, 0x0064),
-    SESSION_PROGRAMMING: (0x00C8, 0x1388),
-    SESSION_EXTENDED: (0x0064, 0x03E8),
-}
 
 # 运行时会话状态不再以模块级变量保存。
 # 唯一 source of truth 是 uds_server.STATE（EcuState 实例）：
@@ -79,9 +69,6 @@ SESSION_TIMING = {
 # 安全访问（SecurityAccess 0x27）
 # ======================================================================
 
-SECURITY_LOCKED = 0x00
-SECURITY_LEVEL1 = 0x01
-
 #: 安全访问参数。测试可直接改写本 dict 以构造边界场景。
 #:
 #: 锁定窗口可通过环境变量 UDS_LOCKOUT_SECONDS 覆盖：
@@ -93,6 +80,10 @@ SECURITY_CONFIG = {
     "seed_expiry_seconds": 5,   # seed 有效期（秒）
 }
 
+#: 安全等级常量（0x27 逻辑与测试断言使用）。
+SECURITY_LOCKED = 0x00
+SECURITY_LEVEL1 = 0x01
+
 
 def _now() -> float:
     """
@@ -101,24 +92,11 @@ def _now() -> float:
     单独抽成函数是为了让测试可以注入时钟
     （unittest.mock.patch("ecu._now", ...)），
     从而在不 sleep 的前提下测试 seed 过期与锁定到期。
+
+    注意：本函数**继续留在 ecu.py**，0x27 逻辑直接从本模块调用它；
+    测试的 mock.patch.object(ecu_module, "_now", ...) 因此保持有效。
     """
     return time.monotonic()
-
-
-def reset_security_state() -> None:
-    """
-    重置"会话相关"的安全状态。
-
-    清除安全等级与 seed 生命周期，但**保留**失败计数与锁定状态。
-
-    保留失败计数与锁定是刻意的设计选择：防止 Tester 通过切换会话或
-    复位 ECU 来刷掉暴力破解的惩罚状态。注意这**不是所有真实 ECU
-    都必然如此**，部分真实 ECU 会在复位时清空失败计数。
-    """
-    STATE.security_level = SECURITY_LOCKED
-    STATE.pending_seed = None
-    STATE.seed_issued_at = None
-    STATE.seed_consumed = False
 
 
 def reset_all_security_state() -> None:
@@ -126,24 +104,15 @@ def reset_all_security_state() -> None:
     重置全部安全状态（含失败计数与锁定）。
 
     仅供测试使用，协议处理流程中不会调用。
+
+    "会话相关"部分委托给 uds_server.reset_security_state()，
+    保证清理语义只有一处定义。
     """
-    reset_security_state()
+    reset_security_state(STATE)
 
     STATE.failed_attempts = 0
     STATE.lockout_until = None
     STATE.seed_counter = 0
-
-
-# ======================================================================
-# 权限模型
-# ======================================================================
-
-def required_security_level(did: int) -> int:
-    """返回读取指定 DID 所需的安全等级。"""
-    if did in PROTECTED_DIDS:
-        return SECURITY_LEVEL1
-
-    return SECURITY_LOCKED
 
 
 # ======================================================================
@@ -286,99 +255,19 @@ def handle_uds_request(request: bytes) -> bytes:
     # DiagnosticSessionControl (0x10)
     # ============================================================
     if service == 0x10:
-        if len(request) != 2:
-            return uds_types.negative_response(
-                0x10, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
-            )
-
-        session_type = request[1]
-
-        if session_type not in SUPPORTED_SESSIONS:
-            return uds_types.negative_response(
-                0x10, uds_types.NRC_SUBFUNCTION_NOT_SUPPORTED
-            )
-
-        STATE.session = session_type
-
-        # 会话切换后必须重新解锁：
-        # 否则 Tester 可在 extended session 解锁后切回 default session
-        # 而保持解锁状态，形成真实的权限绕过漏洞。
-        reset_security_state()
-
-        p2_server_max, p2_star_server_max = SESSION_TIMING[session_type]
-
-        payload = bytes([
-            session_type,
-            (p2_server_max >> 8) & 0xFF, p2_server_max & 0xFF,
-            (p2_star_server_max >> 8) & 0xFF, p2_star_server_max & 0xFF,
-        ])
-
-        return uds_types.positive_response(0x10, payload)
+        return service_diagnostic_session_control(request, STATE)
 
     # ============================================================
     # ECUReset (0x11)
     # ============================================================
     if service == 0x11:
-        if len(request) != 2:
-            return uds_types.negative_response(
-                0x11, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
-            )
-
-        reset_type = request[1]
-
-        # hardReset
-        if reset_type == 0x01:
-            STATE.session = DEFAULT_SESSION
-            reset_security_state()
-
-            return uds_types.positive_response(0x11, bytes([reset_type]))
-
-        # unsupported reset type
-        return uds_types.negative_response(
-            0x11, uds_types.NRC_SUBFUNCTION_NOT_SUPPORTED
-        )
+        return service_ecu_reset(request, STATE)
 
     # ============================================================
     # ReadDataByIdentifier (0x22)
     # ============================================================
     if service == 0x22:
-        # 至少需要：
-        # 0x22 + 2-byte DID
-        #
-        # 多个 DID：
-        # 0x22 + DID + DID + ...
-        if len(request) < 3 or (len(request) - 1) % 2 != 0:
-            return uds_types.negative_response(
-                0x22, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
-            )
-
-        # 先在独立缓冲区累积，确认全部 DID 合法后再整体返回：
-        # 任何一个 DID 未知或权限不足，都整体拒绝，不返回部分数据。
-        payload = bytearray()
-
-        for offset in range(1, len(request), 2):
-            did = (request[offset] << 8) | request[offset + 1]
-
-            data = DID_DATABASE.get(did)
-
-            if data is None:
-                return uds_types.negative_response(
-                    0x22, uds_types.NRC_REQUEST_OUT_OF_RANGE
-                )
-
-            if STATE.security_level < required_security_level(did):
-                # 权限不足：返回 SecurityAccessDenied
-                #
-                # 另一种可选设计是返回 0x31 以隐藏 DID 存在性（防枚举），
-                # 本实验刻意选择 0x33 使权限语义更清晰。
-                return uds_types.negative_response(
-                    0x22, uds_types.NRC_SECURITY_ACCESS_DENIED
-                )
-
-            payload.extend([request[offset], request[offset + 1]])
-            payload.extend(data)
-
-        return uds_types.positive_response(0x22, payload)
+        return service_read_data_by_identifier(request, STATE)
 
     # ============================================================
     # SecurityAccess (0x27)
