@@ -90,53 +90,62 @@ CF (连续帧): 21 ...  22 ...
 
 ## 3. ECU 模拟器
 
-### 3.1 文件
+### 3.1 主要文件
 
 | 文件 | 说明 |
 |---|---|
-| `ecu/ecu.py` | 虚拟 ECU 主程序：ISO-TP 收发 + UDS 服务分发 + 安全状态 |
+| `ecu/ecu.py` | **入口层**：SocketCAN / ISO-TP、运行时依赖、兼容 facade（不含 UDS 业务逻辑） |
+| `ecu/uds_server.py` | **UDS 协议层**：`EcuState`、服务 handler、registry、dispatcher |
+| `ecu/uds_types.py` | 协议常量与响应构造（零依赖） |
 | `ecu/did_database.py` | DID 数据库（DID → 数据字节）与受保护 DID 标记 |
 | `ecu/keygen.py` | 教学用 seed/key 算法（**不依赖 CAN / ISO-TP**） |
 
-`keygen.py` 单独成文件的原因：它没有任何第三方依赖，
-因此诊断客户端与测试可以只 `import keygen` 而无需拖入 ISO-TP 依赖，
-算法也能脱离 CAN 独立测试。
+各文件的完整职责边界与依赖方向见 **第 14 节 架构**。
+
+`keygen.py` 与 `uds_types.py` 都单独成文件的原因相同：它们没有任何第三方依赖，
+因此诊断客户端与测试可以只 `import` 它们而无需拖入 ISO-TP 依赖，
+算法与常量也能脱离 CAN 独立测试。
 
 ### 3.2 服务分发逻辑
 
-`ecu/ecu.py` 的核心是纯函数：
+服务分发（dispatch）不在 `ecu.py`，而在 `ecu/uds_server.py`：
 
 ```python
-def handle_uds_request(request: bytes) -> bytes:
+# ecu/uds_server.py
+def handle_uds_request(request, state, *, services=None) -> bytes:
     ...
 ```
 
-它**不依赖 CAN**，输入请求字节、输出响应字节。
-因此可以直接被单元测试调用（见第 8 节），这是本实验可测试性的关键设计。
+它**不依赖 CAN**：输入请求字节与 ECU 状态，输出响应字节。
+`ecu.py` 提供的是**入口包装**（把 0x27 所需的运行时依赖注入后转交），
+因此单元测试既可以直接调用 `ecu.handle_uds_request(request)`
+（见第 8 节），也可以在需要时绕过入口层直接测试协议层。
+这是本实验可测试性的关键设计。
 
 ### 3.3 会话状态与安全状态
 
-ECU 维护两组状态：
+运行时状态**不再是模块级全局变量**，而是集中在一个显式对象
+`uds_server.EcuState` 中，由单例 `uds_server.STATE` 持有（详见第 14.4 节）：
 
 ```python
-# 会话状态
-DEFAULT_SESSION = 0x01
-CURRENT_SESSION = DEFAULT_SESSION
-
-# 安全访问状态（详见第 6 节）
-CURRENT_SECURITY_LEVEL = SECURITY_LOCKED
-PENDING_SEED = None
-SEED_ISSUED_AT = None
-SEED_CONSUMED = False
-FAILED_ATTEMPTS = 0
-LOCKOUT_UNTIL = None
-SEED_COUNTER = 0
+# ecu/uds_server.py
+@dataclass
+class EcuState:
+    session           = SESSION_DEFAULT
+    security_level    = SECURITY_LOCKED
+    pending_seed      = None
+    seed_issued_at    = None
+    seed_consumed     = False
+    failed_attempts   = 0
+    lockout_until     = None
+    seed_counter      = 0
 ```
 
-- `0x10` 切换会话时更新 `CURRENT_SESSION`，并**清除解锁状态与 seed**
+- `0x10` 切换会话时更新 `STATE.session`，并**清除解锁状态与 seed**
 - `0x11 01`（hardReset）把会话复位回 `defaultSession`，同样清除解锁状态
 - 被拒绝的请求**不会**改变会话状态（已由测试覆盖）
 - **失败计数与锁定在会话切换 / 复位后保留**（本教学 ECU 的设计选择，见 6.4）
+- `ecu.STATE` 只是 `uds_server.STATE` 的 re-export，**不是第二份状态**
 
 ### 3.4 可配置项
 
@@ -868,7 +877,9 @@ uds-basic/
 ├── configs/
 │   └── uds.yaml             # 通信参数记录
 ├── ecu/
-│   ├── ecu.py               # 虚拟 ECU（ISO-TP 收发 + UDS 分发 + 安全状态）
+│   ├── ecu.py               # 入口层：transport / runtime 依赖 / 兼容 facade
+│   ├── uds_server.py        # 协议层：EcuState / handlers / registry / dispatcher
+│   ├── uds_types.py         # 协议常量 + 响应构造（零依赖）
 │   ├── did_database.py      # DID 数据库（含受保护 DID 标记）
 │   └── keygen.py            # 教学用 seed/key 算法（无 CAN 依赖）
 └── tests/
@@ -877,6 +888,9 @@ uds-basic/
     ├── test_keygen_unit.py  # keygen 算法测试（34 用例，无需 CAN）
     └── test_e2e_vcan.py     # vcan0 端到端测试（65 用例）
 ```
+
+> 注意：`ecu.py` 不是 UDS 业务实现层。协议实现位于 `uds_server.py`，
+> 二者边界见第 14 节。
 
 ---
 
@@ -898,15 +912,219 @@ uds-basic/
 - [x] 受保护 DID 的 Session × Security 权限矩阵与整体拒绝
 - [x] 教学用 seed/key 算法（公开常数、可复现、雪崩效应）
 - [x] ISO-TP 单帧 / 多帧分帧验证
+- [x] 显式 `EcuState`（8 字段）与单一事实源 `STATE`
+- [x] 静态服务 registry + 协议层 dispatcher
+- [x] transport / protocol 分层与单向依赖（`uds_server` 不反向依赖 `ecu`）
 - [x] 离线单元测试 104 PASS（ECU）+ 34 PASS（keygen）
 - [x] vcan0 端到端测试 65 PASS
-- [x] **三轮连续稳定性验证全部通过**
+- [x] **三轮连续稳定性验证全部通过**（见第 14.7 节）
 
 ---
 
-## 14. 后续扩展方向
+## 14. 架构（Architecture）
 
-### 14.1 协议能力
+> 本节描述 Phase 3 重构后的**实际**分层与依赖边界，与当前代码一一对应。
+
+### 14.1 分层职责
+
+| 层 | 文件 | 职责 | 不负责 |
+|---|---|---|---|
+| Entry / Transport | `ecu.py` | CAN / ISO-TP 收发、进程入口、运行时依赖持有、兼容 facade | UDS service business logic |
+| Protocol | `uds_server.py` | 状态、service handlers、registry、dispatcher | CAN / ISO-TP transport |
+| Protocol Types | `uds_types.py` | session / security / NRC 常量、response builders | runtime state |
+| DID Data | `did_database.py` | DID 数据与受保护 DID 标记 | transport、协议逻辑 |
+| Security Algorithm | `keygen.py` | seed / key 计算 | UDS dispatch、状态管理 |
+
+### 14.2 依赖方向
+
+```text
+ecu.py  ──>  uds_server.py  ──>  uds_types.py
+   │              │           ├─> did_database.py
+   │              │           └─> keygen.py
+   │              └──> keygen.py / uds_types.py / did_database.py
+   └──> uds_types.py / did_database.py / isotp / os / time
+
+uds_types.py / did_database.py / keygen.py  ──> （零依赖叶子模块）
+```
+
+关键约束（已由静态检查验证）：
+
+- `uds_server.py` **不 import `ecu.py`**（无反向依赖、无循环）
+- `uds_server.py` 单独 import 时不会拉入 `ecu` / `isotp` / `can`
+- `uds_server.py` **不含任何 transport 代码**：无 `import socket/can/isotp`、
+  无 `RX_ID` / `TX_ID` / `INTERFACE` / `os.environ`
+
+### 14.3 `ecu.py`：入口层（不是 UDS 业务实现层）
+
+`ecu.py` 当前承担四类职责：
+
+**① transport / entry**
+
+```text
+INTERFACE / RX_ID / TX_ID / _env_int()
+main()                          —— ISO-TP socket 绑定与收发生命周期
+```
+
+**② runtime dependency ownership**
+
+```text
+_now()                          —— 时钟（唯一 patch 目标）
+SECURITY_CONFIG                 —— 安全访问参数（含 UDS_LOCKOUT_SECONDS 派生）
+```
+
+这两项的职责是**持有并在进入协议层时转交**；它们不参与任何 UDS service 判定。
+`SECURITY_CONFIG` 以**原对象引用**传入协议层，不作 `dict()` / `.copy()` 快照。
+
+**③ 0x27 request-time dependency injection**
+
+```text
+_security_services()            —— 每次请求现场构造 SecurityAccess handler
+```
+
+`service_security_access()` 是纯函数，需要 `now` 与 `security_config` 两项运行时依赖。
+`_security_services()` 在**每次请求时**求值 `_now()` 并绑定进 handler，从而：
+
+- 保持测试中 `mock.patch.object(ecu, "_now", ...)` 的时钟注入语义仍然生效；
+- 避免 `uds_server.py` 反向依赖 `ecu.py`；
+- `uds_server._make_security_access_handler()` 只是**依赖绑定工厂**
+  （接收已求值的 `now` 与配置本体），**不是通用 transport 组件**。
+
+**④ compatibility facade**（见 14.5）
+
+> ⚠️ 注意：`ecu.py` 中**没有** service handler、没有 registry、
+> 没有 dispatch 分支、没有 NRC / response 组装。
+> 全部 UDS 业务逻辑位于 `uds_server.py`。
+
+### 14.4 `uds_server.py`：UDS 协议层
+
+| 组成 | 说明 |
+|---|---|
+| `EcuState` | 运行时状态对象，**恰好 8 个字段** |
+| `STATE` | 默认单例，**唯一事实源** |
+| `reset_security_state(state)` | 清除解锁与 seed 生命周期，保留失败计数与锁定 |
+| `required_security_level(did)` | DID → 所需安全等级 |
+| `service_diagnostic_session_control` | 0x10 handler |
+| `service_ecu_reset` | 0x11 handler |
+| `service_read_data_by_identifier` | 0x22 handler（含 DID 级权限与 all-or-nothing） |
+| `service_security_access` | 0x27 handler（纯函数，依赖以 keyword-only 传入） |
+| `_make_security_access_handler(now, security_config)` | 0x27 依赖绑定工厂 |
+| `SERVICES` | **静态** registry（仅 0x10 / 0x11 / 0x22） |
+| `handle_uds_request(request, state, *, services=None)` | 协议层 dispatcher |
+
+**`EcuState` 的 8 个字段**（当前实现，不多不少）：
+
+```text
+session          当前诊断会话
+security_level   当前安全等级
+pending_seed     已下发未使用的 seed
+seed_issued_at   seed 下发时刻
+seed_consumed    seed 是否已被成功消费（防重放）
+failed_attempts  连续失败次数
+lockout_until    锁定解除时刻
+seed_counter     seed 序号
+```
+
+> 当前**不包含** S3 定时器、`last_request_sid`、`unlocked_at`、
+> DTC 存储、请求上下文、clock 或 config —— 这些不是 Phase 3 的状态字段。
+
+**`STATE` 是唯一事实源**：不存在第二份模块级状态变量，
+也没有为了同步状态而建立的 module proxy / PEP 562 机制。
+
+### 14.5 `ecu.py` 兼容 facade
+
+为保持既有调用方与测试兼容，以下符号保留在 `ecu.py`。
+它们**不是**协议业务逻辑，也不是第二份实现：
+
+| 符号 | 性质 |
+|---|---|
+| `handle_uds_request(request)` | 入口包装：注入 0x27 依赖后转交 `uds_server.handle_uds_request` |
+| `STATE` | `uds_server.STATE` 的 **re-export / alias**（同一对象，非第二份状态） |
+| `reset_all_security_state()` | 测试专用 helper（清全部安全状态） |
+| `handle_uds_request_protocol` | 指向协议层 dispatcher 的显式别名 |
+| `DEFAULT_SESSION` | `uds_types.SESSION_DEFAULT` 的 **alias**（非重复定义） |
+| `SECURITY_LOCKED` | `uds_types.SECURITY_LOCKED` 的 **alias** |
+| `SECURITY_LEVEL1` | `uds_types.SECURITY_LEVEL1` 的 **alias** |
+
+### 14.6 Service registry 与 dispatcher
+
+静态 registry 定义在 `uds_server.py`，**只含三个服务**：
+
+```python
+SERVICES = {
+    0x10: service_diagnostic_session_control,
+    0x11: service_ecu_reset,
+    0x22: service_read_data_by_identifier,
+}
+```
+
+**`0x27` 不在静态 registry 中**。原因是它需要请求时依赖
+（`now` + `SECURITY_CONFIG`）：由 `ecu.py` 在每次请求时注入，
+与静态表合并后交给 dispatcher：
+
+```python
+services = {**uds_server.SERVICES, **ecu._security_services()}
+uds_server.handle_uds_request(request, STATE, services=services)
+```
+
+dispatcher 的判定顺序（与实现一致）：
+
+```text
+request
+  ↓
+空请求守卫（必须早于 request[0] 与查表）
+  ↓  b"" → 7F 00 13
+service = request[0]
+  ↓
+table = SERVICES if services is None else services
+  ↓
+handler = table.get(service)
+  ↓  miss → 7F <service> 11（回显请求 SID，不做长度检查）
+  ↓  hit  → handler(request, state)
+```
+
+### 14.7 验证基线（Phase 3 收尾实测）
+
+```text
+UDS Unit       104 PASS
+Keygen Unit     34 PASS
+E2E             65 PASS
+Healthcheck     31 PASS / 0 WARN / 0 FAIL
+```
+
+P9 阶段**连续执行 3 轮完整回归**，三轮结果逐项完全一致
+（104 / 34 / 65，healthcheck 31/0/0，退出码均为 0），
+并完成 transport / protocol 边界、依赖方向、`EcuState` 字段数、
+`STATE` 单一事实源与 rollback point 的静态验证。
+
+运行方式：
+
+```bash
+bash labs/vehicle/uds-basic/tests/run_tests.sh all   # 104 + 34 + 65
+bash scripts/healthcheck.sh                          # 环境 + 离线测试
+```
+
+### 14.8 Phase 3 架构重构说明
+
+Phase 3 完成的是一次**结构性重构**（行为保持不变）：
+
+```text
+- protocol constants centralized（uds_types.py）
+- response / NRC handling centralized
+- explicit EcuState introduced（替代 8 个模块级全局变量）
+- service handlers extracted into uds_server.py
+- service registry introduced
+- dispatcher moved into uds_server.py
+- ECU compatibility facade retained（ecu.py）
+- transport / protocol boundary verified
+```
+
+详细提交历史见 Git log（P1–P8 为独立可回滚提交），本文档不重复记录。
+
+---
+
+## 15. 后续扩展方向
+
+### 15.1 协议能力
 
 - `0x2E` WriteDataByIdentifier：DID 写入与权限校验（复用第 6 节权限模型）
 - `0x19` ReadDTCInformation：DTC 数据库与状态掩码
@@ -918,15 +1136,17 @@ uds-basic/
 - 功能寻址（`0x7DF`）与多 ECU 响应
 - 会话相关的服务权限（如非默认会话才允许 `0x2E`）
 
-### 14.2 状态机与架构
+### 15.2 状态机与架构
 
-- 把 `if/elif` 分发重构为**服务注册表 + 会话状态机**
-  （目前 4 个服务仍是 `if/elif` 链，加到第 5–6 个服务时应重构）
-- 把安全状态集中到 `EcuState` 对象，消除模块级全局变量
+- ✅ 已完成（Phase 3）：`if/elif` 分发 → **服务注册表 + dispatcher**
+  （见第 14.6 节）
+- ✅ 已完成（Phase 3）：安全状态集中到 `EcuState`，消除模块级全局变量
+  （见第 14.4 节）
+- 服务 handler 增加**会话级权限前置检查**（当前权限检查仍逐服务内联）
 - DID 数据库支持数据类型（ASCII / 数值 / 位域）与缩放
 - 多 ECU 拓扑（多对 CAN ID、网关模拟）
 
-### 14.3 安全测试
+### 15.3 安全测试
 
 - UDS Fuzzing：随机 SID / 长度 / DID 组合，监控异常与崩溃
 - **SecurityAccess 专项 Fuzzing**：随机 key、越界子功能、超长/超短 key、
@@ -935,7 +1155,7 @@ uds-basic/
 - CAN Fuzzing（配合 `labs/vehicle/can-basic`）
 - 基于本测试套件建立**回归基线**，确保 Fuzzing 前后行为一致
 
-### 14.4 工程化
+### 15.4 工程化
 
 - 建立 CI（本地 runner）自动跑离线测试（104 + 34 个用例，2 ms 完成）
 - 用 `cantools` + DBC 描述诊断报文，与 `can-basic` 实验打通
@@ -943,7 +1163,7 @@ uds-basic/
 
 ---
 
-## 15. 参考
+## 17. 参考
 
 - ISO 14229-1：UDS 应用层协议
 - ISO 15765-2：ISO-TP 传输层协议
