@@ -11,15 +11,16 @@ UDS Basic —— ECU 运行时状态与服务处理
     * ``service_ecu_reset``                   (0x11)
     * ``service_read_data_by_identifier``     (0x22)
     * ``service_security_access``             (0x27)
+- ``SERVICES``：静态服务注册表（**不含 0x27**）
+- ``_make_security_access_handler()``：为 0x27 绑定请求时依赖的工厂
+- ``handle_uds_request()``：协议层 dispatcher
 
-0x27 的时间与配置依赖由调用方显式传入（keyword-only 参数 ``now`` 与
-``security_config``），handler 内部**不调用任何时钟、不读取全局配置**，
-因此本模块可以完全不依赖 ``ecu.py``。
+0x27 的时间与配置依赖不进入静态注册表，而由 transport / 入口层在每次请求时
+通过 ``handle_uds_request(..., services=...)`` 注入；handler 内部
+**不调用任何时钟、不读取全局配置**，因此本模块可以完全不依赖 ``ecu.py``。
 
 刻意**尚未**包含（留待后续阶段）：
 
-- ``SERVICES`` registry
-- ``handle_uds_request`` 分发
 - Permission 框架 / DID metadata
 
 依赖方向（单向，禁止反向）：
@@ -28,13 +29,13 @@ UDS Basic —— ECU 运行时状态与服务处理
                              ├─> did_database.py
                              └─> keygen.py
 
-设计目的：把服务实现从传输层剥离，使 handler 只依赖
-``(request, state[, 显式依赖])``，从而可以被独立测试，
+设计目的：把 UDS 协议层（状态、服务、registry、dispatch）从传输层剥离，
+使服务实现只依赖 ``(request, state[, 显式依赖])``，从而可以被独立测试，
 并支持多个 ECU 状态实例。
 """
 
 from dataclasses import dataclass
-from typing import Mapping, Optional
+from typing import Callable, Mapping, Optional
 
 import keygen
 import uds_types
@@ -44,12 +45,14 @@ __all__ = [
     "EcuState",
     "STATE",
     "SESSION_TIMING",
+    "SERVICES",
     "reset_security_state",
     "required_security_level",
     "service_diagnostic_session_control",
     "service_ecu_reset",
     "service_read_data_by_identifier",
     "service_security_access",
+    "handle_uds_request",
 ]
 
 
@@ -430,6 +433,94 @@ def service_security_access(
     state.failed_attempts = 0
 
     return uds_types.positive_response(0x27, bytes([0x02]))
+
+
+# ======================================================================
+# UDS 服务分发
+# ======================================================================
+
+
+def _make_security_access_handler(
+    now: float,
+    security_config: Mapping[str, int],
+) -> Callable[[bytes, EcuState], bytes]:
+    """
+    为 0x27 SecurityAccess 构造一个已绑定运行时依赖的 handler。
+
+    0x27 需要两项请求时依赖：时间快照 ``now`` 与安全配置 ``security_config``。
+    本工厂把它们绑定进一个标准形态 ``(request, state) -> bytes`` 的 handler，
+    使它可以与其它服务一样放进 registry。
+
+    约束：
+
+    - ``now`` 必须是**已经求值好的 float**，不是 callable、不是时钟函数。
+      传入 ``_now`` 或 ``time.monotonic`` 会在测试 patch 时产生陈旧引用，
+      使时间注入静默失效。
+    - ``security_config`` 必须是**原对象引用**，不得 copy/snapshot，
+      以保持"配置改动即时可见"的语义。
+    - 本工厂不调用任何时钟，也不读取任何模块级运行时状态。
+    """
+    def handler(request: bytes, state: EcuState) -> bytes:
+        return service_security_access(
+            request,
+            state,
+            now=now,
+            security_config=security_config,
+        )
+
+    return handler
+
+
+#: UDS 静态服务注册表：服务标识符 → 处理函数。
+#:
+#: 所有条目的调用形态统一为 ``handler(request, state) -> bytes``。
+#:
+#: 0x27 SecurityAccess **不在本表内**：它需要请求时依赖
+#: （now + SECURITY_CONFIG），由 transport / 入口层在每次请求时通过
+#: ``handle_uds_request(..., services=...)`` 注入
+#: （见 ``_make_security_access_handler``）。
+SERVICES = {
+    0x10: service_diagnostic_session_control,
+    0x11: service_ecu_reset,
+    0x22: service_read_data_by_identifier,
+}
+
+
+def handle_uds_request(
+    request: bytes,
+    state: EcuState,
+    *,
+    services: Optional[Mapping[int, Callable[[bytes, EcuState], bytes]]] = None,
+) -> bytes:
+    """
+    处理一条 UDS 请求，返回响应字节。
+
+    :param request: 原始 UDS 请求字节
+    :param state:   目标 ECU 状态（显式传入，不使用隐式全局状态）
+    :param services: 可选的服务表覆盖。为 None 时使用静态 ``SERVICES``；
+                     入口层借助它注入需要请求时依赖的服务条目（0x27）。
+    """
+    # 空请求必须在查表之前处理：空请求没有 SID 可取，
+    # 若先执行 request[0] 会 IndexError。此处固定回显 SID 0x00 + NRC 0x13。
+    if not request:
+        return uds_types.negative_response(
+            0x00, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+        )
+
+    service = request[0]
+
+    table = SERVICES if services is None else services
+
+    handler = table.get(service)
+
+    if handler is None:
+        # 未注册的 SID：回显请求 SID + NRC 0x11。
+        # 不额外做长度检查；尾随负载一并忽略。
+        return uds_types.negative_response(
+            service, uds_types.NRC_SERVICE_NOT_SUPPORTED
+        )
+
+    return handler(request, state)
 
 
 if __name__ == "__main__":

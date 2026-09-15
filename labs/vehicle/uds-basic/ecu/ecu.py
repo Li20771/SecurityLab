@@ -20,16 +20,13 @@ import time
 
 import isotp
 
+import uds_server
 import uds_types
 from did_database import PROTECTED_DIDS
 from uds_server import (
     STATE,
     EcuState,
     reset_security_state,
-    service_diagnostic_session_control,
-    service_ecu_reset,
-    service_read_data_by_identifier,
-    service_security_access,
 )
 
 
@@ -117,70 +114,62 @@ def reset_all_security_state() -> None:
 
 
 # ======================================================================
-# UDS 服务分发
+# UDS 服务入口（0x27 运行时依赖注入边界）
 # ======================================================================
 
 
-def _dispatch_security_access(request: bytes, state: EcuState) -> bytes:
+def _security_services() -> dict:
     """
-    0x27 SecurityAccess 的 dispatch adapter。
+    构造需要请求时依赖的服务条目。
 
-    ``service_security_access`` 是纯函数，需要两项运行时依赖：
-    时间快照 ``now`` 与安全配置 ``security_config``。本 adapter 是**唯一的
-    依赖注入点**，把它们补上，使 registry 中所有条目都统一为
-    ``(request, state) -> bytes``。
+    目前只有 0x27 SecurityAccess：它需要时间快照与安全配置。
 
-    约束（P5B/P6 设计要求，请勿"优化"）：
+    约束（P5B/P6/P7 设计要求，请勿"优化"）：
 
-    - ``_now()`` 必须**每次调用现场求值**，不得缓存结果，也不得缓存 callable。
-      测试通过 ``mock.patch.object(ecu, "_now", ...)`` 注入时钟，
-      只有现场按名字解析才能让 patch 生效。
-    - ``SECURITY_CONFIG`` 必须**原对象传入**，不得 copy 或重建，
+    - ``_now()`` 必须**每次调用现场求值**，不得缓存结果或缓存 callable。
+      测试通过 ``mock.patch.object(ecu, "_now", ...)`` 注入时钟；
+      只有本函数在每次请求时、于 ``ecu`` 命名空间内按名字解析才能让 patch 生效。
+    - ``SECURITY_CONFIG`` 必须**原对象引用**传入，不得 copy 或重建，
       以保持"配置改动即时可见"的语义。
     """
-    return service_security_access(
+    return {
+        0x27: uds_server._make_security_access_handler(
+            now=_now(),
+            security_config=SECURITY_CONFIG,
+        )
+    }
+
+
+def handle_uds_request(request: bytes) -> bytes:  # noqa: F811
+    """
+    UDS 请求入口（保持既有单参数签名）—— ECU 进程使用的默认入口。
+
+    本函数是 transport 层与协议层之间的**唯一依赖注入边界**：
+    它在每次请求时把 0x27 所需的运行时依赖（时间快照 + 安全配置）绑定好，
+    与 ``uds_server.SERVICES`` 静态表合并后交给协议层 dispatcher。
+
+    之所以需要这一层：0x27 依赖 ``_now()`` 与 ``SECURITY_CONFIG``，
+    而这两者按设计仍归属 ``ecu.py``（且测试通过 patch ``ecu._now`` 注入时钟），
+    因此注入必须发生在 ``ecu`` 命名空间内、且每次请求现场求值。
+    """
+    services = {
+        **uds_server.SERVICES,
+        **_security_services(),
+    }
+
+    return uds_server.handle_uds_request(
         request,
-        state,
-        now=_now(),
-        security_config=SECURITY_CONFIG,
+        STATE,
+        services=services,
     )
 
 
-#: UDS 服务注册表：服务标识符 → 处理函数。
+#: 协议层 dispatcher 的显式别名（不含运行时依赖注入）。
 #:
-#: 所有条目的调用形态统一为 ``handler(request, state) -> bytes``。
-#: 0x27 因为需要运行时依赖，经 ``_dispatch_security_access`` 适配后注册。
-#:
-#: SID 暂时使用字面量；常量统一（SID_*）留待后续独立阶段处理。
-SERVICES = {
-    0x10: service_diagnostic_session_control,
-    0x11: service_ecu_reset,
-    0x22: service_read_data_by_identifier,
-    0x27: _dispatch_security_access,
-}
-
-
-def handle_uds_request(request: bytes) -> bytes:
-    """处理一条 UDS 请求，返回响应字节。"""
-    # 空请求必须在查表之前处理：空请求没有 SID 可取，
-    # 若先执行 request[0] 会 IndexError。此处固定回显 SID 0x00 + NRC 0x13。
-    if not request:
-        return uds_types.negative_response(
-            0x00, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
-        )
-
-    service = request[0]
-
-    handler = SERVICES.get(service)
-
-    if handler is None:
-        # 未注册的 SID：回显请求 SID + NRC 0x11。
-        # 不额外做长度检查；尾随负载一并忽略。
-        return uds_types.negative_response(
-            service, uds_types.NRC_SERVICE_NOT_SUPPORTED
-        )
-
-    return handler(request, STATE)
+#: 与上面的 ``handle_uds_request`` 区分：
+#:   - ``handle_uds_request``        —— ECU 默认入口，注入 0x27 依赖
+#:   - ``handle_uds_request_protocol`` —— 协议层原始 dispatcher
+handle_uds_request_protocol = uds_server.handle_uds_request
 
 
 def main() -> None:
