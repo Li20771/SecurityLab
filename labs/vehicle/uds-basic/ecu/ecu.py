@@ -24,6 +24,7 @@ import uds_types
 from did_database import PROTECTED_DIDS
 from uds_server import (
     STATE,
+    EcuState,
     reset_security_state,
     service_diagnostic_session_control,
     service_ecu_reset,
@@ -119,8 +120,50 @@ def reset_all_security_state() -> None:
 # UDS 服务分发
 # ======================================================================
 
+
+def _dispatch_security_access(request: bytes, state: EcuState) -> bytes:
+    """
+    0x27 SecurityAccess 的 dispatch adapter。
+
+    ``service_security_access`` 是纯函数，需要两项运行时依赖：
+    时间快照 ``now`` 与安全配置 ``security_config``。本 adapter 是**唯一的
+    依赖注入点**，把它们补上，使 registry 中所有条目都统一为
+    ``(request, state) -> bytes``。
+
+    约束（P5B/P6 设计要求，请勿"优化"）：
+
+    - ``_now()`` 必须**每次调用现场求值**，不得缓存结果，也不得缓存 callable。
+      测试通过 ``mock.patch.object(ecu, "_now", ...)`` 注入时钟，
+      只有现场按名字解析才能让 patch 生效。
+    - ``SECURITY_CONFIG`` 必须**原对象传入**，不得 copy 或重建，
+      以保持"配置改动即时可见"的语义。
+    """
+    return service_security_access(
+        request,
+        state,
+        now=_now(),
+        security_config=SECURITY_CONFIG,
+    )
+
+
+#: UDS 服务注册表：服务标识符 → 处理函数。
+#:
+#: 所有条目的调用形态统一为 ``handler(request, state) -> bytes``。
+#: 0x27 因为需要运行时依赖，经 ``_dispatch_security_access`` 适配后注册。
+#:
+#: SID 暂时使用字面量；常量统一（SID_*）留待后续独立阶段处理。
+SERVICES = {
+    0x10: service_diagnostic_session_control,
+    0x11: service_ecu_reset,
+    0x22: service_read_data_by_identifier,
+    0x27: _dispatch_security_access,
+}
+
+
 def handle_uds_request(request: bytes) -> bytes:
     """处理一条 UDS 请求，返回响应字节。"""
+    # 空请求必须在查表之前处理：空请求没有 SID 可取，
+    # 若先执行 request[0] 会 IndexError。此处固定回显 SID 0x00 + NRC 0x13。
     if not request:
         return uds_types.negative_response(
             0x00, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
@@ -128,39 +171,16 @@ def handle_uds_request(request: bytes) -> bytes:
 
     service = request[0]
 
-    # ============================================================
-    # DiagnosticSessionControl (0x10)
-    # ============================================================
-    if service == 0x10:
-        return service_diagnostic_session_control(request, STATE)
+    handler = SERVICES.get(service)
 
-    # ============================================================
-    # ECUReset (0x11)
-    # ============================================================
-    if service == 0x11:
-        return service_ecu_reset(request, STATE)
-
-    # ============================================================
-    # ReadDataByIdentifier (0x22)
-    # ============================================================
-    if service == 0x22:
-        return service_read_data_by_identifier(request, STATE)
-
-    # ============================================================
-    # SecurityAccess (0x27)
-    # ============================================================
-    if service == 0x27:
-        return service_security_access(
-            request,
-            STATE,
-            now=_now(),
-            security_config=SECURITY_CONFIG,
+    if handler is None:
+        # 未注册的 SID：回显请求 SID + NRC 0x11。
+        # 不额外做长度检查；尾随负载一并忽略。
+        return uds_types.negative_response(
+            service, uds_types.NRC_SERVICE_NOT_SUPPORTED
         )
 
-    # ============================================================
-    # Service not supported
-    # ============================================================
-    return uds_types.negative_response(service, uds_types.NRC_SERVICE_NOT_SUPPORTED)
+    return handler(request, STATE)
 
 
 def main() -> None:
