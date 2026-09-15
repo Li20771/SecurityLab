@@ -99,7 +99,7 @@ class UdsTestCase(unittest.TestCase):
     def setUp(self) -> None:
         import ecu
 
-        ecu.CURRENT_SESSION = DEFAULT_SESSION
+        ecu.STATE.session = DEFAULT_SESSION
         ecu.reset_all_security_state()
 
     # ---- 断言辅助 ----
@@ -168,7 +168,7 @@ class TestDiagnosticSessionControl(UdsTestCase):
 
         handle_uds_request(bytes([0x10, 0x03]))
 
-        self.assertEqual(ecu.CURRENT_SESSION, 0x03)
+        self.assertEqual(ecu.STATE.session, 0x03)
 
     def test_unsupported_session_type(self) -> None:
         """10 04 -> 7F 10 12 SubFunctionNotSupported"""
@@ -201,7 +201,7 @@ class TestDiagnosticSessionControl(UdsTestCase):
         handle_uds_request(bytes([0x10, 0x03]))
         handle_uds_request(bytes([0x10, 0x7F]))
 
-        self.assertEqual(ecu.CURRENT_SESSION, 0x03)
+        self.assertEqual(ecu.STATE.session, 0x03)
 
 
 # ======================================================================
@@ -223,10 +223,10 @@ class TestEcuReset(UdsTestCase):
         import ecu
 
         handle_uds_request(bytes([0x10, 0x03]))
-        self.assertEqual(ecu.CURRENT_SESSION, 0x03)
+        self.assertEqual(ecu.STATE.session, 0x03)
 
         handle_uds_request(bytes([0x11, 0x01]))
-        self.assertEqual(ecu.CURRENT_SESSION, DEFAULT_SESSION)
+        self.assertEqual(ecu.STATE.session, DEFAULT_SESSION)
 
     def test_unsupported_reset_type_key_off_on(self) -> None:
         """11 02 -> 7F 11 12（keyOffOnReset 未实现）"""
@@ -275,7 +275,7 @@ class TestEcuReset(UdsTestCase):
         handle_uds_request(bytes([0x10, 0x03]))
         handle_uds_request(bytes([0x11, 0x02]))
 
-        self.assertEqual(ecu.CURRENT_SESSION, 0x03)
+        self.assertEqual(ecu.STATE.session, 0x03)
 
 
 # ======================================================================
@@ -613,19 +613,19 @@ class TestSecurityAccessRequestSeed(SecurityAccessTestCase):
 
         seed = self.get_seed()
 
-        self.assertEqual(ecu.PENDING_SEED, seed)
-        self.assertIsNotNone(ecu.SEED_ISSUED_AT)
-        self.assertFalse(ecu.SEED_CONSUMED)
+        self.assertEqual(ecu.STATE.pending_seed, seed)
+        self.assertIsNotNone(ecu.STATE.seed_issued_at)
+        self.assertFalse(ecu.STATE.seed_consumed)
 
     def test_seed_counter_increments(self) -> None:
         import ecu
 
         self.get_seed()
-        first_counter = ecu.SEED_COUNTER
+        first_counter = ecu.STATE.seed_counter
 
         self.get_seed()
 
-        self.assertEqual(ecu.SEED_COUNTER, first_counter + 1)
+        self.assertEqual(ecu.STATE.seed_counter, first_counter + 1)
 
     def test_second_request_invalidates_old_seed(self) -> None:
         """重新请求 seed 后，旧 seed 对应的 key 必须失效。"""
@@ -667,28 +667,28 @@ class TestSecurityAccessSendKey(SecurityAccessTestCase):
 
         self.unlock()
 
-        self.assertEqual(ecu.CURRENT_SECURITY_LEVEL, ecu.SECURITY_LEVEL1)
+        self.assertEqual(ecu.STATE.security_level, ecu.SECURITY_LEVEL1)
 
     def test_correct_key_clears_pending_seed(self) -> None:
         import ecu
 
         self.unlock()
 
-        self.assertIsNone(ecu.PENDING_SEED)
-        self.assertTrue(ecu.SEED_CONSUMED)
+        self.assertIsNone(ecu.STATE.pending_seed)
+        self.assertTrue(ecu.STATE.seed_consumed)
 
     def test_correct_key_resets_failed_attempts(self) -> None:
         import ecu
 
         seed = self.get_seed()
         self.send_key(self.wrong_key_for(seed))
-        self.assertGreater(ecu.FAILED_ATTEMPTS, 0)
+        self.assertGreater(ecu.STATE.failed_attempts, 0)
 
         self.get_seed()
-        seed = ecu.PENDING_SEED
+        seed = ecu.STATE.pending_seed
         self.send_key(keygen.derive_key(seed))
 
-        self.assertEqual(ecu.FAILED_ATTEMPTS, 0)
+        self.assertEqual(ecu.STATE.failed_attempts, 0)
 
     def test_wrong_key_returns_invalid_key(self) -> None:
         """错误 key -> 7F 27 35"""
@@ -706,17 +706,17 @@ class TestSecurityAccessSendKey(SecurityAccessTestCase):
         seed = self.get_seed()
         self.send_key(self.wrong_key_for(seed))
 
-        self.assertEqual(ecu.CURRENT_SECURITY_LEVEL, ecu.SECURITY_LOCKED)
+        self.assertEqual(ecu.STATE.security_level, ecu.SECURITY_LOCKED)
 
     def test_wrong_key_increments_failed_attempts(self) -> None:
         import ecu
 
-        self.assertEqual(ecu.FAILED_ATTEMPTS, 0)
+        self.assertEqual(ecu.STATE.failed_attempts, 0)
 
         seed = self.get_seed()
         self.send_key(self.wrong_key_for(seed))
 
-        self.assertEqual(ecu.FAILED_ATTEMPTS, 1)
+        self.assertEqual(ecu.STATE.failed_attempts, 1)
 
     def test_all_zero_key_rejected(self) -> None:
         self.get_seed()
@@ -783,7 +783,7 @@ class TestSecurityAccessSequence(SecurityAccessTestCase):
         """seed 在到期前 1 秒仍然有效（边界验证）。"""
         seed = self.get_seed()
 
-        issued_at = ecu_module.SEED_ISSUED_AT
+        issued_at = ecu_module.STATE.seed_issued_at
         almost_expired = (
             issued_at + ecu_module.SECURITY_CONFIG["seed_expiry_seconds"] - 1
         )
@@ -812,15 +812,15 @@ class TestSecurityAccessAttemptLimit(SecurityAccessTestCase):
     def test_lockout_until_is_set_on_limit(self) -> None:
         import ecu
 
-        self.assertIsNone(ecu.LOCKOUT_UNTIL)
+        self.assertIsNone(ecu.STATE.lockout_until)
 
         for _ in range(ecu.SECURITY_CONFIG["max_attempts"]):
             seed = self.get_seed()
             self.send_key(self.wrong_key_for(seed))
 
-        self.assertIsNotNone(ecu.LOCKOUT_UNTIL)
+        self.assertIsNotNone(ecu.STATE.lockout_until)
         self.assertEqual(
-            ecu.FAILED_ATTEMPTS, ecu.SECURITY_CONFIG["max_attempts"]
+            ecu.STATE.failed_attempts, ecu.SECURITY_CONFIG["max_attempts"]
         )
 
     def test_any_0x27_during_lockout_returns_37(self) -> None:
@@ -869,7 +869,7 @@ class TestSecurityAccessAttemptLimit(SecurityAccessTestCase):
         self._trigger_lockout()
 
         expired = (
-            ecu_module.LOCKOUT_UNTIL
+            ecu_module.STATE.lockout_until
             + ecu_module.SECURITY_CONFIG["lockout_seconds"]
             + 1
         )
@@ -878,8 +878,8 @@ class TestSecurityAccessAttemptLimit(SecurityAccessTestCase):
             response = self.request_seed()
 
         self.assertPositiveResponse(response, POS_SECURITY_ACCESS)
-        self.assertIsNone(ecu_module.LOCKOUT_UNTIL)
-        self.assertEqual(ecu_module.FAILED_ATTEMPTS, 0)
+        self.assertIsNone(ecu_module.STATE.lockout_until)
+        self.assertEqual(ecu_module.STATE.failed_attempts, 0)
 
     def test_failed_attempts_reset_after_lockout(self) -> None:
         import ecu
@@ -887,13 +887,13 @@ class TestSecurityAccessAttemptLimit(SecurityAccessTestCase):
         self._trigger_lockout()
 
         expired = (
-            ecu.LOCKOUT_UNTIL + ecu.SECURITY_CONFIG["lockout_seconds"] + 1
+            ecu.STATE.lockout_until + ecu.SECURITY_CONFIG["lockout_seconds"] + 1
         )
 
         with mock.patch.object(ecu, "_now", return_value=expired):
             self.request_seed()
 
-        self.assertEqual(ecu.FAILED_ATTEMPTS, 0)
+        self.assertEqual(ecu.STATE.failed_attempts, 0)
 
     def _trigger_lockout(self) -> None:
         """连续用错误 key 触发锁定。"""
@@ -1025,11 +1025,11 @@ class TestSecurityStateTransitions(SecurityAccessTestCase):
         import ecu
 
         self.unlock()
-        self.assertEqual(ecu.CURRENT_SECURITY_LEVEL, ecu.SECURITY_LEVEL1)
+        self.assertEqual(ecu.STATE.security_level, ecu.SECURITY_LEVEL1)
 
         handle_uds_request(bytes([0x10, 0x01]))
 
-        self.assertEqual(ecu.CURRENT_SECURITY_LEVEL, ecu.SECURITY_LOCKED)
+        self.assertEqual(ecu.STATE.security_level, ecu.SECURITY_LOCKED)
 
     def test_session_switch_to_extended_locks(self) -> None:
         """解锁 -> 10 03 -> security level 必须回到 LOCKED。"""
@@ -1037,11 +1037,11 @@ class TestSecurityStateTransitions(SecurityAccessTestCase):
 
         handle_uds_request(bytes([0x10, 0x03]))
         self.unlock()
-        self.assertEqual(ecu.CURRENT_SECURITY_LEVEL, ecu.SECURITY_LEVEL1)
+        self.assertEqual(ecu.STATE.security_level, ecu.SECURITY_LEVEL1)
 
         handle_uds_request(bytes([0x10, 0x03]))
 
-        self.assertEqual(ecu.CURRENT_SECURITY_LEVEL, ecu.SECURITY_LOCKED)
+        self.assertEqual(ecu.STATE.security_level, ecu.SECURITY_LOCKED)
 
     def test_session_switch_to_programming_locks(self) -> None:
         """
@@ -1057,18 +1057,18 @@ class TestSecurityStateTransitions(SecurityAccessTestCase):
 
         handle_uds_request(bytes([0x10, 0x02]))
 
-        self.assertEqual(ecu.CURRENT_SECURITY_LEVEL, ecu.SECURITY_LOCKED)
+        self.assertEqual(ecu.STATE.security_level, ecu.SECURITY_LOCKED)
 
     def test_session_switch_clears_pending_seed(self) -> None:
         import ecu
 
         self.get_seed()
-        self.assertIsNotNone(ecu.PENDING_SEED)
+        self.assertIsNotNone(ecu.STATE.pending_seed)
 
         handle_uds_request(bytes([0x10, 0x03]))
 
-        self.assertIsNone(ecu.PENDING_SEED)
-        self.assertFalse(ecu.SEED_CONSUMED)
+        self.assertIsNone(ecu.STATE.pending_seed)
+        self.assertFalse(ecu.STATE.seed_consumed)
 
     def test_replay_after_session_switch_is_rejected(self) -> None:
         """解锁后切会话，再重放原 key -> 7F 27 24。"""
@@ -1092,8 +1092,8 @@ class TestSecurityStateTransitions(SecurityAccessTestCase):
 
         handle_uds_request(bytes([0x11, 0x01]))
 
-        self.assertEqual(ecu.CURRENT_SECURITY_LEVEL, ecu.SECURITY_LOCKED)
-        self.assertEqual(ecu.CURRENT_SESSION, ecu.DEFAULT_SESSION)
+        self.assertEqual(ecu.STATE.security_level, ecu.SECURITY_LOCKED)
+        self.assertEqual(ecu.STATE.session, ecu.DEFAULT_SESSION)
 
     def test_ecu_reset_clears_pending_seed(self) -> None:
         import ecu
@@ -1102,8 +1102,8 @@ class TestSecurityStateTransitions(SecurityAccessTestCase):
 
         handle_uds_request(bytes([0x11, 0x01]))
 
-        self.assertIsNone(ecu.PENDING_SEED)
-        self.assertFalse(ecu.SEED_CONSUMED)
+        self.assertIsNone(ecu.STATE.pending_seed)
+        self.assertFalse(ecu.STATE.seed_consumed)
 
     def test_lockout_survives_ecu_reset(self) -> None:
         """
@@ -1121,12 +1121,12 @@ class TestSecurityStateTransitions(SecurityAccessTestCase):
             seed = self.get_seed()
             self.send_key(self.wrong_key_for(seed))
 
-        attempts_before = ecu.FAILED_ATTEMPTS
+        attempts_before = ecu.STATE.failed_attempts
 
         handle_uds_request(bytes([0x11, 0x01]))
 
-        self.assertEqual(ecu.FAILED_ATTEMPTS, attempts_before)
-        self.assertIsNotNone(ecu.LOCKOUT_UNTIL)
+        self.assertEqual(ecu.STATE.failed_attempts, attempts_before)
+        self.assertIsNotNone(ecu.STATE.lockout_until)
         self.assertNegativeResponse(
             self.request_seed(),
             SID_SECURITY_ACCESS,
@@ -1139,11 +1139,11 @@ class TestSecurityStateTransitions(SecurityAccessTestCase):
 
         seed = self.get_seed()
         self.send_key(self.wrong_key_for(seed))
-        attempts_before = ecu.FAILED_ATTEMPTS
+        attempts_before = ecu.STATE.failed_attempts
 
         handle_uds_request(bytes([0x10, 0x03]))
 
-        self.assertEqual(ecu.FAILED_ATTEMPTS, attempts_before)
+        self.assertEqual(ecu.STATE.failed_attempts, attempts_before)
 
 
 # ======================================================================
