@@ -20,7 +20,6 @@ import time
 
 import isotp
 
-import keygen
 import uds_types
 from did_database import PROTECTED_DIDS
 from uds_server import (
@@ -29,6 +28,7 @@ from uds_server import (
     service_diagnostic_session_control,
     service_ecu_reset,
     service_read_data_by_identifier,
+    service_security_access,
 )
 
 
@@ -116,129 +116,6 @@ def reset_all_security_state() -> None:
 
 
 # ======================================================================
-# 0x27 SecurityAccess
-# ======================================================================
-
-def _security_access(request: bytes) -> bytes:
-    """
-    处理 0x27 SecurityAccess。
-
-    NRC 判定顺序（严格遵守）：
-
-        1. 基础格式        → 0x13
-        2. 子功能          → 0x12
-        3. 子功能对应长度   → 0x13
-        4. lockout         → 0x37
-        5. session/security 条件 → 0x22
-        6. sequence        → 0x24
-        7. key             → 0x35 / 0x36
-        8. 肯定响应
-    """
-    # ---- 1. 基础格式：必须能取到子功能字节 ----
-    if len(request) < 2:
-        return uds_types.negative_response(
-            0x27, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
-        )
-
-    subfunction = request[1]
-
-    # ---- 2. 子功能：本实验只实现 Level 1（0x01 / 0x02）----
-    if subfunction not in (0x01, 0x02):
-        return uds_types.negative_response(
-            0x27, uds_types.NRC_SUBFUNCTION_NOT_SUPPORTED
-        )
-
-    # ---- 3. 子功能对应长度 ----
-    if subfunction == 0x01:
-        # RequestSeed: 27 <subfunction>
-        if len(request) != 2:
-            return uds_types.negative_response(
-                0x27, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
-            )
-    else:
-        # SendKey: 27 <subfunction> <key:4>
-        if len(request) != 2 + keygen.KEY_LENGTH:
-            return uds_types.negative_response(
-                0x27, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
-            )
-
-    # ---- 4. lockout：锁定期间任何 0x27 请求都返回 0x37 ----
-    now = _now()
-
-    if STATE.lockout_until is not None:
-        if now < STATE.lockout_until:
-            return uds_types.negative_response(
-                0x27, uds_types.NRC_REQUIRED_TIME_DELAY_NOT_EXPIRED
-            )
-
-        # 锁定到期：清零惩罚状态，允许重新尝试
-        STATE.lockout_until = None
-        STATE.failed_attempts = 0
-
-    # ---- 5. session / security 条件 ----
-    if subfunction == 0x01 and STATE.security_level != SECURITY_LOCKED:
-        # 已解锁时再次请求 seed 属于条件不满足
-        return uds_types.negative_response(
-            0x27, uds_types.NRC_CONDITIONS_NOT_CORRECT
-        )
-
-    # ---- RequestSeed ----
-    if subfunction == 0x01:
-        seed = keygen.generate_seed(STATE.seed_counter, subfunction)
-        STATE.seed_counter += 1
-
-        STATE.pending_seed = seed
-        STATE.seed_issued_at = now
-        STATE.seed_consumed = False
-
-        return uds_types.positive_response(0x27, bytes([0x01]) + seed)
-
-    # ---- SendKey ----
-    # ---- 6. sequence ----
-    if STATE.pending_seed is None or STATE.seed_consumed:
-        # 要么从未请求 seed，要么 seed 已被成功消费（重放）
-        return uds_types.negative_response(
-            0x27, uds_types.NRC_REQUEST_SEQUENCE_ERROR
-        )
-
-    if STATE.seed_issued_at is None or (
-        now - STATE.seed_issued_at > SECURITY_CONFIG["seed_expiry_seconds"]
-    ):
-        # seed 超时作废
-        return uds_types.negative_response(
-            0x27, uds_types.NRC_REQUEST_SEQUENCE_ERROR
-        )
-
-    # ---- 7. key ----
-    key = bytes(request[2:])
-
-    if not keygen.verify_key(STATE.pending_seed, key):
-        STATE.failed_attempts += 1
-
-        if STATE.failed_attempts >= SECURITY_CONFIG["max_attempts"]:
-            # 达到上限：设置锁定，本次返回 0x36
-            STATE.lockout_until = now + SECURITY_CONFIG["lockout_seconds"]
-            STATE.pending_seed = None
-            STATE.seed_issued_at = None
-            STATE.seed_consumed = False
-
-            return uds_types.negative_response(
-                0x27, uds_types.NRC_EXCEED_NUMBER_OF_ATTEMPTS
-            )
-
-        return uds_types.negative_response(0x27, uds_types.NRC_INVALID_KEY)
-
-    # ---- 8. 肯定响应 ----
-    STATE.security_level = SECURITY_LEVEL1
-    STATE.seed_consumed = True
-    STATE.pending_seed = None
-    STATE.seed_issued_at = None
-    STATE.failed_attempts = 0
-
-    return uds_types.positive_response(0x27, bytes([0x02]))
-
-
-# ======================================================================
 # UDS 服务分发
 # ======================================================================
 
@@ -273,7 +150,12 @@ def handle_uds_request(request: bytes) -> bytes:
     # SecurityAccess (0x27)
     # ============================================================
     if service == 0x27:
-        return _security_access(request)
+        return service_security_access(
+            request,
+            STATE,
+            now=_now(),
+            security_config=SECURITY_CONFIG,
+        )
 
     # ============================================================
     # Service not supported

@@ -6,17 +6,18 @@ UDS Basic —— ECU 运行时状态与服务处理
 
 - ``EcuState`` / ``STATE``：ECU 的跨请求运行时状态
 - ``reset_security_state()`` / ``required_security_level()``：状态与权限 helper
-- 三个服务处理函数：
+- 四个服务处理函数：
     * ``service_diagnostic_session_control``  (0x10)
     * ``service_ecu_reset``                   (0x11)
     * ``service_read_data_by_identifier``     (0x22)
+    * ``service_security_access``             (0x27)
+
+0x27 的时间与配置依赖由调用方显式传入（keyword-only 参数 ``now`` 与
+``security_config``），handler 内部**不调用任何时钟、不读取全局配置**，
+因此本模块可以完全不依赖 ``ecu.py``。
 
 刻意**尚未**包含（留待后续阶段）：
 
-- ``service_security_access`` (0x27)
-  —— 它依赖 ``ecu.py`` 中的 ``_now()`` 与 ``SECURITY_CONFIG``，
-     而 ``uds_server`` 不能反向 import ``ecu``（会形成循环依赖），
-     因此 0x27 暂时保留在 ``ecu.py``，留待专门的依赖解耦阶段处理。
 - ``SERVICES`` registry
 - ``handle_uds_request`` 分发
 - Permission 框架 / DID metadata
@@ -24,15 +25,18 @@ UDS Basic —— ECU 运行时状态与服务处理
 依赖方向（单向，禁止反向）：
 
     ecu.py ──> uds_server.py ──> uds_types.py
-                             └─> did_database.py
+                             ├─> did_database.py
+                             └─> keygen.py
 
 设计目的：把服务实现从传输层剥离，使 handler 只依赖
-``(request, state)``，从而可以被独立测试，并支持多个 ECU 状态实例。
+``(request, state[, 显式依赖])``，从而可以被独立测试，
+并支持多个 ECU 状态实例。
 """
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Mapping, Optional
 
+import keygen
 import uds_types
 from did_database import DID_DATABASE, PROTECTED_DIDS
 
@@ -45,6 +49,7 @@ __all__ = [
     "service_diagnostic_session_control",
     "service_ecu_reset",
     "service_read_data_by_identifier",
+    "service_security_access",
 ]
 
 
@@ -288,6 +293,143 @@ def service_read_data_by_identifier(request: bytes, state: EcuState) -> bytes:
         payload.extend(data)
 
     return uds_types.positive_response(0x22, payload)
+
+
+# ======================================================================
+# 0x27 SecurityAccess
+# ======================================================================
+
+
+def service_security_access(
+    request: bytes,
+    state: EcuState,
+    *,
+    now: float,
+    security_config: Mapping[str, int],
+) -> bytes:
+    """
+    处理 0x27 SecurityAccess。
+
+    NRC 判定顺序（严格遵守）：
+
+        1. 基础格式        → 0x13
+        2. 子功能          → 0x12
+        3. 子功能对应长度   → 0x13
+        4. lockout         → 0x37
+        5. session/security 条件 → 0x22
+        6. sequence        → 0x24
+        7. key             → 0x35 / 0x36
+        8. 肯定响应
+
+    本函数是**纯函数**：不读取任何模块级状态、不调用时钟、不读取全局配置。
+    两项外部依赖由调用方显式传入：
+
+    :param now: 本次请求开始处理时的时间快照（float 值，**不是** callable）。
+                由 ``ecu.py`` 在分派时现场求值，使测试可以注入时钟。
+    :param security_config: 安全访问参数（``seed_expiry_seconds`` /
+                ``max_attempts`` / ``lockout_seconds``）。
+                与 ECU 使用**同一个 dict 对象**，以便配置改动即时可见。
+    """
+    # ---- 1. 基础格式：必须能取到子功能字节 ----
+    if len(request) < 2:
+        return uds_types.negative_response(
+            0x27, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+        )
+
+    subfunction = request[1]
+
+    # ---- 2. 子功能：本实验只实现 Level 1（0x01 / 0x02）----
+    if subfunction not in (0x01, 0x02):
+        return uds_types.negative_response(
+            0x27, uds_types.NRC_SUBFUNCTION_NOT_SUPPORTED
+        )
+
+    # ---- 3. 子功能对应长度 ----
+    if subfunction == 0x01:
+        # RequestSeed: 27 <subfunction>
+        if len(request) != 2:
+            return uds_types.negative_response(
+                0x27, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+            )
+    else:
+        # SendKey: 27 <subfunction> <key:4>
+        if len(request) != 2 + keygen.KEY_LENGTH:
+            return uds_types.negative_response(
+                0x27, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+            )
+
+    # ---- 4. lockout：锁定期间任何 0x27 请求都返回 0x37 ----
+    if state.lockout_until is not None:
+        if now < state.lockout_until:
+            return uds_types.negative_response(
+                0x27, uds_types.NRC_REQUIRED_TIME_DELAY_NOT_EXPIRED
+            )
+
+        # 锁定到期：清零惩罚状态，允许重新尝试
+        state.lockout_until = None
+        state.failed_attempts = 0
+
+    # ---- 5. session / security 条件 ----
+    if subfunction == 0x01 and state.security_level != uds_types.SECURITY_LOCKED:
+        # 已解锁时再次请求 seed 属于条件不满足
+        return uds_types.negative_response(
+            0x27, uds_types.NRC_CONDITIONS_NOT_CORRECT
+        )
+
+    # ---- RequestSeed ----
+    if subfunction == 0x01:
+        seed = keygen.generate_seed(state.seed_counter, subfunction)
+        state.seed_counter += 1
+
+        state.pending_seed = seed
+        state.seed_issued_at = now
+        state.seed_consumed = False
+
+        return uds_types.positive_response(0x27, bytes([0x01]) + seed)
+
+    # ---- SendKey ----
+    # ---- 6. sequence ----
+    if state.pending_seed is None or state.seed_consumed:
+        # 要么从未请求 seed，要么 seed 已被成功消费（重放）
+        return uds_types.negative_response(
+            0x27, uds_types.NRC_REQUEST_SEQUENCE_ERROR
+        )
+
+    if state.seed_issued_at is None or (
+        now - state.seed_issued_at > security_config["seed_expiry_seconds"]
+    ):
+        # seed 超时作废
+        return uds_types.negative_response(
+            0x27, uds_types.NRC_REQUEST_SEQUENCE_ERROR
+        )
+
+    # ---- 7. key ----
+    key = bytes(request[2:])
+
+    if not keygen.verify_key(state.pending_seed, key):
+        state.failed_attempts += 1
+
+        if state.failed_attempts >= security_config["max_attempts"]:
+            # 达到上限：设置锁定，本次返回 0x36
+            state.lockout_until = now + security_config["lockout_seconds"]
+            state.pending_seed = None
+            state.seed_issued_at = None
+            state.seed_consumed = False
+
+            return uds_types.negative_response(
+                0x27, uds_types.NRC_EXCEED_NUMBER_OF_ATTEMPTS
+            )
+
+        return uds_types.negative_response(0x27, uds_types.NRC_INVALID_KEY)
+
+    # ---- 8. 肯定响应 ----
+    state.security_level = uds_types.SECURITY_LEVEL1
+    state.seed_consumed = True
+    state.pending_seed = None
+    state.seed_issued_at = None
+    state.failed_attempts = 0
+
+    return uds_types.positive_response(0x27, bytes([0x02]))
 
 
 if __name__ == "__main__":
