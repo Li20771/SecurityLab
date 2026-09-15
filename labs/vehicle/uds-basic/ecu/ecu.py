@@ -13,6 +13,21 @@ UDS Basic —— 虚拟 ECU
 
 本程序只应绑定到 vcan0（虚拟 CAN）。不要指向真实 CAN 接口、
 真实 ECU 或真实车辆。默认接口为 vcan0，可用环境变量覆盖。
+
+模块职责（Phase 3 重构后的边界）：
+
+本模块是 **ECU 入口层（transport + entry + compatibility facade）**，
+不承载 UDS 业务逻辑。全部协议实现（状态机、服务 handler、registry、
+dispatcher、NRC/response 组装）位于 ``uds_server.py``。
+
+- transport / entry：``INTERFACE`` / ``RX_ID`` / ``TX_ID`` / ``main()``
+- runtime 依赖（归本模块持有，由入口层转交协议层）：
+  ``_now()`` / ``SECURITY_CONFIG``
+- compatibility facade（不承载 UDS business logic，仅供既有调用方/测试）：
+  ``handle_uds_request``（entry wrapper）、``STATE``（单例 re-export）、
+  ``reset_all_security_state``（测试 helper）、
+  ``DEFAULT_SESSION`` / ``SECURITY_LOCKED`` / ``SECURITY_LEVEL1``（uds_types 别名）
+- 0x27 依赖注入：``_security_services()``（每请求现场求值 ``_now()``）
 """
 
 import os
@@ -51,9 +66,9 @@ TX_ID = _env_int("UDS_TX_ID", 0x7E8)
 # 会话
 # ======================================================================
 
-#: defaultSession 常量（保留供 main() 与外部引用使用）。
+#: defaultSession 别名（保持 ecu.DEFAULT_SESSION 可用）。
 #: 会话支持集与 P2/P2* 参数已随 0x10 handler 迁移到 uds_server.py。
-DEFAULT_SESSION = 0x01
+DEFAULT_SESSION = uds_types.SESSION_DEFAULT
 
 # 运行时会话状态不再以模块级变量保存。
 # 唯一 source of truth 是 uds_server.STATE（EcuState 实例）：
@@ -78,9 +93,10 @@ SECURITY_CONFIG = {
     "seed_expiry_seconds": 5,   # seed 有效期（秒）
 }
 
-#: 安全等级常量（0x27 逻辑与测试断言使用）。
-SECURITY_LOCKED = 0x00
-SECURITY_LEVEL1 = 0x01
+#: 安全等级别名（保持 ecu.SECURITY_LOCKED / ecu.SECURITY_LEVEL1 可用）。
+#: 规范定义在 uds_types.py，此处不再重复数值。
+SECURITY_LOCKED = uds_types.SECURITY_LOCKED
+SECURITY_LEVEL1 = uds_types.SECURITY_LEVEL1
 
 
 def _now() -> float:
