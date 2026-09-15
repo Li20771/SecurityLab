@@ -9,6 +9,8 @@
 #
 #   2. vcan0 端到端测试  test_e2e_vcan.py
 #      通过真实 ISO-TP / SocketCAN 链路与虚拟 ECU 子进程通信
+#      以及 test_isotp_options_vcan.py：ISO-TP 传输参数（padding /
+#      stmin / blocksize / timeout）的在网实验矩阵
 #
 # 用法：
 #
@@ -130,6 +132,16 @@ run_e2e() {
     fi
 
     echo
+
+    if [ -f "$TESTS_DIR/test_isotp_options_vcan.py" ]; then
+        if "$PYTHON_BIN" "$TESTS_DIR/test_isotp_options_vcan.py"; then
+            ok "ISO-TP transport option tests passed"
+        else
+            fail "ISO-TP transport option tests failed"
+        fi
+
+        echo
+    fi
 }
 
 # ----------------------------------------------------------------------

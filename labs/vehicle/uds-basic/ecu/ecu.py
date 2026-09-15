@@ -21,6 +21,11 @@ UDS Basic —— 虚拟 ECU
 dispatcher、NRC/response 组装）位于 ``uds_server.py``。
 
 - transport / entry：``INTERFACE`` / ``RX_ID`` / ``TX_ID`` / ``main()``
+- transport 参数（Phase 4-P2 显式化，默认值保持内核默认行为）：
+  ``ISOTP_TX_PAD`` / ``ISOTP_RX_PAD`` / ``ISOTP_FC_STMIN`` /
+  ``ISOTP_FC_BLOCKSIZE`` / ``ISOTP_TX_STMIN`` / ``ISOTP_TIMEOUT`` /
+  ``_env_int_opt()`` / ``_env_duration_ns()`` / ``_env_float_opt()`` /
+  ``_isotp_socket_options()`` / ``apply_isotp_options()``
 - runtime 依赖（归本模块持有，由入口层转交协议层）：
   ``_now()`` / ``SECURITY_CONFIG``
 - compatibility facade（不承载 UDS business logic，仅供既有调用方/测试）：
@@ -32,6 +37,7 @@ dispatcher、NRC/response 组装）位于 ``uds_server.py``。
 
 import os
 import time
+from typing import Optional
 
 import isotp
 
@@ -55,11 +61,220 @@ def _env_int(name: str, default: int) -> int:
     return int(raw, 0)
 
 
+def _env_int_opt(name: str, minimum: int, maximum: int) -> Optional[int]:
+    """
+    读取可选的整数型环境变量，并做范围校验。
+
+    未设置（或空字符串）→ ``None``，语义是"保持内核默认行为"。
+    因此调用方必须把 ``None`` 与合法值 ``0`` 区别对待。
+
+    非法取值会**立即抛异常**（在模块导入期即启动时失败），
+    不会静默回退到默认值——否则实验参数写错时会产生难以察觉的偏差。
+    """
+    raw = os.environ.get(name)
+
+    if raw is None or raw.strip() == "":
+        return None
+
+    text = raw.strip()
+
+    try:
+        value = int(text, 0)
+    except ValueError:
+        raise ValueError(
+            f"环境变量 {name}={raw!r} 不是合法整数（示例：0xAA 或 170）"
+        ) from None
+
+    if not minimum <= value <= maximum:
+        raise ValueError(
+            f"环境变量 {name}={value} 超出允许范围 {minimum}–{maximum}"
+        )
+
+    return value
+
+
+def _env_duration_ns(name: str) -> Optional[int]:
+    """
+    读取可选的时长型环境变量，统一换算为**纳秒**。
+
+    ``UDS_ISOTP_TX_STMIN`` 对应内核 ``CAN_ISOTP_TX_STMIN``，单位是纳秒
+    （不是 ISO-TP 流控帧里那个单字节 STmin），因此这里用独立的后缀表。
+    支持 ``100us`` / ``2ms`` / ``1s``，不带单位则按纳秒解释。
+
+    未设置 → ``None``；非法取值立即抛异常。
+    """
+    raw = os.environ.get(name)
+
+    if raw is None or raw.strip() == "":
+        return None
+
+    compact = "".join(raw.split()).lower()
+
+    factor = 1
+
+    for suffix, suffix_ns in (
+        ("us", 1_000),
+        ("ms", 1_000_000),
+        ("s", 1_000_000_000),
+    ):
+        if compact.endswith(suffix):
+            factor = suffix_ns
+            compact = compact[: -len(suffix)]
+            break
+
+    if not compact:
+        raise ValueError(f"环境变量 {name}={raw!r} 缺少数字部分")
+
+    try:
+        value = int(compact, 0)
+    except ValueError:
+        raise ValueError(
+            f"环境变量 {name}={raw!r} 不是合法时长（示例：500、100us、2ms、1s）"
+        ) from None
+
+    if value < 0:
+        raise ValueError(f"环境变量 {name}={raw!r} 不能为负数")
+
+    nanos = value * factor
+
+    if nanos > 0xFFFFFFFF:
+        raise ValueError(
+            f"环境变量 {name}={raw!r} = {nanos} ns 超过 32-bit 上限 "
+            f"(0xFFFFFFFF ns ≈ 4.29 s)"
+        )
+
+    return nanos
+
+
+def _env_float_opt(name: str, minimum: float) -> Optional[float]:
+    """
+    读取可选的浮点型环境变量，并做下界校验。
+
+    未设置（或空字符串）→ ``None``，语义是"保持内核默认行为"
+    （对 socket 超时而言即阻塞等待）。
+    """
+    raw = os.environ.get(name)
+
+    if raw is None or raw.strip() == "":
+        return None
+
+    text = raw.strip()
+
+    try:
+        value = float(text)
+    except ValueError:
+        raise ValueError(
+            f"环境变量 {name}={raw!r} 不是合法数值（示例：2.0 或 0）"
+        ) from None
+
+    if value < minimum:
+        raise ValueError(f"环境变量 {name}={value} 不能小于 {minimum}")
+
+    return value
+
+
 # 默认值即为标准 11-bit 诊断寻址，保持原行为不变。
 # 允许用环境变量覆盖，便于多 ECU / 多通道实验。
 INTERFACE = os.environ.get("UDS_INTERFACE", "vcan0")
 RX_ID = _env_int("UDS_RX_ID", 0x7E0)
 TX_ID = _env_int("UDS_TX_ID", 0x7E8)
+
+
+# ======================================================================
+# ISO-TP 传输参数（Phase 4-P2：从"隐式依赖内核默认"变为"显式可配置"）
+# ======================================================================
+#
+# 设计要点（每一条都对应一个坑）：
+#
+# 1. **默认不变**：四个参数全部未设置时，``main()`` 不会调用
+#    set_opts()/set_fc_opts()，内核默认行为与改造前逐字节一致
+#    （单帧仍是 ``03 10 03``，不填充；FC 仍是 ``30 00 00``）。
+#
+# 2. **None ≠ 0**：``None`` 表示"不改动该选项"，``0`` 是合法取值
+#    （例如 STmin=0 表示无间隔要求）。因此下面只读取"是否显式设置"。
+#
+# 3. **两个方向的 STmin 不能合并**（这是最容易搞错的概念）：
+#
+#      UDS_ISOTP_FC_STMIN   本 ECU 在**自己发出的流控帧**里填的 STmin 字节，
+#                           是"要求对方放慢"的限制，ISO-TP 字节编码
+#                           （0x00–0x7F = 0–127 ms，0xF1–0xF9 = 100–900 us）。
+#
+#      UDS_ISOTP_TX_STMIN   内核 CAN_ISOTP_TX_STMIN：强制**本 ECU 自己**
+#                           发送连续帧的间隔，会**覆盖**收到的 FC 里的 STmin；
+#                           单位是**纳秒**，与上面的字节编码无关。
+#
+# 4. **必须早于 bind()**：python-isotp 的 set_opts/set_fc_opts 在 bind 之后
+#    会直接抛 RuntimeError，所以 apply_isotp_options() 只能在 bind 前调用。
+
+#: 发送帧填充字节（0x00–0xFF）。None = 不填充（内核默认）。
+ISOTP_TX_PAD = _env_int_opt("UDS_ISOTP_TX_PAD", 0x00, 0xFF)
+
+#: 接收帧填充字节（0x00–0xFF）。None = 不启用接收填充容忍（内核默认）。
+ISOTP_RX_PAD = _env_int_opt("UDS_ISOTP_RX_PAD", 0x00, 0xFF)
+
+#: 本 ECU 流控帧里的 STmin 字节（0x00–0xFF）。None = 内核默认 0x00。
+ISOTP_FC_STMIN = _env_int_opt("UDS_ISOTP_FC_STMIN", 0x00, 0xFF)
+
+#: 本 ECU 流控帧里的块大小 BS（0x00–0xFF）。None = 内核默认 0（无限块）。
+ISOTP_FC_BLOCKSIZE = _env_int_opt("UDS_ISOTP_FC_BLOCKSIZE", 0x00, 0xFF)
+
+#: 本 ECU 自身连续帧发送间隔，单位**纳秒**。None = 不强制（内核默认）。
+ISOTP_TX_STMIN = _env_duration_ns("UDS_ISOTP_TX_STMIN")
+
+#: 接收超时（秒，0 表示非阻塞）。None = 阻塞等待（内核默认）。
+#:
+#: 注意方向性：这控制的是**本 ECU 的 recv() 是否阻塞**，
+#: 与 client 的 ``--timeout``（"等响应等多久"）不是同一个概念。
+ISOTP_TIMEOUT = _env_float_opt("UDS_ISOTP_TIMEOUT", 0.0)
+
+
+def _isotp_socket_options() -> dict:
+    """
+    把已解析的显式 ISO-TP 参数整理成待下发的选项。
+
+    只包含**显式设置过**的项；全部未设置时返回空 dict，
+    从而保证"默认行为不变"。
+    """
+    return {
+        "tx_pad": ISOTP_TX_PAD,
+        "rx_pad": ISOTP_RX_PAD,
+        "fc_stmin": ISOTP_FC_STMIN,
+        "fc_blocksize": ISOTP_FC_BLOCKSIZE,
+        "tx_stmin": ISOTP_TX_STMIN,
+    }
+
+
+def apply_isotp_options(sock) -> None:
+    """
+    在 ``bind()`` **之前**把显式 ISO-TP 参数下发给 socket。
+
+    全部未设置时本函数不做任何系统调用，因此不改变既有默认行为。
+    """
+    general = {}
+
+    if ISOTP_TX_PAD is not None:
+        general["txpad"] = ISOTP_TX_PAD
+
+    if ISOTP_RX_PAD is not None:
+        general["rxpad"] = ISOTP_RX_PAD
+
+    if ISOTP_TX_STMIN is not None:
+        # 单位纳秒；python-isotp 会自动置 FORCE_TXSTMIN 标志
+        general["tx_stmin"] = ISOTP_TX_STMIN
+
+    if general:
+        sock.set_opts(**general)
+
+    flow_control = {}
+
+    if ISOTP_FC_BLOCKSIZE is not None:
+        flow_control["bs"] = ISOTP_FC_BLOCKSIZE
+
+    if ISOTP_FC_STMIN is not None:
+        flow_control["stmin"] = ISOTP_FC_STMIN
+
+    if flow_control:
+        sock.set_fc_opts(**flow_control)
 
 
 # ======================================================================
@@ -201,9 +416,39 @@ def main() -> None:
     )
 
     sock = isotp.socket()
-    sock.bind(INTERFACE, address)
+
+    try:
+        apply_isotp_options(sock)
+
+        if ISOTP_TIMEOUT is not None:
+            sock.settimeout(ISOTP_TIMEOUT)
+
+        sock.bind(INTERFACE, address)
+    except Exception:
+        # 参数下发失败时不要把 socket 泄漏出去
+        sock.close()
+        raise
 
     print("ISO-TP socket bound successfully.")
+    print("ISO-TP options (unset = kernel default):")
+    print(f"  tx_pad       : {ISOTP_TX_PAD if ISOTP_TX_PAD is not None else 'unset'}")
+    print(f"  rx_pad       : {ISOTP_RX_PAD if ISOTP_RX_PAD is not None else 'unset'}")
+    print(
+        f"  fc_stmin     : "
+        f"{f'0x{ISOTP_FC_STMIN:02X}' if ISOTP_FC_STMIN is not None else 'unset'}"
+    )
+    print(
+        f"  fc_blocksize : "
+        f"{ISOTP_FC_BLOCKSIZE if ISOTP_FC_BLOCKSIZE is not None else 'unset'}"
+    )
+    print(
+        f"  tx_stmin     : "
+        f"{f'{ISOTP_TX_STMIN} ns' if ISOTP_TX_STMIN is not None else 'unset'}"
+    )
+    print(
+        f"  timeout      : "
+        f"{f'{ISOTP_TIMEOUT}s' if ISOTP_TIMEOUT is not None else 'unset (blocking)'}"
+    )
     print(f"Current UDS session: 0x{STATE.session:02X}")
     print(f"Current security level: 0x{STATE.security_level:02X}")
     print(f"Protected DIDs: {', '.join(f'0x{d:04X}' for d in sorted(PROTECTED_DIDS))}")
@@ -211,7 +456,14 @@ def main() -> None:
 
     try:
         while True:
-            data = sock.recv()
+            try:
+                data = sock.recv()
+            except TimeoutError:
+                # 设置了 UDS_ISOTP_TIMEOUT 后，recv() 超时会**抛异常**
+                # （而不是返回 None），必须在这里接住，否则空闲一个周期
+                # 就会让整个 ECU 退出。这也是 `data is None` 分支之外
+                # 真正需要处理的"没收到请求"路径。
+                continue
 
             if data is None:
                 continue

@@ -187,6 +187,56 @@ RX: 62 f1 90 54 45 53 54 45 43 55 30 30 30 30 30 30 30 30 30 31  (20 bytes)
 | `--timeout` | `2.0` | 等待响应超时（沿用既有 client 的 `RECV_TIMEOUT` 取值） |
 | `--no-wait` | 关闭 | 只发送，不等待响应 |
 
+### ISO-TP 传输参数（Phase 4-P2 起可显式配置）
+
+在 P2 之前，padding / stmin / blocksize / timeout **全部隐式依赖内核默认值**，
+无法做对照实验。现在它们都是显式参数，且**默认行为逐字节不变**。
+
+| 参数 | 取值 | 默认 | 作用方向 |
+|---|---|---|---|
+| `--tx-pad` | `0x00`–`0xFF` | 不填充 | 本端发出的 CAN 帧补到 8 字节 |
+| `--rx-pad` | `0x00`–`0xFF` | 不启用 | 本端接收时对填充值的要求 |
+| `--fc-stmin` | `0x00`–`0xFF` / `5ms` / `500us` | `0x00` | 本端**发出的 FC** 里填的 STmin |
+| `--fc-blocksize` | `0x00`–`0xFF` | `0`（无限块） | 本端**发出的 FC** 里的块大小 BS |
+| `--tx-stmin` | 纳秒：`500` / `100us` / `2ms` / `1s` | 不强制 | 本端**自己发 CF** 的间隔 |
+| `--timeout` | 秒 | `2.0` | 等待响应超时 |
+
+```bash
+python3 isotp_send.py --tx-pad 0xAA 10 03
+python3 isotp_send.py --fc-stmin 5ms --fc-blocksize 1 22 F1 90 --txid 0x7E0
+python3 isotp_send.py --tx-stmin 2ms --no-wait 22 F1 90 F1 80
+python3 isotp_send.py --timeout 0.5 22 F1 90        # 没有 ECU 时 0.5s 干净退出
+```
+
+#### 两个 STmin 不是一个东西（最容易搞错的概念）
+
+```text
+--fc-stmin   写进「我们发出的 FC 帧」→ 要求**对方**放慢
+             单位是 ISO-TP 的 STmin 字节：0x00–0x7F = 0–127 ms，
+             0xF1–0xF9 = 100–900 us，其它取值保留
+
+--tx-stmin   约束「我们自己发 CF」的节奏 → **我们自己**放慢
+             走内核 CAN_ISOTP_TX_STMIN（FORCE_TXSTMIN 标志），
+             单位是**纳秒**，并且会**覆盖**收到的 FC 里的 STmin
+```
+
+因此**不能**把它俩合并成一个 `--stmin`：方向相反，单位也不同
+（一个是单字节编码，一个是纳秒）。
+
+#### 实测数据（vcan0，35 字节多帧响应）
+
+让 ECU 返回 35 字节响应，测量 ECU 连续帧（CF）之间的间隔：
+
+| 配置 | ECU 实测 CF 间隔 |
+|---|---|
+| 默认（FC = `30 00 00`） | 0.06 / 0.12 / 0.08 / 0.07 ms |
+| 本端 `--fc-stmin 10ms`（FC = `30 00 0a`） | 10.21 / 10.20 / 10.18 / 10.23 ms |
+| 本端 `--fc-stmin 20ms`（FC = `30 00 14`） | 20.06 / 20.39 / 20.20 / 20.23 ms |
+| ECU 侧 `UDS_ISOTP_TX_STMIN=2ms` + 本端 FC 要求 20 ms | **2.19 / 2.20 / 2.38 / 2.25 ms** |
+
+最后一行就是"覆盖"的直接证据：对端 FC 要求 20 ms，但本端强制 2 ms，
+实际节拍是 2 ms。默认情况下则是微秒级（无间隔要求）。
+
 ### 不做 UDS 解释
 
 本工具**不解析** SID、NRC、DID 或 SecurityAccess，只原样打印响应字节。
@@ -275,11 +325,13 @@ python3 isotp_send.py 22 F1 90
 can-tools/
 ├── README.md
 ├── parsers.py            # 纯函数：CAN ID / 十六进制字节 / 接口守卫 / 帧格式化
+│                         #          + ISO-TP 参数解析（单字节 / 时长 / STmin）
 ├── can_capture.py        # raw CAN 观察
 ├── can_inject.py         # raw CAN 帧注入
-├── isotp_send.py         # ISO-TP payload 发送
+├── isotp_send.py         # ISO-TP payload 发送（含显式传输参数）
 └── tests/
-    └── test_parsers.py   # 34 个离线单元测试（不依赖 vcan0）
+    ├── test_parsers.py              # 34 个离线单元测试（不依赖 vcan0）
+    └── test_isotp_send_options.py   # 50 个 ISO-TP 参数测试（不需 vcan0）
 ```
 
 `parsers.py` 是三个 CLI 共用的输入校验层。它刻意保持**纯函数、无 I/O、
@@ -294,10 +346,23 @@ can-tools/
 
 ```bash
 /home/lilike/.venvs/network/bin/python tests/test_parsers.py
+/home/lilike/.venvs/network/bin/python tests/test_isotp_send_options.py
 ```
 
-覆盖：CAN ID 解析与边界、十六进制字节解析（多种写法）、
-数据长度上限、非法输入、接口守卫、帧格式化。
+覆盖：
+
+- `test_parsers.py`（34）：CAN ID 解析与边界、十六进制字节解析（多种写法）、
+  数据长度上限、非法输入、接口守卫、帧格式化。
+- `test_isotp_send_options.py`（50）：ISO-TP 参数解析（单字节范围、
+  `us`/`ms`/`s` 单位换算、STmin 的字节与时长两种写法、超范围拒绝）、
+  "参数 → `set_opts`/`set_fc_opts`"的映射方向、
+  **全部未指定时不下发任何 socket 选项**（默认行为不变的回归点）、
+  以及 `--timeout` 在没有 ECU 时干净退出。
+
+> `test_isotp_send_options.py` 需要 python-isotp（会 import `isotp_send`），
+> 但不打开任何 socket，仍然不需要 vcan0。
+> 需要 vcan0 的**在网实验**见
+> `../uds-basic/tests/test_isotp_options_vcan.py`（14 个用例）。
 
 UDS 实验的完整回归（与本目录相互独立）：
 
@@ -309,15 +374,15 @@ bash ../uds-basic/tests/run_tests.sh all
 
 ## 7. 本目录不包含（后续阶段）
 
-本阶段（Phase 4-P1）只把三个基础动作工具化：
+已完成：
 
 ```text
-观察（capture） · 注入（inject） · ISO-TP 发送（isotp_send）
+Phase 4-P1  观察（capture） · 注入（inject） · ISO-TP 发送（isotp_send）
+Phase 4-P2  ISO-TP 传输参数显式化（padding / stmin / blocksize / timeout）
 ```
 
 明确尚未实现：
 
-- ISO-TP 选项显式配置（padding / stmin / blocksize / timeout）—— Phase 4-P2
 - 异常 / 畸形 ISO-TP 实验（非法 PCI、错误长度、序号错乱、流控滥用）
 - CAN replay、PCAP / BLF 日志
 - UDS 层与 raw CAN 层 fuzzing
@@ -325,3 +390,8 @@ bash ../uds-basic/tests/run_tests.sh all
 
 `can_inject.py` 已经提供了后续这些实验所需的**链路层注入能力**，
 但它本身只负责“把一帧按你写的字节发出去”，不判断内容是否合法。
+
+> 说明：`--rx-pad` 在 Linux 内核实现下**不改变接收结果**——
+> 超长（带填充）的单帧与多帧都能被正常重组，无论本端是否启用 RX_PAD。
+> 它更接近"接受哪种填充值的宽容度"开关，因此本工具保留该参数以便
+> 做对照实验，但不要指望它能用来"拒绝带填充的对端"。

@@ -25,6 +25,21 @@ ID 方向语义（与 ECU / client 保持一致）::
 它只负责 payload → ISO-TP → CAN，以及 CAN → ISO-TP → 响应字节的原样打印，
 因此不与 ``uds_server.py`` 形成业务耦合。
 
+ISO-TP 参数（默认即内核默认，全部不指定时行为与改造前完全一致）::
+
+    --tx-pad       本端发送的 CAN 帧填充字节（内核 TX_PADDING，默认不填充）
+    --rx-pad       本端接收时容忍的填充字节（内核 RX_PADDING，默认不启用）
+    --fc-stmin     本端**流控帧里发出的**分离时间（STmin 字节，ISO-TP 语义）
+    --fc-blocksize 本端**流控帧里发出的**块大小 BS
+    --tx-stmin     本端**自己连续帧的**发送间隔（内核 FORCE_TXSTMIN，单位纳秒）
+    --timeout      等待响应的超时（秒）
+
+    --fc-stmin 与 --tx-stmin 是**两个方向、两种单位**的参数，不能合并：
+
+        --fc-stmin  写进我们发出的 FC 帧，是"要求对方放慢"（ISO-TP 字节编码）
+        --tx-stmin  约束我们自己发 CF 的节奏，是"我们自己放慢"（纳秒，
+                    且会覆盖收到的 FC 里的 STmin）
+
 安全边界：
 
     只允许 vcan0（见 parsers.guard_interface）。
@@ -45,13 +60,33 @@ from parsers import (
     add_interface_argument,
     guard_interface,
     parse_can_id,
+    parse_duration_ns,
     parse_hex_bytes,
+    parse_optional_byte,
+    parse_stmin_argument,
+    stmin_actual_ms,
 )
 
 #: 接收超时默认值。
 #: 沿用既有客户端 labs/vehicle/uds-basic/client/isotp_client.py:44 的 RECV_TIMEOUT，
 #: 不另创一套数值。
 DEFAULT_TIMEOUT = 2.0
+
+
+def _parser_for(parse, label: str):
+    """
+    把"(text, what) -> value" 的解析函数包装成 argparse 的 ``type=`` 可调用对象。
+
+    直接用 lambda 会让 argparse 的报错变成
+    ``invalid <lambda> value``（对使用者毫无信息量），
+    因此这里给包装函数起一个有意义的名字。
+    """
+    def _parse(text: str):
+        return parse(text, what=label)
+
+    _parse.__name__ = f"{label} <value>"
+
+    return _parse
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -80,6 +115,42 @@ def build_parser() -> argparse.ArgumentParser:
         help="Tester 接收 ID（= ECU 发送 ID），接受 0x7E8 或 2024。默认 0x7E8",
     )
     parser.add_argument(
+        "--tx-pad",
+        type=_parser_for(parse_optional_byte, "--tx-pad"),
+        default=None,
+        help="本端发送帧的填充字节，如 0xAA 或 170；不指定=不填充（内核默认）",
+    )
+    parser.add_argument(
+        "--rx-pad",
+        type=_parser_for(parse_optional_byte, "--rx-pad"),
+        default=None,
+        help="本端接收时容忍的填充字节，如 0xCC；不指定=不启用（内核默认）",
+    )
+    parser.add_argument(
+        "--fc-stmin",
+        type=_parser_for(parse_stmin_argument, "--fc-stmin"),
+        default=None,
+        help=(
+            "本端流控帧里发出的 STmin，可写 0x05（字节）或 5ms / 500us（时长）；"
+            "不指定=0x00（内核默认，无间隔要求）"
+        ),
+    )
+    parser.add_argument(
+        "--fc-blocksize",
+        type=_parser_for(parse_optional_byte, "--fc-blocksize"),
+        default=None,
+        help="本端流控帧里发出的块大小 BS，0–255；不指定=0（内核默认，无限块）",
+    )
+    parser.add_argument(
+        "--tx-stmin",
+        type=_parser_for(parse_duration_ns, "--tx-stmin"),
+        default=None,
+        help=(
+            "本端自己连续帧的发送间隔，单位纳秒，可写 500 / 100us / 2ms / 1s；"
+            "会覆盖收到的 FC 里的 STmin；不指定=不强制（内核默认）"
+        ),
+    )
+    parser.add_argument(
         "--timeout",
         type=float,
         default=DEFAULT_TIMEOUT,
@@ -97,6 +168,67 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     return parser
+
+
+def _describe_optional(value) -> str:
+    """把"未指定"（None）与真实取值区分开显示。"""
+    if value is None:
+        return "(未指定 → 内核默认)"
+
+    if isinstance(value, int):
+        return f"0x{value:02X}"
+
+    return str(value)
+
+
+def socket_options(args) -> dict:
+    """
+    把已解析的 CLI 参数整理成"要下发给 ISO-TP socket 的选项"。
+
+    只包含**显式指定**的选项，因此"全部未指定"时返回空 dict ——
+    这正是"默认行为不变"的保证：不调用 set_opts/set_fc_opts，
+    内核默认值就与改造前完全一致。
+    """
+    return {
+        "tx_pad": args.tx_pad,
+        "rx_pad": args.rx_pad,
+        "fc_stmin": args.fc_stmin,
+        "fc_blocksize": args.fc_blocksize,
+        "tx_stmin": args.tx_stmin,
+    }
+
+
+def apply_socket_options(sock, options: dict) -> None:
+    """
+    在 ``bind()`` **之前**下发 ISO-TP 选项。
+
+    :raises RuntimeError: 若 socket 已经 bind（python-isotp 自身也会拒绝）
+    """
+    general = {}
+
+    if options["tx_pad"] is not None:
+        general["txpad"] = options["tx_pad"]
+
+    if options["rx_pad"] is not None:
+        general["rxpad"] = options["rx_pad"]
+
+    if options["tx_stmin"] is not None:
+        # 单位是纳秒；python-isotp 会自动置 FORCE_TXSTMIN 标志
+        general["tx_stmin"] = options["tx_stmin"]
+
+    if general:
+        sock.set_opts(**general)
+
+    flow_control = {}
+
+    if options["fc_blocksize"] is not None:
+        flow_control["bs"] = options["fc_blocksize"]
+
+    if options["fc_stmin"] is not None:
+        flow_control["stmin"] = options["fc_stmin"]
+
+    if flow_control:
+        sock.set_fc_opts(**flow_control)
 
 
 def main(argv=None) -> int:
@@ -132,6 +264,38 @@ def main(argv=None) -> int:
         + ("single frame 预计" if single_frame else "multi-frame 预计（FF + CF）")
     )
 
+    options = socket_options(args)
+
+    active = {key: value for key, value in options.items() if value is not None}
+
+    if active:
+        print(f"# tx-pad:     {_describe_optional(options['tx_pad'])}")
+        print(f"# rx-pad:     {_describe_optional(options['rx_pad'])}")
+
+        fc_stmin = options["fc_stmin"]
+
+        if fc_stmin is None:
+            print("# fc-stmin:   (未指定 → 内核默认 0x00)")
+        else:
+            print(
+                f"# fc-stmin:   0x{fc_stmin:02X}  "
+                f"（FC 中要求对方 CF 间隔 ≈ {stmin_actual_ms(fc_stmin):g} ms）"
+            )
+
+        print(f"# fc-blocksize: {_describe_optional(options['fc_blocksize'])}")
+
+        tx_stmin = options["tx_stmin"]
+
+        if tx_stmin is None:
+            print("# tx-stmin:   (未指定 → 内核默认，不强制)")
+        else:
+            print(
+                f"# tx-stmin:   {tx_stmin} ns "
+                f"（本端 CF 间隔 ≈ {tx_stmin / 1_000_000:g} ms，覆盖收到的 FC STmin）"
+            )
+    else:
+        print("# isotp opts: (全部未指定 → 内核默认，行为与改造前一致)")
+
     address = isotp.Address(
         isotp.AddressingMode.Normal_11bits,
         rxid=rxid,
@@ -140,6 +304,7 @@ def main(argv=None) -> int:
 
     try:
         sock = isotp.socket()
+        apply_socket_options(sock, options)
         sock.bind(interface, address)
     except Exception as exc:  # noqa: BLE001
         print(f"ERROR: 无法在 {interface} 上绑定 ISO-TP: {exc}", file=sys.stderr)
@@ -158,7 +323,12 @@ def main(argv=None) -> int:
             print("# 已发送（--no-wait，未等待响应）")
             return 0
 
-        response = sock.recv()
+        try:
+            response = sock.recv()
+        except TimeoutError:
+            # python-isotp 的 recv() 在超时时**抛异常**（而不是返回 None），
+            # 所以超时必须在这里单独接住，才能给出清晰提示。
+            response = None
 
         if response is None:
             print("RX: timeout（未收到响应）")

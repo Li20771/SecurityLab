@@ -1082,13 +1082,26 @@ handler = table.get(service)
   ↓  hit  → handler(request, state)
 ```
 
-### 14.7 验证基线（Phase 3 收尾实测）
+### 14.7 验证基线（实测）
+
+Phase 3 收尾基线：
 
 ```text
 UDS Unit       104 PASS
 Keygen Unit     34 PASS
 E2E             65 PASS
 Healthcheck     31 PASS / 0 WARN / 0 FAIL
+```
+
+Phase 4-P2 之后（新增 ISO-TP 传输参数测试，既有基线**全部保持通过**）：
+
+```text
+UDS Unit                 104 PASS
+Keygen Unit               34 PASS
+E2E                       65 PASS
+ISO-TP 参数（在网）        14 PASS   tests/test_isotp_options_vcan.py
+can-tools 纯逻辑           34 PASS   can-tools/tests/test_parsers.py
+can-tools ISO-TP 参数      50 PASS   can-tools/tests/test_isotp_send_options.py
 ```
 
 P9 阶段**连续执行 3 轮完整回归**，三轮结果逐项完全一致
@@ -1103,7 +1116,113 @@ bash labs/vehicle/uds-basic/tests/run_tests.sh all   # 104 + 34 + 65
 bash scripts/healthcheck.sh                          # 环境 + 离线测试
 ```
 
-### 14.8 Phase 3 架构重构说明
+### 14.8 ISO-TP 传输参数（Phase 4-P2）
+
+在 Phase 4-P2 之前，ECU 的 ISO-TP 行为**完全隐式依赖内核默认值**：
+`main()` 里既不调用 `set_opts()` 也不调用 `set_fc_opts()`，
+所以 padding / stmin / blocksize / timeout 都无法做对照实验。
+
+现在这些参数全部显式化，并且**默认行为逐字节不变**。
+
+#### 实测：默认帧（vcan0）
+
+单帧交换 `10 01`：
+
+```text
+T->ECU  DLC=3  02 10 01
+ECU->T  DLC=7  06 50 01 00 32 00 64
+```
+
+多帧交换 `22 F1 90 F1 80`（35 字节响应）：
+
+```text
+T->ECU  DLC=6  05 22 f1 90 f1 80
+ECU->T  DLC=8  10 23 62 f1 90 54 45 53      ← SF/FF 的 PCI 字节
+T->ECU  DLC=3  30 00 00                     ← Tester 的 FC：BS=0, STmin=0
+ECU->T  DLC=8  21 54 45 43 55 30 30 30
+ECU->T  DLC=8  22 30 30 30 30 30 30 31
+ECU->T  DLC=8  23 f1 80 42 4f 4f 54 2d
+ECU->T  DLC=8  24 53 57 2d 31 2e 30 2e
+ECU->T  DLC=2  25 30                        ← 最后一个 CF 只有 2 字节
+```
+
+> 方向提醒：**本 ECU 只作为响应发送方，永远不发 FC**。
+> 多帧交换中的 FC 只可能由 Tester 发出——所以 `UDS_ISOTP_FC_*`
+> 控制的是"ECU 要求对端怎么发"，不是"ECU 自己怎么发"。
+
+#### 环境变量
+
+| 环境变量 | 取值 | 默认（未设置） | 作用 |
+|---|---|---|---|
+| `UDS_ISOTP_TX_PAD` | `0x00`–`0xFF` | 不填充 | ECU 发出的 CAN 帧补到 8 字节 |
+| `UDS_ISOTP_RX_PAD` | `0x00`–`0xFF` | 不启用 | ECU 接收时对填充值的要求 |
+| `UDS_ISOTP_FC_STMIN` | `0x00`–`0xFF` | `0x00` | ECU **发出的 FC** 里的 STmin 字节 |
+| `UDS_ISOTP_FC_BLOCKSIZE` | `0x00`–`0xFF` | `0`（无限块） | ECU **发出的 FC** 里的 BS |
+| `UDS_ISOTP_TX_STMIN` | `500` / `100us` / `2ms` / `1s` | 不强制 | ECU **自己发 CF** 的间隔（纳秒） |
+| `UDS_ISOTP_TIMEOUT` | 秒（`0` = 非阻塞） | 阻塞等待 | ECU 的 `recv()` 超时 |
+
+```bash
+UDS_ISOTP_TX_PAD=0xAA python3 ecu/ecu.py
+UDS_ISOTP_FC_STMIN=0x14 UDS_ISOTP_FC_BLOCKSIZE=1 python3 ecu/ecu.py
+UDS_ISOTP_TX_STMIN=2ms python3 ecu/ecu.py
+UDS_ISOTP_TIMEOUT=0.3 python3 ecu/ecu.py
+```
+
+#### 设计要点（每条都对应一个已踩过的坑）
+
+1. **默认不变**：全部未设置时 `main()` 不调用 `set_opts()`/`set_fc_opts()`，
+   内核默认行为与改造前逐字节一致（单帧仍是 `03 10 03`，FC 仍是 `30 00 00`）。
+2. **`None` ≠ `0`**：未设置 = `None` = "不改动该选项"；
+   `0` 是合法取值（例如 STmin=0 表示无间隔要求），两者必须严格区分。
+3. **两个方向的 STmin 不能合并**：
+   `UDS_ISOTP_FC_STMIN` 是写进自己 FC 帧的 ISO-TP 字节
+   （`0x00–0x7F` = 0–127 ms，`0xF1–0xF9` = 100–900 us）；
+   `UDS_ISOTP_TX_STMIN` 走内核 `CAN_ISOTP_TX_STMIN`（`FORCE_TXSTMIN`），
+   单位是**纳秒**，且会**覆盖**收到的 FC 里的 STmin。
+4. **必须早于 `bind()`**：python-isotp 在 `bind()` 之后调用
+   `set_opts()`/`set_fc_opts()` 会直接抛 `RuntimeError`。
+5. **非法取值立即失败**：环境变量只接受整数或带单位后缀的时长，
+   写错会在**启动时**抛 `ValueError` 并退出，不会静默回退到默认值。
+6. **recv 超时是异常**：设置了 `UDS_ISOTP_TIMEOUT` 后，
+   python-isotp 的 `recv()` 超时会**抛 `TimeoutError`**（不是返回 `None`），
+   所以 `main()` 必须接住它，否则 ECU 空闲一个周期就会退出。
+
+#### 实测：填充只改 DLC，不改 payload
+
+| 配置 | ECU 应答帧 | `recv()` 重组结果 |
+|---|---|---|
+| 默认 | `DLC=7  06 50 01 00 32 00 64` | 6 字节 |
+| `UDS_ISOTP_TX_PAD=0xAA` | `DLC=8  06 50 01 00 32 00 64 AA` | 6 字节（不变） |
+
+补充实测：多帧响应的**最后一个 CF 也会被填充**（`25 30` → `25 30 aa aa aa aa aa aa`），
+但 ISO-TP 按 FF 声明的长度截断，重组结果仍是 35 字节。
+另外，带填充的对端**不需要**接收方开启 `RX_PAD` 也能正常重组。
+
+#### 实测：STmin 的两个方向
+
+ECU 返回 35 字节响应时，测量其连续帧（CF）之间的间隔：
+
+| 配置 | ECU 实测 CF 间隔 |
+|---|---|
+| 默认（FC = `30 00 00`） | 0.06 / 0.12 / 0.08 / 0.07 ms |
+| Tester `fc_stmin=0x0A`（FC = `30 00 0a`） | 10.21 / 10.20 / 10.18 / 10.23 ms |
+| Tester `fc_stmin=0x14`（FC = `30 00 14`） | 20.06 / 20.39 / 20.20 / 20.23 ms |
+| ECU `UDS_ISOTP_TX_STMIN=2ms` + Tester FC 要求 20 ms | **2.19 / 2.20 / 2.38 / 2.25 ms** |
+
+最后一行就是 `FORCE_TXSTMIN` **覆盖**对端 FC 要求的直接证据。
+
+#### 对应测试
+
+```bash
+# 在网实验矩阵（14 个用例，需要 vcan0）
+/home/lilike/.venvs/network/bin/python tests/test_isotp_options_vcan.py
+```
+
+覆盖：默认帧不变（单帧 DLC=3 / FC `30 00 00`）、TX 填充 DLC=8、
+RX 填充容错、FC 的 BS 生效、FC 的 STmin 生效（时间量级断言）、
+`FORCE_TXSTMIN` 覆盖、以及 `UDS_ISOTP_TIMEOUT` 下"空闲不发帧 + 仍能应答"。
+
+### 14.9 Phase 3 架构重构说明
 
 Phase 3 完成的是一次**结构性重构**（行为保持不变）：
 
