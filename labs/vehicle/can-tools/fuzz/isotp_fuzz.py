@@ -674,11 +674,10 @@ def generate_cases(categories: Optional[List[str]] = None,
                 "result_fingerprint": mut.frames_fingerprint(actions),
             }
 
-            if "class_hint" in spec:
-                mutation["class_hint"] = spec["class_hint"]
-
-            if "stmin_class" in spec:
-                mutation["stmin_class"] = spec["stmin_class"]
+            # 把 spec 上的分类/边界标记透传进 mutation，便于结果中识别
+            for meta_key in ("class_hint", "stmin_class", "boundary"):
+                if meta_key in spec:
+                    mutation[meta_key] = spec[meta_key]
 
             cases.append(cs.build_case(
                 case_id=case_id,

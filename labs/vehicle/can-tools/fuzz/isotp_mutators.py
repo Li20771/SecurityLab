@@ -335,6 +335,49 @@ def mutate_padding(actions: List[Dict], pad_byte: int = 0xAA,
 # ----------------------------------------------------------------------
 
 
+def remaining_cf_count(actions: List[Dict]) -> Optional[int]:
+    """
+    计算"剩余连续帧数"——即首帧之后的 CF 个数。
+
+    BS 恰好等于该值是一个有意义的边界：它表示"**一次**块授权正好覆盖
+    剩余全部 CF，因此不会再发第二个 FC"，与该值不匹配时行为不同。
+
+    两种来源：
+
+    1. 帧序列里**我们自己**的 FF → 用它的声明长度
+    2. 序列里没有 FF，但有 ``await_fc(response_len=N)``
+       → 用**对端（ECU）响应**的声明长度。FC 类 seed 属于这种：
+       多帧传输是 ECU 发出的响应，BS 边界针对的正是它。
+
+    :returns: CF 个数；无法判定时返回 ``None``
+    """
+    ff_indices = _frames_with_pci(actions, PCI_FF)
+    declared: Optional[int] = None
+    first_payload = 0
+
+    if ff_indices:
+        data = actions[ff_indices[0]].get("data") or b""
+
+        if len(data) >= 2:
+            declared = ((data[0] & 0x0F) << 8) | data[1]
+            first_payload = max(0, len(data) - 2)
+    else:
+        for action in actions:
+            if action.get("type") == "await_fc" and action.get("response_len"):
+                declared = int(action["response_len"])
+                first_payload = 6  # FF 携带的数据字节（经典 CAN）
+                break
+
+    if declared is None:
+        return None
+
+    if declared <= first_payload:
+        return 0
+
+    # 经典 CAN：每个 CF 携带 ll_dl - 1 = 7 字节
+    return -(-(declared - first_payload) // 7)
+
+
 def mutation_specs_for_seed(seed: Dict) -> List[Dict]:
     """
     返回某个 seed 上"有意义"的变异列表。
@@ -417,6 +460,20 @@ def mutation_specs_for_seed(seed: Dict) -> List[Dict]:
                 "dimension": DIM_BS,
                 "params": {"value": bs},
                 "label": f"bs={bs}",
+            })
+
+        # "恰好等于剩余 CF 数"是一个有意义的块边界：
+        # 它表示一次块授权正好覆盖剩余全部 CF（不会再发第二个 FC）。
+        # 即使该数值与上面的取值重合，也单独标出来——
+        # 否则这个边界在结果里就无法被识别。
+        remaining = remaining_cf_count(actions)
+
+        if remaining is not None and remaining > 0:
+            specs.append({
+                "dimension": DIM_BS,
+                "params": {"value": remaining},
+                "label": f"bs={remaining}-remaining",
+                "boundary": "remaining_cf_count",
             })
 
         # ---- STmin（按 ISO-TP 编码语义分类）----

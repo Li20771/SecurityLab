@@ -618,6 +618,66 @@ class TestBsAndStminMutation(unittest.TestCase):
                 for i in (0, 2, 3):
                     self.assertEqual(actions[i], original[i])
 
+    def test_remaining_cf_count_computation(self) -> None:
+        """
+        剩余 CF 数 = ceil((声明总长 - FF 数据字节) / 7)。
+
+        22 字节 payload：FF 带 6 字节，剩 16 → 3 个 CF。
+        """
+        self.assertEqual(
+            mut.remaining_cf_count(corpus.get_seed("BASELINE_MF_22B")["actions"]), 3
+        )
+        # FF 声明 3 字节（已在 FF 内交付）→ 0 个 CF
+        self.assertEqual(
+            mut.remaining_cf_count(
+                corpus.get_seed("FF_DECLARES_SMALL_EXTRA_CF")["actions"]
+            ),
+            0,
+        )
+        # 声明 16 字节：FF 6 字节 + 剩 10 → 2 个 CF
+        self.assertEqual(
+            mut.remaining_cf_count(
+                corpus.get_seed("FF_DECLARES_LARGE_SHORT_CF")["actions"]
+            ),
+            2,
+        )
+        # 没有 FF 的 seed → 无法判定
+        self.assertIsNone(
+            mut.remaining_cf_count(corpus.get_seed("BASELINE_SF_1001")["actions"])
+        )
+
+    def test_bs_boundary_spec_present_when_ff_exists(self) -> None:
+        """含 FF 的 seed 必须产生一个"恰好等于剩余 CF 数"的 BS 边界变异。"""
+        specs = mut.mutation_specs_for_seed(self.seed_def)
+        boundaries = [s for s in specs if s.get("boundary") == "remaining_cf_count"]
+
+        self.assertEqual(len(boundaries), 1, "应恰好有一个 remaining 边界变异")
+
+        remaining = mut.remaining_cf_count(self.seed_def["actions"])
+        self.assertEqual(boundaries[0]["params"]["value"], remaining)
+        self.assertIn("remaining", boundaries[0]["label"])
+
+    def test_bs_boundary_reaches_case_id(self) -> None:
+        """边界标记必须透传到 case，否则结果里无法识别该边界。"""
+        import isotp_fuzz as engine
+
+        cases = engine.generate_cases(dimensions=[mut.DIM_BS])
+        marked = [c for c in cases
+                  if c["mutation"].get("boundary") == "remaining_cf_count"]
+
+        self.assertTrue(marked, "没有任何 remaining 边界 case 被生成")
+        self.assertTrue(all("remaining" in c["case_id"] for c in marked))
+
+    def test_no_bs_spec_without_ff(self) -> None:
+        """没有 FF 的 seed 不产生 BS 变异（P1 §15：不造无意义 mutation）。"""
+        seed_def = corpus.get_seed("FF_INCOMPLETE_NO_CF")  # 有 FF 但无 FC
+        specs = mut.mutation_specs_for_seed(seed_def)
+        self.assertEqual([s for s in specs if s["dimension"] == mut.DIM_BS], [])
+
+        # 反过来：有 FC 且有 FF 的 seed 一定有 BS
+        specs = mut.mutation_specs_for_seed(self.seed_def)
+        self.assertTrue([s for s in specs if s["dimension"] == mut.DIM_BS])
+
     def test_stmin_changes_only_fc_field(self) -> None:
         original = [dict(a) for a in self.seed_def["actions"]]
 

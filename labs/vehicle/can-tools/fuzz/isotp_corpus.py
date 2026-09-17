@@ -253,14 +253,26 @@ def wait(delay_ms: int = DEFAULT_DELAY_MS) -> Dict:
 
 
 def await_fc(timeout_ms: int = AWAIT_FC_TIMEOUT_MS,
-             block_size: int = 0, stmin: int = 0) -> Dict:
-    """等 ECU 的 FF，然后回一个正常 CTS（让它的多帧传输得以继续）。"""
-    return {
+             block_size: int = 0, stmin: int = 0,
+             response_len: Optional[int] = None) -> Dict:
+    """
+    等 ECU 的 FF，然后回一个正常 CTS（让它的多帧传输得以继续）。
+
+    ``response_len`` 记录**ECU 响应**的声明总长度。它不参与执行，
+    只用于计算"剩余 CF 数"——因为这类 seed 里我们没有自己的 FF，
+    而 BS 的"恰好覆盖剩余 CF"边界恰恰是针对 ECU 那条传输的。
+    """
+    action = {
         "type": "await_fc",
         "timeout_ms": timeout_ms,
         "block_size": block_size,
         "stmin": stmin,
     }
+
+    if response_len is not None:
+        action["response_len"] = response_len
+
+    return action
 
 
 def seed(seed_id: str, category: str, summary: str, actions: List[Dict],
@@ -314,7 +326,7 @@ def build_corpus() -> List[Dict]:
     seeds.append(seed(
         "BASELINE_MF_RESPONSE_20B", "baseline",
         "合法单帧请求触发 ECU 20 字节多帧响应（正常流控）",
-        [inject(sf(MULTIFRAME_REQUEST_20B)), await_fc(), wait(1500)],
+        [inject(sf(MULTIFRAME_REQUEST_20B)), await_fc(response_len=20), wait(1500)],
     ))
     seeds.append(seed(
         "BASELINE_SN_SEQUENTIAL", "baseline", "顺序 SN 1,2,3（对照）",
@@ -424,13 +436,13 @@ def build_corpus() -> List[Dict]:
     seeds.append(seed(
         "FC_OVERFLOW_DURING_SEND", "flow_control",
         "ECU 发送多帧响应中注入 OVERFLOW（→ EMSGSIZE）",
-        [inject(sf(MULTIFRAME_REQUEST_20B)), await_fc(),
+        [inject(sf(MULTIFRAME_REQUEST_20B)), await_fc(response_len=20),
          inject(fc(FC_OVERFLOW)), wait(1500)],
     ))
     seeds.append(seed(
         "FC_WAIT_DURING_SEND", "flow_control",
         "ECU 发送多帧响应中注入 WAIT",
-        [inject(sf(MULTIFRAME_REQUEST_20B)), await_fc(),
+        [inject(sf(MULTIFRAME_REQUEST_20B)), await_fc(response_len=20),
          inject(fc(FC_WAIT)), wait(1500)],
     ))
     seeds.append(seed(
@@ -441,32 +453,32 @@ def build_corpus() -> List[Dict]:
     ))
     seeds.append(seed(
         "FC_BS_1", "flow_control", "额外注入 BS=1 的 CTS",
-        [inject(sf(MULTIFRAME_REQUEST_20B)), await_fc(),
+        [inject(sf(MULTIFRAME_REQUEST_20B)), await_fc(response_len=20),
          inject(fc(FC_CTS, block_size=1)), wait(1500)],
     ))
     seeds.append(seed(
         "FC_BS_255", "flow_control", "额外注入 BS=255 的 CTS",
-        [inject(sf(MULTIFRAME_REQUEST_20B)), await_fc(),
+        [inject(sf(MULTIFRAME_REQUEST_20B)), await_fc(response_len=20),
          inject(fc(FC_CTS, block_size=255)), wait(1500)],
     ))
     seeds.append(seed(
         "FC_STMIN_100US", "flow_control", "额外注入 STmin=0xF1（合法 100us）",
-        [inject(sf(MULTIFRAME_REQUEST_20B)), await_fc(),
+        [inject(sf(MULTIFRAME_REQUEST_20B)), await_fc(response_len=20),
          inject(fc(FC_CTS, stmin=0xF1)), wait(1500)],
     ))
     seeds.append(seed(
         "FC_STMIN_RESERVED_80", "flow_control", "额外注入 STmin=0x80（保留值）",
-        [inject(sf(MULTIFRAME_REQUEST_20B)), await_fc(),
+        [inject(sf(MULTIFRAME_REQUEST_20B)), await_fc(response_len=20),
          inject(fc(FC_CTS, stmin=0x80)), wait(1500)],
     ))
     seeds.append(seed(
         "FC_STMIN_RESERVED_F0", "flow_control", "额外注入 STmin=0xF0（保留值）",
-        [inject(sf(MULTIFRAME_REQUEST_20B)), await_fc(),
+        [inject(sf(MULTIFRAME_REQUEST_20B)), await_fc(response_len=20),
          inject(fc(FC_CTS, stmin=0xF0)), wait(1500)],
     ))
     seeds.append(seed(
         "FC_STMIN_127MS", "flow_control", "额外注入 STmin=0x7F（合法上限）",
-        [inject(sf(MULTIFRAME_REQUEST_20B)), await_fc(),
+        [inject(sf(MULTIFRAME_REQUEST_20B)), await_fc(response_len=20),
          inject(fc(FC_CTS, stmin=0x7F)), wait(1500)],
     ))
 
