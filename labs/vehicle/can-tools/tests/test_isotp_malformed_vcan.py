@@ -697,14 +697,18 @@ class MalformedCaseTest(unittest.TestCase):
 
     def assert_recovered_or_documented_crash(self, case: str) -> tuple:
         """
-        两类可接受的结果（P3 的实验结论分类）：
+        记录 case 结束时的 ECU 状态，并返回是否恢复正常通信。
+
+        结果分三类：
 
         - **正常路径**：malformed 输入被内核丢弃，ECU 存活且能响应后续正常请求
-        - **已记录的崩溃**：该输入确实杀死了 ECU —— 这是 P3 的真实发现，
-          记录错误签名后不当作测试失败（用 ``@unittest.expectedFailure`` 标记）
+        - **进程死亡**：ECU 已退出 —— 打印错误签名供报告使用，返回 ``False``
+        - **ECU 存活但无法恢复**：直接判失败（这才是需要深挖的状态污染）
 
-        其余情况（ECU 活着但无法恢复）一律判失败：那才是真正需要深挖的
-        状态污染问题。
+        注意：本方法**只负责记录**，不判断进程死亡算不算失败。
+        P3R 修复后，"输入杀死 ECU"应由各用例的断言判为**失败**
+        （P3 阶段用 ``@unittest.expectedFailure`` 记录缺陷的机制已随修复移除，
+        因为那会掩盖未来的回归）。
         """
         if not ecu_alive():
             signature = self.ecu_crash_signature()
