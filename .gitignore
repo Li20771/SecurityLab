@@ -49,3 +49,8 @@ labs/firmware/**/*.squashfs
 # Firmware lab generated ELF samples
 labs/firmware/**/rootfs/usr/bin/ecu-demo
 
+# Stateful ISO-TP fuzzing (Phase 4X) generated artifacts
+labs/vehicle/fuzz-out/
+labs/vehicle/fuzz-tmp/
+labs/vehicle/can-tools/fuzz/__pycache__/
+

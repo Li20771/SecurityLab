@@ -86,6 +86,16 @@ run_offline() {
     fi
 
     echo
+
+    if [ -f "$TESTS_DIR/test_fuzz_offline.py" ]; then
+        if "$PYTHON_BIN" "$TESTS_DIR/test_fuzz_offline.py"; then
+            ok "fuzz harness offline tests passed"
+        else
+            fail "fuzz harness offline tests failed"
+        fi
+
+        echo
+    fi
 }
 
 run_malformed() {

@@ -420,6 +420,131 @@ errno   ：EMSGSIZE / 90
 
 ---
 
+## 3.5 Stateful ISO-TP fuzzing harness（Phase 4X-P1）
+
+在 `fuzz/` 下实现的**有状态、模型驱动**变异框架。它与上面三个 CLI 工具
+互补：`can_inject.py` 是"手工发一帧"，fuzzer 是"按状态模型系统变异"。
+
+```text
+fuzz/
+├── isotp_corpus.py    纯数据：seed corpus、状态模型常量、payload 常量
+├── isotp_mutators.py  纯函数：各维度 mutator（不发帧、不等待、不抓包）
+├── case_schema.py     testcase schema、校验、oracle 分类、replay identity
+├── isotp_fuzz.py      执行引擎：ECU 进程隔离、raw CAN 注入/观察、oracle
+└── replay.py          精确重放已保存的 testcase
+```
+
+### 固定实验边界
+
+```text
+interface  = vcan0（永远）
+inject_id  = 0x7E0
+observe_id = 0x7E8
+```
+
+第一版**不做 CAN ID fuzzing**（`addressing` 类别仅作参考，标记
+`reference_only`），不接触真实 CAN 接口，所有输入经
+`parsers.guard_interface` / CAN ID / DLC / 字节校验。
+
+### corpus：来自已验证的 malformed 实验
+
+seed 不是凭空发明的，而是把 Phase 4-P3/P3R/P3R2 中**已实测**的
+47 个 case 整理成结构化定义（原始测试文件保持不动）：
+
+| 类别 | seed 数 | 内容 |
+|---|---|---|
+| `baseline` | 4 | 合法单帧、合法多帧、多帧响应、顺序 SN（对照） |
+| `pci` | 5 | 非法 PCI `0x4X/0x5X/0x6X/0x7X/0xFX` |
+| `single_frame` | 4 | 声明 4 给 2、声明 2 给 3、声明 0、声明 7 DLC=3 |
+| `first_frame` | 3 | FF 无 CF、声明 3 多发 CF、声明 16 只给 8 |
+| `consecutive_frame` | 2 | 孤立 CF、孤立 CF 序列 |
+| `sequence_number` | 5 | 跳号 1→3、重复、回退 1→0、跳 0xF、中途跳号 |
+| `flow_control` | 12 | 无传输的 CTS/WAIT/OVERFLOW；发送中 OVERFLOW/WAIT；BS/STmin 各档 |
+| `padding` | 3 | SF `00`/`0xAA` 填充、多帧 CF 填充 |
+| `recovery` | 1 | 恢复基线 |
+| `addressing` | 3 | `0x7E1`/`0x7DF`/`0x000`（**参考，不参与变异**） |
+
+seed 的**时序也是数据**：动作有 `inject` / `wait` / `await_fc` 三种。
+`await_fc` 表示"等 ECU 的 FF 再回一个 CTS"——它在语义上就是流控帧，
+因此 BS/STmin mutator 可以同时作用于显式 FC 帧和 `await_fc`。
+
+### mutation 维度（单变量原则）
+
+| 维度 | 取值 |
+|---|---|
+| `pci` | 高半字节 `0x4–0x7`、`0xF`（保持 DLC 合法，不做随机帧） |
+| `sf_length` | 声明长度 0–7 |
+| `ff_length` | 0 / 1 / 3 / 8 / 0xFFF（覆盖声明<实际、=、>） |
+| `sn` | 0 / 1 / 2 / 3 / 0xF（默认改最后一帧 CF） |
+| `fc_status` | CTS / WAIT / OVERFLOW，**保留值 `0x3–0xF` 单独标 `FC_RESERVED_STATUS`** |
+| `bs` | 0 / 1 / 2 / 255 |
+| `stmin` | `0x00/0x01/0x7F`（ms）、`0xF1/0xF9`（us）、`0x80/0xF0/0xFA/0xFF`（保留） |
+| `padding` | DLC ∈ {2,3,5,8} × 填充字节 {0x00,0xAA,0xFF} |
+
+每次变异**只改一个语义字段**；`padding` 维度本身的研究变量就是 DLC，
+属于规格允许的例外。STmin 按 ISO-TP 编码分类，**不**把 `0x80+` 一律叫
+"invalid"（`0xF1–0xF9` 是合法微秒档）。
+
+### oracle 与结果分类
+
+```text
+process   子进程 poll() → ALIVE / DEAD
+response  UDS response / No response / Partial ISO-TP
+recovery  硬 oracle：10 01 → 50 01 00 32 00 64
+runtime   normal / timeout / hang
+kernel    dmesg 前后快照 + 过滤差分（绝不 dmesg -c）
+```
+
+固定判定顺序：`KERNEL_ANOMALY > ECU_CRASH > STATE_CORRUPTION > HANG >
+TRANSPORT_ERROR > UDS_RESPONSE > DISCARD > NORMAL`。
+
+`STATE_CORRUPTION` 专门表示"进程存活但下一个正常请求失败"——它**不会**
+被 `process_alive=true` 掩盖。`recovery` 是独立字段（PASS/FAIL），
+因此 `class=ECU_CRASH` 与 `recovery=FAIL` 可以同时表达。
+
+`errno` 只记录已 containment 的 84/70/90 之外的值会被标记 `new_errno`，
+但 fuzzer **不会**自动把它加入 `_is_recoverable_isotp_error()`
+（需要单独定位与人工确认）。
+
+### 可复现性
+
+- `--seed` 记录 `master_seed`；P1 全部变异为确定性，同参数必得同序列。
+- 每 case 可落盘 JSON（`case_id` / `seed` / `mutation` / `frames` / `delay` /
+  `can_ids` / `result`）。
+- **canonical replay identity 只依赖 `case_id`/`seed`/`mutation`/`frames`**，
+  刻意排除 timestamp / kernel logs / observed response / process state ——
+  它们是执行结果，不能改变 testcase 本身。
+- `replay.py` 读取 `frames[]` **原样重发**（不是重新生成变异），
+  因此是 exact reproduction；重放后同样执行 recovery probe。
+
+```bash
+# 列出 corpus 与可生成 case 数（不执行）
+python3 fuzz/isotp_fuzz.py --list
+
+# 小规模 smoke（<=30 case，每 case 一个全新 ECU 进程）
+python3 fuzz/isotp_fuzz.py --smoke --seed 12345 --out ../fuzz-out
+
+# 精确重放
+python3 fuzz/replay.py ../fuzz-out/<case>.json --repeat 3 --show-frames
+```
+
+### 预算与执行模型
+
+- P1 只做 **≤30 case** 的 smoke，不扩大到 1000（`--max-cases` 为安全阀）。
+- **每个 case 一个全新 ECU 进程**（严格隔离），case 结束后终止。
+- 不做 coverage-guided fuzzing（无 AFL/libFuzzer/coverage/instrumentation），
+  不做并发、不多 ECU。
+
+> 边界声明：本 harness 只做**确定性、有界、可复现**的模型驱动变异，
+> 不声称"fuzzing 完成"或"coverage 完整"。发现 `ECU_CRASH` /
+> `STATE_CORRUPTION` / `KERNEL_ANOMALY` / `NEW_ERRNO` 时按规则**保存最小
+> 复现并停止该 mutation family**，不在同一阶段顺手修 ECU 或内核。
+
+> 落盘提示：在只读文件沙箱下子进程写盘会被拒绝（`PermissionError`），
+> 此时用 `--no-artifacts` 运行 smoke；`fuzz-out/` 已在 `.gitignore` 中。
+
+---
+
 ## 4. 实测示例
 
 ### 4.1 raw CAN 观察 + 注入
@@ -504,11 +629,18 @@ can-tools/
 ├── can_capture.py        # raw CAN 观察
 ├── can_inject.py         # raw CAN 帧注入
 ├── isotp_send.py         # ISO-TP payload 发送（含显式传输参数）
+├── fuzz/                 # Stateful ISO-TP fuzzing（Phase 4X-P1）
+│   ├── isotp_corpus.py       # 纯数据：seed corpus + 状态模型常量
+│   ├── isotp_mutators.py     # 纯函数：各维度 mutator
+│   ├── case_schema.py        # testcase schema / 校验 / oracle 分类 / replay identity
+│   ├── isotp_fuzz.py         # 执行引擎：进程隔离 + raw CAN + oracle
+│   └── replay.py             # 精确重放已保存的 testcase
 └── tests/
     ├── run_tests.sh                   # 测试入口（all / offline / malformed）
     ├── test_parsers.py                # 34 个离线单元测试（不依赖 vcan0）
     ├── test_isotp_send_options.py     # 50 个 ISO-TP 参数测试（不需 vcan0）
-    └── test_isotp_malformed_vcan.py   # 46 个畸形分帧实验（需要 vcan0）
+    ├── test_fuzz_offline.py           # 70 个 fuzz 离线测试（不需 vcan0）
+    └── test_isotp_malformed_vcan.py   # 47 个畸形分帧实验（需要 vcan0）
 ```
 
 `parsers.py` 是三个 CLI 共用的输入校验层。它刻意保持**纯函数、无 I/O、
@@ -574,6 +706,8 @@ Phase 4-P3   确定性畸形分帧实验（PCI / SF / FF / CF-SN / FC / padding-
 Phase 4-P3R  transport error containment（EILSEQ / ECOMM 不再杀死 ECU）
 Phase 4-P3K  内核侧只读定位（EILSEQ/ECOMM 生成点、sk_err 发布路径）
 Phase 4-P3R2 EMSGSIZE containment（FC OVERFLOW 不再杀死 ECU）
+Phase 4X-P0  stateful ISO-TP fuzzing 设计勘察（corpus/状态模型/oracle/replay）
+Phase 4X-P1  fuzz harness 实现（fuzz/ + 离线测试 + smoke，未扩大 campaign）
 ```
 
 明确尚未实现：
