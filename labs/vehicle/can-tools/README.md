@@ -468,6 +468,11 @@ seed 的**时序也是数据**：动作有 `inject` / `wait` / `await_fc` 三种
 `await_fc` 表示"等 ECU 的 FF 再回一个 CTS"——它在语义上就是流控帧，
 因此 BS/STmin mutator 可以同时作用于显式 FC 帧和 `await_fc`。
 
+`await_fc` 还带一个 `response_len`（ECU 响应的声明总长度），只用于计算
+"剩余 CF 数"：FC 类 seed 的多帧传输是 **ECU 发出的响应**，我们只回 FC，
+因此没有自己的 FF，而 BS 的块边界恰恰针对那条传输
+（20 字节响应 → 剩余 2 个 CF → 边界 `bs=2`）。
+
 ### mutation 维度（单变量原则）
 
 | 维度 | 取值 |
@@ -477,7 +482,7 @@ seed 的**时序也是数据**：动作有 `inject` / `wait` / `await_fc` 三种
 | `ff_length` | 0 / 1 / 3 / 8 / 0xFFF（覆盖声明<实际、=、>） |
 | `sn` | 0 / 1 / 2 / 3 / 0xF（默认改最后一帧 CF） |
 | `fc_status` | CTS / WAIT / OVERFLOW，**保留值 `0x3–0xF` 单独标 `FC_RESERVED_STATUS`** |
-| `bs` | 0 / 1 / 2 / 255 |
+| `bs` | 0 / 1 / 2 / 255，**外加"恰好等于剩余 CF 数"的块边界**（单独打 `boundary` 标记） |
 | `stmin` | `0x00/0x01/0x7F`（ms）、`0xF1/0xF9`（us）、`0x80/0xF0/0xFA/0xFF`（保留） |
 | `padding` | DLC ∈ {2,3,5,8} × 填充字节 {0x00,0xAA,0xFF} |
 
@@ -639,7 +644,7 @@ can-tools/
     ├── run_tests.sh                   # 测试入口（all / offline / malformed）
     ├── test_parsers.py                # 34 个离线单元测试（不依赖 vcan0）
     ├── test_isotp_send_options.py     # 50 个 ISO-TP 参数测试（不需 vcan0）
-    ├── test_fuzz_offline.py           # 70 个 fuzz 离线测试（不需 vcan0）
+    ├── test_fuzz_offline.py           # 74 个 fuzz 离线测试（不需 vcan0）
     └── test_isotp_malformed_vcan.py   # 47 个畸形分帧实验（需要 vcan0）
 ```
 
