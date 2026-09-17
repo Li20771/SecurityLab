@@ -294,6 +294,7 @@ ECU 的 ``10 01`` 响应在总线上是 ``06 50 01 00 32 00 64``。
 | FC | ECU 发送中额外注入**参数异常** FC（BS/STmin） | ✅ 同上：存活、响应完整 |
 | FC | **只用一个** BS=1 + STmin=0x80（保留值）的 CTS | 🛡️ 内核在 N_Bs 超时后报 `Errno 70`(ECOMM)；P3R 后**被接住**，ECU 存活可恢复 |
 | FC | **只回一个正常 CTS**（对照） | ✅ 响应完整，ECU 存活 |
+| FC | ECU 发送中注入 **FC OVERFLOW（0x32）** | 🛡️ 内核报 `Errno 90`(EMSGSIZE)；P3R2 后**被接住**，ECU 存活可恢复（含独立回归用例） |
 | DLC | 声明的长度与实际不符（见 SF 各行） | ✅ 见上 |
 | Padding | 单帧带 5 字节 `00` 填充 | ✅ 按 SF 长度截断，正常 `50 01` 响应 |
 | Padding | 单帧带 5 字节 `0xAA` 填充 | ✅ 同上（与 P2 的 TX_PAD/RX_PAD 结论一致） |
@@ -362,15 +363,33 @@ except OSError as exc:
 ```text
 Errno 84 (EILSEQ)  → ECU 存活，当前传输被丢弃，后续 10 01 正常
 Errno 70 (ECOMM)   → ECU 存活，本次响应发送被丢弃，后续 10 01 正常
+Errno 90 (EMSGSIZE)→ ECU 存活，后续 10 01 正常（P3R2 补充，见下）
 ```
 
-两条路径各自有独立回归用例（``test_wrong_cf_sn_does_not_kill_ecu`` /
-``test_repeated_cf_sn_does_not_kill_ecu`` / ``test_fc_timeout_does_not_kill_ecu``），
+三条路径各自有独立回归用例（``test_wrong_cf_sn_does_not_kill_ecu`` /
+``test_repeated_cf_sn_does_not_kill_ecu`` / ``test_fc_timeout_does_not_kill_ecu`` /
+``test_fc_overflow_does_not_kill_ecu``），
 且 ``expectedFailure`` 已全部移除（P3 的缺陷记录机制不再需要）。
 
+#### EMSGSIZE 补充说明（Phase 4-P3R2）
+
+```text
+触发方式：ECU 正在发送多帧响应时，注入 FC OVERFLOW (FS=0x2, 即 32 00 00)
+errno   ：EMSGSIZE / 90
+内核动作：isotp_rcv_fc() 置 sk_err = EMSGSIZE，tx.state 复位为 ISOTP_IDLE
+处理范围：userspace process-level containment（仅 ecu.py 白名单新增 errno 90）
+```
+
+实测取得位置：内核在 ``isotp_rcv_fc()`` 里设置该错误，但它在**后续
+``recv()``** 上被取走 —— stdout 时序显示 ``TX UDS:`` 已打印、``send()``
+正常返回之后才出现 containment 日志。**不要**因为"它来自 FC 接收"或
+"崩溃发生在 send 时段"就断定取得者；按 P3K 结论，``sk_err`` 是共享状态，
+谁先调用谁取走。
+
 > 边界声明：本修复**只是进程级 containment**，不是"ISO-TP 已完全加固"。
-> 仅覆盖实测确认的两条 errno 路径；内核仍会如常报告这些传输错误，
-> 只是 ECU 不再因此退出。内核侧行为未做任何修改。
+> 仅覆盖已**实测**确认的三条 errno 路径（84 / 70 / 90）；内核仍会如常报告
+> 这些传输错误，只是 ECU 不再因此退出。``ETIMEDOUT`` / ``EBADMSG``
+> 尚未实测，未纳入白名单。内核侧行为未做任何修改。
 
 > 观察到的**非**问题：所有 malformed 输入都**没有**造成状态污染——
 > ECU 存活时后续正常 UDS 请求全部成功（每个 case 都做了恢复检查）。
@@ -382,11 +401,12 @@ Errno 70 (ECOMM)   → ECU 存活，本次响应发送被丢弃，后续 10 01 �
 - 并发注入、多 ECU、CAN-FD、DoIP
 - 其他内核版本 / 其他 ISO-TP 实现（本次结论绑定当前 WSL2 内核
   ``6.18.33.2-microsoft-standard-WSL2`` + python-isotp 2.0.7）
-- ``ETIMEDOUT`` / ``EBADMSG`` / ``EMSGSIZE`` 等其他 ISO-TP 传输错误：
-  内核文档列出它们属于同一错误类别，但本项目尚未实际观测到，
-  因此**没有**加入 recoverable 分类（避免掩盖真实 socket / 接口故障）
-- 内核侧行为本身（CAN_ISOTP 状态机如何产生 EILSEQ/ECOMM）—— 属后续
-  ``Phase 4-P3K`` 的范围，P3R 只做 userspace containment
+- ``ETIMEDOUT`` / ``EBADMSG`` 等其余 ISO-TP 传输错误：内核文档列出它们属于
+  同一错误类别，但本项目**尚未实际观测到**，因此**没有**加入 recoverable
+  分类（避免掩盖真实 socket / 接口故障）。``EMSGSIZE`` 已在 P3R2 实测并
+  纳入 containment，不再属于本列表。
+- 内核侧行为本身（CAN_ISOTP 状态机如何产生这些 errno）—— 属后续
+  ``Phase 4-P3K`` 的范围，P3R/P3R2 只做 userspace containment
 
 > CAN ID 错误（0x7E1 / 0x7DF / 0x000）已作为独立分类
 > ``TestCanAddressing`` 纳入测试（实测：均无响应、ECU 存活），
@@ -552,6 +572,8 @@ Phase 4-P1   观察（capture） · 注入（inject） · ISO-TP 发送（isotp_
 Phase 4-P2   ISO-TP 传输参数显式化（padding / stmin / blocksize / timeout）
 Phase 4-P3   确定性畸形分帧实验（PCI / SF / FF / CF-SN / FC / padding-DLC）
 Phase 4-P3R  transport error containment（EILSEQ / ECOMM 不再杀死 ECU）
+Phase 4-P3K  内核侧只读定位（EILSEQ/ECOMM 生成点、sk_err 发布路径）
+Phase 4-P3R2 EMSGSIZE containment（FC OVERFLOW 不再杀死 ECU）
 ```
 
 明确尚未实现：

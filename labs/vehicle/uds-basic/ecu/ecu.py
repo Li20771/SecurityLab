@@ -409,20 +409,30 @@ def _is_recoverable_isotp_error(exc: OSError) -> bool:
     判断一个 ``OSError`` 是否属于**当前 transaction 可丢弃**的
     ISO-TP 传输错误（内核 CAN_ISOTP 的 error contract）。
 
-    已实测确认的两条（Phase 4-P3 / P3R）::
+    已实测确认的三条::
 
-        EILSEQ (84)  接收侧序号不匹配 —— wrong CF sequence number
-        ECOMM  (70)  发送侧流控接收超时 —— FC reception timeout
+        EILSEQ   (84)  接收侧序号不匹配 —— wrong CF sequence number
+                       （Phase 4-P3 / P3R）
+        ECOMM    (70)  发送侧流控接收超时 —— FC reception timeout
+                       （Phase 4-P3 / P3R）
+        EMSGSIZE (90)  发送侧流控溢出 —— FC overflow (FS=OVERFLOW, 0x32)
+                       （Phase 4-P3R2）
+
+    EMSGSIZE 的观测细节：内核在 ``isotp_rcv_fc()`` 里设置该错误，但实测
+    它是在**后续 ``recv()``** 上被取走的（stdout 时序显示 ``TX UDS:`` 已打印、
+    ``send()`` 正常返回，随后由 recv 分支接住）。不要因为"它来自 FC 接收"
+    就假定它出现在 ``recv()``，也不要假定它出现在 ``send()``
+    —— 按 P3K 结论，``sk_err`` 是共享状态，**谁先调用谁取走**。
 
     语义都是"这一次 ISO-TP 传输坏了"，而不是"这个 socket / 接口坏了"。
     因此正确的处置是**丢弃当前传输**并继续服务下一个请求。
 
-    刻意**不**把 ``ETIMEDOUT`` / ``EBADMSG`` / ``EMSGSIZE`` 一并加入：
-    内核文档列出它们属于 ISO-TP 传输错误类别，但本项目尚未实际观测到。
-    在没有实测证据前扩大捕获范围，会掩盖真正的 socket / 接口故障。
+    刻意**不**把 ``ETIMEDOUT`` / ``EBADMSG`` 一并加入：内核文档列出它们
+    属于 ISO-TP 传输错误类别，但本项目**尚未实际观测到**。在没有实测
+    证据前扩大捕获范围，会掩盖真正的 socket / 接口故障。
     如果后续实验真的观察到，再按实测语义逐个加入（见 README）。
     """
-    return exc.errno in (errno.EILSEQ, errno.ECOMM)
+    return exc.errno in (errno.EILSEQ, errno.ECOMM, errno.EMSGSIZE)
 
 
 def _isotp_error_detail(exc: OSError) -> str:

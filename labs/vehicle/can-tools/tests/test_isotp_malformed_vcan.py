@@ -2164,5 +2164,118 @@ class TestCanAddressing(MalformedCaseTest):
         self.assertEqual(payloads[0][:2], RECOVERY_EXPECTED)
 
 
+class TestFcOverflowContainment(MalformedCaseTest):
+    """
+    P3R2 最小回归：发送侧 FC 溢出（EMSGSIZE / Errno 90）。
+
+    构造::
+
+        1. 注入 SF 03 22 f1 90            → 触发 ECU 的 20 字节多帧响应
+        2. ECU 回 FF
+        3. 注入 FC OVERFLOW: 32 00 00     → 内核 isotp_rcv_fc() 置 sk_err = EMSGSIZE
+        4. 观察 ECU 是否存活、后续能否恢复
+
+    修复前：``OSError [Errno 90]`` 不在 ``_is_recoverable_isotp_error()``
+    白名单内 → 未捕获 → ECU 进程退出。
+
+    实测细节（P3R2）：内核在 ``isotp_rcv_fc()`` 中设置该错误，但它是在
+    **后续 ``recv()``** 上被取走的（stdout 时序显示 ``TX UDS:`` 已打印、
+    ``send()`` 正常返回）。因此本用例**不断言**传输失败：在部分时序下
+    ECU 的 20 字节响应会在错误浮现前已经完整送达。
+
+    污染控制（P3K 结论：``sk_err`` 是共享状态）：先做一次完整交换把可能
+    挂起的旧 ``sk_err`` 消费掉，再清空日志，确保观察到的 errno=90
+    来自本次注入而不是上一个 case 的残留。
+    """
+
+    #: 触发 20 字节多帧响应
+    REQUEST_20B = bytes([0x22, 0xF1, 0x90])
+
+    #: 内核 ISOTP_FC_TIMEOUT = 1s，留足余量
+    ERROR_WAIT = 2.5
+
+    def test_fc_overflow_does_not_kill_ecu(self) -> None:
+        # ---- 1. 污染控制：消费掉可能挂起的旧 sk_err ----
+        for _ in range(3):
+            self.recovery_check()
+            self.harness.wait(0.2)
+
+        clear_ecu_log()
+
+        # ---- 2. 发送请求，等待 ECU 的 FF ----
+        mark = self.harness.mark()
+        self.harness.send(sf(ECU_RX_ID, self.REQUEST_20B, note="legal SF 22 F1 90"))
+
+        deadline = time.monotonic() + 1.0
+        saw_ff = False
+
+        while time.monotonic() < deadline:
+            if any(
+                d and (d[0] & 0xF0) == PCI_FIRST
+                for d in self.harness.data_from(mark, ECU_TX_ID)
+            ):
+                saw_ff = True
+                break
+
+            self.harness.wait(0.02)
+
+        # ---- 3. 注入 FC OVERFLOW (0x32) ----
+        self.harness.send(
+            fc(ECU_RX_ID, 2, 0, 0, note="FC OVERFLOW FS=0x2")
+        )
+
+        # ---- 4. 等待 transport error ----
+        container_lines = []
+        error_deadline = time.monotonic() + self.ERROR_WAIT
+
+        while time.monotonic() < error_deadline:
+            self.harness.wait(0.05)
+            container_lines = ecu_container_errors()
+
+            if container_lines:
+                break
+
+        captured = self.collect(mark)
+        payloads = self.harness.payloads_from(mark, ECU_TX_ID)
+        alive = ecu_alive()
+        signature = self.ecu_crash_signature() if not alive else ""
+
+        # ---- 5. 恢复检查 ----
+        ok, recovery = self.recovery_check()
+
+        self.emit(
+            "P3R2-EMSGSIZE FC OVERFLOW 32 00 00 (MINIMAL REPRO)",
+            self.harness.injected[-2:],
+            captured,
+            result=(
+                f"saw ECU FF: {saw_ff} | "
+                f"payloads: {[p.hex(' ') for p in payloads]} | "
+                f"ECU alive: {alive} | "
+                f"containment log: {[l.strip() for l in container_lines]}"
+            ),
+            recovery=recovery,
+        )
+
+        # ---- 期望行为 ----
+        self.assertTrue(saw_ff, "未观察到 ECU 的 FF，本用例前提不成立")
+        self.assertTrue(
+            alive,
+            f"[P3R2-EMSGSIZE] ECU 进程被 transport error 杀死（回归）：{signature}",
+        )
+        self.assertTrue(
+            any("errno=90" in line for line in container_lines),
+            f"[P3R2-EMSGSIZE] 未看到 errno=90 的 containment 日志，"
+            f"无法证明真的触发了 EMSGSIZE：{container_lines}",
+        )
+        self.assertTrue(
+            ok, f"[P3R2-EMSGSIZE] 之后 ECU 无法恢复正常通信：{recovery}"
+        )
+        self.assertEqual(
+            recovery.split("-> ")[-1].strip(),
+            "50 01 00 32 00 64",
+            f"[P3R2-EMSGSIZE] 恢复响应不符：{recovery}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
