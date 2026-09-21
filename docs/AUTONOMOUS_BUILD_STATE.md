@@ -34,7 +34,9 @@ base `audit/environment-20260921`；禁止修改 main）
 - 第二轮能力建设（0x19/0x31/0x34-37、实时 0x7DF 网关、JFFS2/UBIFS extraction、
   Docker Lab、Obsidian）——本分支**不做**。
 
-**KNOWN_ISSUES**: 同上文（ssh-add、0 字节文件、vhdx 压缩、CI runner 未实测）。
+**KNOWN_ISSUES**: 同上文（ssh-add、vhdx 压缩、CI runner 实测见 Phase 2；
+0 字节文件 `; else echo MISS` 已随 cleanup commit `chore(repo): remove
+environment probe artifacts` 删除；`.p1x-probe/*-OUTPUT.txt` 已移出版本库并 gitignore）。
 
 ## 2026-09-20 (current session, Doubao)
 

@@ -1,9 +1,0 @@
-=== registry ===
-count=33
-WSLInterop=1  qemu=29  python3.12=1
-=== functional: WSL interop ===
-INTEROP_OK
-interop: OK
-=== functional: ARM64 via qemu binfmt ===
-ARM64 result = 42
-ACCEPTANCE2_DONE

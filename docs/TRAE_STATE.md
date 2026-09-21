@@ -10,7 +10,7 @@
 ### Completed (this session)
 
 - Replay `--all` 目录过滤修复验收：offline 34+50+89 全过；30/30 replay identity OK / class 一致 / issue=0 / EXIT=0。**不重做、不覆盖、不提交。**
-- N-01 根因：Kali 冷启动间歇性清空 VM 共享的 binfmt_misc 注册表（非 remount，条目被删；Kali 的 WSL protectBinfmt drop-in `echo -1 > WSLInterop` 报 EACCES）。证据：`.p1x-probe/*-OUTPUT.txt`。
+- N-01 根因：Kali 冷启动间歇性清空 VM 共享的 binfmt_misc 注册表（非 remount，条目被删；Kali 的 WSL protectBinfmt drop-in `echo -1 > WSLInterop` 报 EACCES）。验证由 `.p1x-probe/*.sh` 脚本执行，运行结果属于本地审计产物，不纳入正式版本库（`.p1x-probe/*-OUTPUT.txt` 已 gitignore）。
 - N-01 廉价恢复已验证：`wsl -d Ubuntu -u root -- systemctl restart systemd-binfmt.service`。
 
 ### Protected / do-not-touch

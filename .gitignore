@@ -66,3 +66,6 @@ labs/vehicle/fuzz-tmp/
 labs/vehicle/can-tools/fuzz-out/
 labs/vehicle/can-tools/fuzz/__pycache__/
 
+# Environment probe generated outputs（脚本保留，运行结果不入库）
+.p1x-probe/*-OUTPUT.txt
+

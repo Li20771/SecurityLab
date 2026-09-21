@@ -173,10 +173,11 @@ Current deployed system: not upgraded（/usr/local/sbin/binfmt-selfheal.sh
 
 ### WARN（非失败，如实报告）
 
-1. healthcheck `Git working tree has uncommitted changes`：来自预存在的
-   `.p1x-probe/n01-acceptance2-OUTPUT.txt` 行尾 artifact（WSL 侧 git 可见
-   `-INTEROP_OK` / `+INTEROP_OK` 同文行尾差）。**非本分支改动**，未擅自
-   restore；处置建议（用户确认后）：`git checkout -- .p1x-probe/n01-acceptance2-OUTPUT.txt`。
+1. ~~healthcheck `Git working tree has uncommitted changes`~~ —— 已解决：
+   来源是 `.p1x-probe/n01-acceptance2-OUTPUT.txt` 的行尾 artifact，
+   该文件随正式入库清理 commit（`chore(repo): remove environment probe
+   artifacts`）从版本库移除，`.p1x-probe/*-OUTPUT.txt` 加入 `.gitignore`
+   （探测脚本保留，运行结果属本地审计产物不入库）。此 WARN 不复存在。
 2. healthcheck `docker engine not reachable`：Docker Desktop 未运行
    （审计 SOP 已覆盖：`wsl --terminate docker-desktop` 自动恢复），非本分支引入。
 
@@ -272,8 +273,8 @@ branch:        chore/engineering-close-20260921
 base:          audit/environment-20260921 (14ddb75bcfad5105d8b91455ed4d4cfe2fae8c6a)
 HEAD:          fe1ad76fccba745bfd7fa6f3b24fa6e4aeaa5881（快照数值冻结点；
                终稿提交 = git log 首条 = 交付时的 git rev-parse HEAD）
-working_tree:  clean（Windows 侧 git status --short 为空；
-               WSL 侧 .p1x-probe/n01-acceptance2-OUTPUT.txt 行尾 artifact 见 §4 WARN）
+working_tree:  clean（git status --short 为空；
+               .p1x-probe/*-OUTPUT.txt 已随 cleanup commit 移除并 gitignore）
 commit_count:  10（git log --oneline audit/environment-20260921..HEAD，
                不含快照自身的 docs-only 终稿提交——该提交使计数 +1）
 
