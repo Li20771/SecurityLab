@@ -175,6 +175,7 @@ UDS_INTERFACE=vcan1 UDS_RX_ID=0x7E1 UDS_TX_ID=0x7E9 \
 |---|---|---|---|---|
 | `0x10` | DiagnosticSessionControl | `0x01` default<br>`0x02` programming<br>`0x03` extended | `0x50` | 已实现 |
 | `0x11` | ECUReset | `0x01` hardReset | `0x51` | 已实现 |
+| `0x19` | ReadDTCInformation | `0x01` numberOfDTCByStatusMask<br>`0x02` DTCByStatusMask<br>`0x0A` supportedDTC | `0x59` | 已实现（见 4.4） |
 | `0x22` | ReadDataByIdentifier | —（支持多 DID） | `0x62` | 已实现 |
 | `0x27` | SecurityAccess | `0x01` RequestSeed<br>`0x02` SendKey | `0x67` | 已实现 |
 | `0x2E` | WriteDataByIdentifier | —（可写 DID 见 4.3） | `0x6E` | 已实现 |
@@ -182,9 +183,9 @@ UDS_INTERFACE=vcan1 UDS_RX_ID=0x7E1 UDS_TX_ID=0x7E9 \
 
 **尚未实现**（会返回 `NRC 0x11 ServiceNotSupported`）：
 
-`0x14` ClearDiagnosticInformation、`0x19` ReadDTCInformation、
-`0x28` CommunicationControl、`0x31` RoutineControl、
-`0x85` ControlDTCSetting 等。
+`0x14` ClearDiagnosticInformation、`0x19` 的其余 reportType
+（03/04/05/06/07/08/09/0B…）、`0x28` CommunicationControl、
+`0x31` RoutineControl、`0x85` ControlDTCSetting 等。
 
 ### 4.1 响应格式
 
@@ -285,6 +286,33 @@ S3* 自动退会话，故无副作用）。
 写入后 `0x22` 读到新值（override 优先于出厂默认值）；`0x11` hardReset
 清空全部 override 恢复出厂。
 
+### 4.4 0x19 ReadDTCInformation
+
+本实验实现三个 reportType（其余 → `NRC 0x12`）：
+
+```
+19 01 <DTCStatusMask> → 59 01 <DTCStatusAvailabilityMask>
+                           <DTCFormatIdentifier> <DTCCount_H> <DTCCount_L>
+
+19 02 <DTCStatusMask> → 59 02 <DTCStatusAvailabilityMask>
+                           [(DTC_H DTC_M DTC_L) <statusOfDTC>]*
+
+19 0A                → 59 0A <DTCStatusAvailabilityMask>
+                           [(DTC_H DTC_M DTC_L) <statusOfDTC>]*
+```
+
+- `DTCStatusAvailabilityMask = 0xFF`、`DTCFormatIdentifier = 0x01`
+  （ISO 14229-1 DTC format），本实验固定。
+- `0x19/01`：DTCCount = `(statusOfDTC & mask) != 0` 的 DTC 数，
+  16-bit big-endian；`0x19/02` 只返回匹配项、**不含 DTCCount**；
+  `0x19/0A` 报告全部支持的 DTC（不受 status 过滤）。
+- 记录按 DTC 升序输出，顺序稳定。
+- DTC 静态定义在 `ecu/dtc_database.py`（3 个合成 DTC，status 各不相同）；
+  运行时状态在 `EcuState.dtc_records`，跨请求保持。
+- **hardReset 不删除 DTC**：DTC 是故障历史记忆，与 DID override 的
+  "复位即恢复出厂"语义刻意区分（unit + e2e 固化）。
+- suppressPosRspMsgIndicationBit 不在本 feature 范围（后续服务框架统一处理）。
+
 ---
 
 ## 5. 支持的 NRC
@@ -345,6 +373,13 @@ S3* 自动退会话，故无副作用）。
 | `3E 01` / `3E FF` | `7F 3E 12` | 子功能不支持（bit7 剥离后非 0） |
 | `3E 00` | `7E 00` | 肯定响应 |
 | `3E 80` | （无响应） | 抑制正响应，ecu.py 不发帧 |
+| `19` | `7F 19 13` | 缺少 reportType |
+| `19 01` / `19 02`（缺 mask） | `7F 19 13` | 长度不足 |
+| `19 01 FF 00` / `19 02 FF 00` / `19 0A 00` | `7F 19 13` | 多余字节 |
+| `19 03` / `19 7F` / 其余未实现 reportType | `7F 19 12` | 子功能不支持 |
+| `19 01 FF` | `59 FF 01 00 03` | 3 个 DTC 匹配（DTCCount=3） |
+| `19 02 01` | `59 FF 10 00 01 01` | 只返回 status bit0 置位的 DTC |
+| `19 0A` | `59 FF 10 00 01 01 10 00 02 02 10 00 03 04` | 全部支持的 DTC |
 | 空请求 | `7F 00 13` | 无法解析 |
 
 **重要设计原则**：
@@ -582,15 +617,17 @@ bash tests/run_tests.sh e2e    # 只跑 vcan0 端到端测试
 
 | 测试 | 数量 | 需要 vcan0 |
 |---|---|---|
-| `tests/test_ecu_unit.py` | 104 | 否 |
+| `tests/test_ecu_unit.py` | 105 | 否 |
 | `tests/test_keygen_unit.py` | 34 | 否 |
 | `tests/test_services_extra_unit.py` | 17 | 否 |
 | `tests/test_gateway_unit.py` | 13 | 否 |
+| `tests/test_dtc_unit.py` | 30 | 否 |
 | `tests/test_e2e_vcan.py` | 65 | 是 |
 | `tests/test_isotp_options_vcan.py` | 14 | 是 |
 | `tests/test_write_did_vcan.py` | 8 | 是 |
 | `tests/test_multi_ecu_vcan.py` | 4 | 是 |
-| **合计** | **259**（unit 168 + e2e 91） | — |
+| `tests/test_dtc_vcan.py` | 8 | 是 |
+| **合计** | **298**（unit 199 + e2e 99） | — |
 
 ### 8.2 离线单元测试（不需要 CAN）
 
@@ -606,7 +643,7 @@ bash tests/run_tests.sh e2e    # 只跑 vcan0 端到端测试
 - `0x27` RequestSeed / SendKey 全部路径（见下）
 - `0x2E` / `0x3E` 已实现：默认会话写 DID 走门控返回 `0x7F`、
   `3E 00` 返回 `7E 00`（更多细节在 `test_services_extra_unit.py`）
-- 未实现服务（`0x19`/`0x31`/未知 SID）统一返回 NRC 0x11
+- 未实现服务（`0x31`/未知 SID）统一返回 NRC 0x11
 - 受保护 DID 的四象限权限矩阵与整体拒绝
 - 否定响应结构恒为 3 字节
 - DID 数据库约束
@@ -968,18 +1005,21 @@ uds-basic/
 │   ├── uds_server.py        # 协议层：EcuState / handlers / registry / dispatcher
 │   ├── uds_types.py         # 协议常量 + 响应构造（零依赖）
 │   ├── did_database.py      # DID 数据库（受保护/可写 DID 标记）
+│   ├── dtc_database.py      # DTC 静态数据库（合成 DTC + mask/format 常量）
 │   ├── gateway.py           # 多 ECU 路由（VirtualEcu / DiagnosticGateway）
 │   └── keygen.py            # 教学用 seed/key 算法（无 CAN 依赖）
 └── tests/
     ├── run_tests.sh             # 测试入口（unit / e2e / all）
-    ├── test_ecu_unit.py         # 离线单元测试（104 用例，无需 CAN）
+    ├── test_ecu_unit.py         # 离线单元测试（105 用例，无需 CAN）
     ├── test_keygen_unit.py      # keygen 算法测试（34 用例，无需 CAN）
     ├── test_services_extra_unit.py  # 0x2E/0x3E 单元测试（17 用例，无需 CAN）
     ├── test_gateway_unit.py     # 多 ECU 路由测试（13 用例，无需 CAN）
+    ├── test_dtc_unit.py         # 0x19 单元测试（30 用例，无需 CAN）
     ├── test_e2e_vcan.py         # vcan0 端到端测试（65 用例）
     ├── test_isotp_options_vcan.py   # ISO-TP 传输参数矩阵（14 用例，需 vcan0）
     ├── test_write_did_vcan.py   # 0x2E/0x3E 真实解锁写入（8 用例，需 vcan0）
-    └── test_multi_ecu_vcan.py   # 三 ECU 物理寻址（4 用例，需 vcan0）
+    ├── test_multi_ecu_vcan.py   # 三 ECU 物理寻址（4 用例，需 vcan0）
+    └── test_dtc_vcan.py         # 0x19 真实链路（8 用例，需 vcan0）
 ```
 
 > 注意：`ecu.py` 不是 UDS 业务实现层。协议实现位于 `uds_server.py`，
@@ -999,6 +1039,10 @@ uds-basic/
 - [x] `0x27` SecurityAccess（RequestSeed / SendKey 全路径）
 - [x] `0x2E` WriteDataByIdentifier（门控链：13→31→7F→33→22→13→6E）
 - [x] `0x3E` TesterPresent（`3E 00→7E 00`；`3E 80` 抑制；非法子功能 12；长度错 13）
+- [x] `0x19` ReadDTCInformation（reportType 01/02/0A；mask 过滤、稳定排序、
+  DTCCount 16-bit BE；非法 reportType 12、长度错 13）
+- [x] DTC 模型：静态 `dtc_database.py` + `EcuState.dtc_records` 运行时状态；
+  hardReset 保留 DTC（故障记忆语义，unit + e2e 固化）
 - [x] `0x7F` 否定响应与 NRC 判定（0x11/0x12/0x13/0x22/0x24/0x31/0x33/0x35/0x36/0x37/0x7F）
 - [x] 未实现服务统一返回 NRC 0x11
 - [x] 会话状态管理与复位回归
@@ -1009,11 +1053,11 @@ uds-basic/
 - [x] ISO-TP 单帧 / 多帧分帧验证
 - [x] 多 ECU 拓扑（`ecu/gateway.py`）：物理寻址三 ECU、功能寻址广播、
   状态隔离、构造护栏（13 单元 + 4 e2e）
-- [x] 显式 `EcuState`（8 字段）与单一事实源 `STATE`
+- [x] 显式 `EcuState`（10 字段）与单一事实源 `STATE`
 - [x] 静态服务 registry + 协议层 dispatcher
 - [x] transport / protocol 分层与单向依赖（`uds_server` 不反向依赖 `ecu`）
-- [x] 离线单元测试 168 PASS（104 ECU + 34 keygen + 17 services-extra + 13 gateway）
-- [x] vcan0 端到端测试 91 PASS（65 e2e + 14 isotp-matrix + 8 write-did + 4 multi-ecu）
+- [x] 离线单元测试 199 PASS（105 ECU + 34 keygen + 17 services-extra + 13 gateway + 30 dtc）
+- [x] vcan0 端到端测试 99 PASS（65 e2e + 14 isotp-matrix + 8 write-did + 4 multi-ecu + 8 dtc）
 - [x] **三轮连续稳定性验证全部通过**（见第 14.7 节）
 
 ---
@@ -1096,7 +1140,7 @@ _security_services()            —— 每次请求现场构造 SecurityAccess h
 
 | 组成 | 说明 |
 |---|---|
-| `EcuState` | 运行时状态对象，**恰好 8 个字段** |
+| `EcuState` | 运行时状态对象，**恰好 10 个字段**（见下） |
 | `STATE` | 默认单例，**唯一事实源** |
 | `reset_security_state(state)` | 清除解锁与 seed 生命周期，保留失败计数与锁定 |
 | `required_security_level(did)` | DID → 所需安全等级 |
@@ -1107,10 +1151,11 @@ _security_services()            —— 每次请求现场构造 SecurityAccess h
 | `_make_security_access_handler(now, security_config)` | 0x27 依赖绑定工厂 |
 | `service_write_data_by_identifier` | 0x2E handler（门控链见 4.3，写入 `did_overrides`） |
 | `service_tester_present` | 0x3E handler（`3E 80` 返回空字节由入口层抑制发帧） |
-| `SERVICES` | **静态** registry（0x10 / 0x11 / 0x22 / 0x2E / 0x3E） |
+| `service_read_dtc_information` | 0x19 handler（reportType 01/02/0A，只读 `dtc_records`） |
+| `SERVICES` | **静态** registry（0x10 / 0x11 / 0x19 / 0x22 / 0x2E / 0x3E） |
 | `handle_uds_request(request, state, *, services=None)` | 协议层 dispatcher |
 
-**`EcuState` 的 8 个字段**（当前实现，不多不少）：
+**`EcuState` 的 10 个字段**（当前实现，不多不少）：
 
 ```text
 session          当前诊断会话
@@ -1121,10 +1166,12 @@ seed_consumed    seed 是否已被成功消费（防重放）
 failed_attempts  连续失败次数
 lockout_until    锁定解除时刻
 seed_counter     seed 序号
+did_overrides    0x2E 写入的 DID 运行时覆盖（hardReset 清空）
+dtc_records      0x19 的运行时 DTC 状态（hardReset **保留**，故障记忆）
 ```
 
 > 当前**不包含** S3 定时器、`last_request_sid`、`unlocked_at`、
-> DTC 存储、请求上下文、clock 或 config —— 这些不是 Phase 3 的状态字段。
+> 请求上下文、clock 或 config —— 这些不是状态字段。
 
 **`STATE` 是唯一事实源**：不存在第二份模块级状态变量，
 也没有为了同步状态而建立的 module proxy / PEP 562 机制。
@@ -1146,13 +1193,14 @@ seed_counter     seed 序号
 
 ### 14.6 Service registry 与 dispatcher
 
-静态 registry 定义在 `uds_server.py`，**含五个服务**
-（0x2E / 0x3E 为 Phase 4X 新增）：
+静态 registry 定义在 `uds_server.py`，**含六个服务**
+（0x2E / 0x3E 为 Phase 4X 新增，0x19 为第二轮第一项新增）：
 
 ```python
 SERVICES = {
     0x10: service_diagnostic_session_control,
     0x11: service_ecu_reset,
+    0x19: service_read_dtc_information,
     0x22: service_read_data_by_identifier,
     0x2E: service_write_data_by_identifier,
     0x3E: service_tester_present,
@@ -1223,8 +1271,8 @@ P9 阶段**连续执行 3 轮完整回归**，三轮结果逐项完全一致
 工程收口 2026-09-21 基线（Phase 4X 全量，实测）：
 
 ```text
-UDS Unit       168 PASS   （104 + 34 + 17 services-extra + 13 gateway）
-E2E（在网）     91 PASS   （65 + 14 isotp-matrix + 8 write-did + 4 multi-ecu）
+UDS Unit       199 PASS   （105 ECU + 34 keygen + 17 services-extra + 13 gateway + 30 dtc）
+E2E（在网）     99 PASS   （65 + 14 isotp-matrix + 8 write-did + 4 multi-ecu + 8 dtc）
 can-tools 离线 183 PASS   （34 parsers + 50 isotp-options + 99 fuzz-harness，
                           含 kernel oracle 三态 10 例）
 fuzz kernel oracle 三态 AVAILABLE/UNAVAILABLE/ERROR 如实上报
@@ -1233,7 +1281,7 @@ fuzz kernel oracle 三态 AVAILABLE/UNAVAILABLE/ERROR 如实上报
 运行方式：
 
 ```bash
-bash labs/vehicle/uds-basic/tests/run_tests.sh all   # 168 + 91
+bash labs/vehicle/uds-basic/tests/run_tests.sh all   # 199 + 99
 bash scripts/healthcheck.sh                          # 环境 + 离线测试
 ```
 
@@ -1500,7 +1548,8 @@ Phase 3 完成的是一次**结构性重构**（行为保持不变）：
 
 - ✅ 已完成：`0x2E` WriteDataByIdentifier（见 4.3）
 - ✅ 已完成：`0x3E` TesterPresent（见 4.1）
-- `0x19` ReadDTCInformation：DTC 数据库与状态掩码
+- ✅ 已完成：`0x19` ReadDTCInformation 的 reportType 01/02/0A
+  （其余 reportType 与 0x85 DTC 控制属后续）
 - `0x31` RoutineControl：例程控制
 - `0x28` CommunicationControl、`0x85` ControlDTCSetting
 - `0x78` ResponsePending 与 P2* 超时处理
@@ -1535,8 +1584,10 @@ Phase 3 完成的是一次**结构性重构**（行为保持不变）：
 
 ### 15.4 工程化
 
-- ✅ 已完成：CI workflow（`.github/workflows/ci.yml`，fast 自动 +
-  extended 手动）；**尚未在真实 GitHub runner 触发**（无 push 授权）
+- ✅ 已完成：CI `.github/workflows/ci.yml`：Fast 自动（push/PR），
+  Extended 仅 workflow_dispatch；本 PR 的 Fast 已在真实 GitHub runner
+  上验证通过（[Historical：工程收口当时曾"尚未在真实 runner 触发
+  （无 push 授权）"，该状态已随 push/PR 流程解除。]）
 - 用 `cantools` + DBC 描述诊断报文，与 `can-basic` 实验打通
 - 输出 UDS 测试报告到 `reports/`
 

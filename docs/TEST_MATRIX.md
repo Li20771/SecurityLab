@@ -34,16 +34,18 @@
 
 | 测试文件 | 类型 | 用例数 | 覆盖 | 状态 |
 |----------|------|--------|------|------|
-| test_ecu_unit.py | unit | 104 | ECU 状态机、UDS 0x10/11/22/27/2E/3E、NRC、SecurityAccess 锁死/过期 | Local verified |
+| test_ecu_unit.py | unit | 105 | ECU 状态机、UDS 0x10/11/19/22/27/2E/3E、NRC、SecurityAccess 锁死/过期、hardReset 保留 DTC | Local verified |
 | test_keygen_unit.py | unit | 34 | seed/key 生成、derive/verify、可导入性（独立进程） | Local verified |
 | test_services_extra_unit.py | unit | 17 | 0x2E 门控链、0x3E 正响应/抑制/非法子功能、独立 EcuState | Local verified |
 | test_gateway_unit.py | unit | 13 | 多 ECU 拓扑、物理/功能寻址、状态隔离、广播不泄漏、构造护栏 | Local verified |
+| test_dtc_unit.py | unit | 30 | 0x19/01/02/0A 报文与 mask 过滤、NRC 12/13、DTC 静态库约束、运行时状态与实例隔离 | Local verified |
 | test_e2e_vcan.py | e2e(vcan) | 65 | ECU 启动/请求响应/异常/超时/cleanup、SecurityAccess 全流程 | Local verified |
 | test_isotp_options_vcan.py | e2e(vcan) | 14（矩阵） | ISO-TP SF/FF/CF/FC、STmin/BS、超时、malformed PCI | Local verified |
 | test_write_did_vcan.py | e2e(vcan) | 8 | 真实解锁写 DID→读回、hardReset 恢复、3E 80 总线静默 | Local verified |
 | test_multi_ecu_vcan.py | e2e(vcan) | 4（5.2s） | 三 ECU 进程物理寻址、会话隔离、错误地址无应答 | Local verified |
+| test_dtc_vcan.py | e2e(vcan) | 8 | 0x19 正响应/NRC 真实链路、hardReset 前后 DTC 一致 | Local verified |
 
-- 汇总：`run_tests.sh all` → **PASS 9 / WARN 0 / FAIL 0**（unit 168 + e2e 91）。
+- 汇总：`run_tests.sh all` → **PASS 11 / WARN 0 / FAIL 0**（unit 199 + e2e 99）。
 - 已知非致命：`test_isotp_options_vcan.py:186` ResourceWarning（子进程 BufferedReader 未关）。
 
 ## 3. 车联网（can-tools）测试明细

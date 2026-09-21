@@ -6,13 +6,14 @@ UDS Basic —— ECU 运行时状态与服务处理
 
 - ``EcuState`` / ``STATE``：ECU 的跨请求运行时状态
 - ``reset_security_state()`` / ``required_security_level()``：状态与权限 helper
-- 六个服务处理函数：
+- 七个服务处理函数：
     * ``service_diagnostic_session_control``  (0x10)
     * ``service_ecu_reset``                   (0x11)
     * ``service_read_data_by_identifier``     (0x22)
     * ``service_security_access``             (0x27)
     * ``service_write_data_by_identifier``    (0x2E)
     * ``service_tester_present``              (0x3E)
+    * ``service_read_dtc_information``        (0x19)
 - ``SERVICES``：静态服务注册表（**不含 0x27**）
 - ``_make_security_access_handler()``：为 0x27 绑定请求时依赖的工厂
 - ``handle_uds_request()``：协议层 dispatcher
@@ -47,6 +48,11 @@ from did_database import (
     WRITABLE_DID_LENGTHS,
     WRITABLE_DIDS,
 )
+from dtc_database import (
+    DTC_DATABASE,
+    DTC_FORMAT_IDENTIFIER,
+    DTC_STATUS_AVAILABILITY_MASK,
+)
 
 __all__ = [
     "EcuState",
@@ -61,6 +67,7 @@ __all__ = [
     "service_security_access",
     "service_write_data_by_identifier",
     "service_tester_present",
+    "service_read_dtc_information",
     "handle_uds_request",
 ]
 
@@ -81,6 +88,15 @@ SESSION_TIMING = {
 # ======================================================================
 # ECU 运行时状态
 # ======================================================================
+
+
+def _default_dtc_records() -> dict[int, int]:
+    """出厂默认 DTC 状态：复制静态 ``dtc_database.DTC_DATABASE``。
+
+    独立工厂函数（而非 lambda）便于读文档、避免共享可变默认值，
+    也让 dataclass 字段定义保持整洁。
+    """
+    return dict(DTC_DATABASE)
 
 
 @dataclass
@@ -135,6 +151,14 @@ class EcuState:
     #: ECUReset(hardReset) 清空本字典，使 DID 恢复出厂值。
     #: 用 field(default_factory=dict) 避免 dataclass 共享可变默认值。
     did_overrides: dict[int, bytes] = field(default_factory=dict)
+
+    #: 0x19 ReadDTCInformation 的运行时 DTC 状态：{DTC(3 字节): statusOfDTC(1 字节)}。
+    #:
+    #: 默认复制 ``dtc_database.DTC_DATABASE`` 的出厂值（见
+    #: ``_default_dtc_records()``）；运行时读取一律从本字段进行。
+    #: ECUReset(hardReset) **不清除**本字典——DTC 是故障历史记忆，
+    #: 与 ``did_overrides`` 的"复位即恢复出厂"语义刻意不同（测试固化）。
+    dtc_records: dict[int, int] = field(default_factory=_default_dtc_records)
 
 
 #: 默认状态单例：ECU 进程使用的唯一运行时状态实例。
@@ -570,6 +594,116 @@ def service_tester_present(request: bytes, state: EcuState) -> bytes:
 
 
 # ======================================================================
+# 0x19 ReadDTCInformation
+# ======================================================================
+
+#: 本 feature 实现的 0x19 reportType 子功能。
+REPORT_NUMBER_OF_DTC = 0x01
+REPORT_DTC_BY_STATUS_MASK = 0x02
+REPORT_SUPPORTED_DTC = 0x0A
+
+
+def _matching_dtcs(state: EcuState, status_mask: int) -> list[tuple[int, int]]:
+    """返回 ``(statusOfDTC & status_mask) != 0`` 的 (DTC, status) 对。
+
+    按 DTC 升序输出，保证响应字节顺序稳定（0x19/02 教学要求）。
+    """
+    return sorted(
+        (dtc, status) for dtc, status in state.dtc_records.items()
+        if (status & status_mask) != 0
+    )
+
+
+def service_read_dtc_information(request: bytes, state: EcuState) -> bytes:
+    """
+    处理 0x19 ReadDTCInformation。
+
+    本 feature 只实现三个 reportType（其余 → NRC 0x12）：
+
+    - ``19 01 <DTCStatusMask>`` → ``59 01 <DTCStatusAvailabilityMask>
+      <DTCFormatIdentifier> <DTCCount_H> <DTCCount_L>``，
+      计数 = ``(statusOfDTC & mask) != 0`` 的 DTC 数（16-bit big-endian）。
+    - ``19 02 <DTCStatusMask>`` → ``59 02 <DTCStatusAvailabilityMask>
+      [(DTC_H DTC_M DTC_L) <statusOfDTC>]*``，只含匹配项、**不含
+      DTCCount**，按 DTC 升序。
+    - ``19 0A`` → ``59 0A <DTCStatusAvailabilityMask>
+      [(DTC_H DTC_M DTC_L) <statusOfDTC>]*``，报告全部支持 DTC
+      （不受 status 过滤），按 DTC 升序。
+
+    长度规则：01/02 严格 3 字节，0A 严格 2 字节，否则 NRC 0x13。
+    运行时 DTC 状态只从 ``state.dtc_records`` 读取；本 handler
+    **不修改任何状态**（本 PR 不提供"设置 DTC 状态"的服务）。
+    suppressPosRspMsgIndicationBit 不在本 feature 范围（后续统一处理）。
+    """
+    if len(request) < 2:
+        return uds_types.negative_response(
+            0x19, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+        )
+
+    report_type = request[1]
+
+    if report_type == REPORT_NUMBER_OF_DTC:
+        if len(request) != 3:
+            return uds_types.negative_response(
+                0x19, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+            )
+
+        status_mask = request[2]
+        count = len(_matching_dtcs(state, status_mask))
+
+        payload = bytes([
+            DTC_STATUS_AVAILABILITY_MASK,
+            DTC_FORMAT_IDENTIFIER,
+            (count >> 8) & 0xFF,
+            count & 0xFF,
+        ])
+
+        return uds_types.positive_response(0x19, payload)
+
+    if report_type == REPORT_DTC_BY_STATUS_MASK:
+        if len(request) != 3:
+            return uds_types.negative_response(
+                0x19, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+            )
+
+        status_mask = request[2]
+        payload = bytes([DTC_STATUS_AVAILABILITY_MASK])
+
+        for dtc, status in _matching_dtcs(state, status_mask):
+            payload += bytes([
+                (dtc >> 16) & 0xFF,
+                (dtc >> 8) & 0xFF,
+                dtc & 0xFF,
+                status,
+            ])
+
+        return uds_types.positive_response(0x19, payload)
+
+    if report_type == REPORT_SUPPORTED_DTC:
+        if len(request) != 2:
+            return uds_types.negative_response(
+                0x19, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+            )
+
+        payload = bytes([DTC_STATUS_AVAILABILITY_MASK])
+
+        # 0x0A 报告支持的全部 DTC（不按 status 过滤），稳定排序。
+        for dtc, status in sorted(state.dtc_records.items()):
+            payload += bytes([
+                (dtc >> 16) & 0xFF,
+                (dtc >> 8) & 0xFF,
+                dtc & 0xFF,
+                status,
+            ])
+
+        return uds_types.positive_response(0x19, payload)
+
+    return uds_types.negative_response(
+        0x19, uds_types.NRC_SUBFUNCTION_NOT_SUPPORTED
+    )
+
+
+# ======================================================================
 # UDS 服务分发
 # ======================================================================
 
@@ -616,6 +750,7 @@ def _make_security_access_handler(
 SERVICES = {
     0x10: service_diagnostic_session_control,
     0x11: service_ecu_reset,
+    0x19: service_read_dtc_information,
     0x22: service_read_data_by_identifier,
     0x2E: service_write_data_by_identifier,
     0x3E: service_tester_present,

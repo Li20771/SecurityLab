@@ -116,6 +116,14 @@ run_unit() {
     fi
 
     echo
+
+    if "$PYTHON_BIN" "$TESTS_DIR/test_dtc_unit.py"; then
+        ok "0x19 ReadDTCInformation unit tests passed"
+    else
+        fail "ReadDTCInformation unit tests failed"
+    fi
+
+    echo
 }
 
 # ----------------------------------------------------------------------
@@ -174,6 +182,16 @@ run_e2e() {
             ok "multi-ECU physical addressing e2e tests passed"
         else
             fail "multi-ECU physical addressing e2e tests failed"
+        fi
+
+        echo
+    fi
+
+    if [ -f "$TESTS_DIR/test_dtc_vcan.py" ]; then
+        if "$PYTHON_BIN" "$TESTS_DIR/test_dtc_vcan.py"; then
+            ok "0x19 ReadDTCInformation e2e tests passed"
+        else
+            fail "ReadDTCInformation e2e tests failed"
         fi
 
         echo
