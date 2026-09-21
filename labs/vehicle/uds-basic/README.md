@@ -1053,7 +1053,7 @@ uds-basic/
 - [x] ISO-TP 单帧 / 多帧分帧验证
 - [x] 多 ECU 拓扑（`ecu/gateway.py`）：物理寻址三 ECU、功能寻址广播、
   状态隔离、构造护栏（13 单元 + 4 e2e）
-- [x] 显式 `EcuState`（8 字段）与单一事实源 `STATE`
+- [x] 显式 `EcuState`（10 字段）与单一事实源 `STATE`
 - [x] 静态服务 registry + 协议层 dispatcher
 - [x] transport / protocol 分层与单向依赖（`uds_server` 不反向依赖 `ecu`）
 - [x] 离线单元测试 199 PASS（105 ECU + 34 keygen + 17 services-extra + 13 gateway + 30 dtc）
@@ -1193,13 +1193,14 @@ dtc_records      0x19 的运行时 DTC 状态（hardReset **保留**，故障记
 
 ### 14.6 Service registry 与 dispatcher
 
-静态 registry 定义在 `uds_server.py`，**含五个服务**
-（0x2E / 0x3E 为 Phase 4X 新增）：
+静态 registry 定义在 `uds_server.py`，**含六个服务**
+（0x2E / 0x3E 为 Phase 4X 新增，0x19 为第二轮第一项新增）：
 
 ```python
 SERVICES = {
     0x10: service_diagnostic_session_control,
     0x11: service_ecu_reset,
+    0x19: service_read_dtc_information,
     0x22: service_read_data_by_identifier,
     0x2E: service_write_data_by_identifier,
     0x3E: service_tester_present,
@@ -1280,7 +1281,7 @@ fuzz kernel oracle 三态 AVAILABLE/UNAVAILABLE/ERROR 如实上报
 运行方式：
 
 ```bash
-bash labs/vehicle/uds-basic/tests/run_tests.sh all   # 168 + 91
+bash labs/vehicle/uds-basic/tests/run_tests.sh all   # 199 + 99
 bash scripts/healthcheck.sh                          # 环境 + 离线测试
 ```
 
@@ -1583,8 +1584,10 @@ Phase 3 完成的是一次**结构性重构**（行为保持不变）：
 
 ### 15.4 工程化
 
-- ✅ 已完成：CI workflow（`.github/workflows/ci.yml`，fast 自动 +
-  extended 手动）；**尚未在真实 GitHub runner 触发**（无 push 授权）
+- ✅ 已完成：CI `.github/workflows/ci.yml`：Fast 自动（push/PR），
+  Extended 仅 workflow_dispatch；本 PR 的 Fast 已在真实 GitHub runner
+  上验证通过（[Historical：工程收口当时曾"尚未在真实 runner 触发
+  （无 push 授权）"，该状态已随 push/PR 流程解除。]）
 - 用 `cantools` + DBC 描述诊断报文，与 `can-basic` 实验打通
 - 输出 UDS 测试报告到 `reports/`
 
