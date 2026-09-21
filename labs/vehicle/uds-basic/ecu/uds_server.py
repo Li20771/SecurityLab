@@ -987,14 +987,18 @@ def service_transfer_data(request: bytes, state: EcuState) -> bytes:
     请求: ``36 <blockSequenceCounter:1> <transferData...>``
     （3 ≤ len ≤ MAX_TRANSFER_REQUEST_LENGTH=128；data ≤ 126）。
 
-    - 无 active download → 7F 36 24（状态不变）；
-    - 越界（len(buffer)+len(data) > download_size）→ 7F 36 13
-      （buffer/counter/last_block 全部不变，**绝不 received > requested**）；
-    - 请求 == 上一条被接受的完整请求 → **幂等重传**：接受、不追加、
-      counter 不推进、返回 76 <BSC>（连续重复亦然，不是 0x73）；
-    - BSC == expected 且非重复 → 追加数据、counter=(expected+1)&0xFF、
-      last_block=本请求，返回 76 <BSC>；
-    - 其它 BSC 不匹配 → 7F 36 73（真正的 sequence error，状态不变）。
+    判定顺序（幂等重传必须早于越界检查——buffer 已满时重发
+    上一条完整请求仍必须是正响应，而不是 0x13）：
+
+    1. len(request) < 3 或 > 128 → 7F 36 13；
+    2. 无 active download → 7F 36 24（状态不变）；
+    3. 请求 == 上一条被接受的完整请求 → **幂等重传**：76 <BSC>，
+       不追加、不推进、不改 last_block（连续重复亦然，不是 0x73）；
+    4. BSC != expected → 7F 36 73（真正的 sequence error，状态不变）；
+    5. data > 126 或 len(buffer)+len(data) > download_size → 7F 36 13
+       （**绝不 received > requested**，状态不变）；
+    6. 正常新 block → 追加、expected=(expected+1)&0xFF、last_block=
+       本请求，返回 76 <BSC>。
     """
     if len(request) < 3 or len(request) > MAX_TRANSFER_REQUEST_LENGTH:
         return uds_types.negative_response(
@@ -1004,28 +1008,29 @@ def service_transfer_data(request: bytes, state: EcuState) -> bytes:
     block_counter = request[1]
     data = bytes(request[2:])
 
-    if len(data) > MAX_TRANSFER_REQUEST_LENGTH - 2:
-        return uds_types.negative_response(
-            0x36, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
-        )
-
     if not state.download_active:
         return uds_types.negative_response(
             0x36, uds_types.NRC_REQUEST_SEQUENCE_ERROR
         )
 
-    if len(state.download_buffer) + len(data) > state.download_size:
-        return uds_types.negative_response(
-            0x36, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
-        )
-
     if request == state.download_last_block_request:
         # 幂等重传：上一条完整请求的完全重复（含 BSC 相同）。
+        # 刻意放在越界检查**之前**：buffer 已满时重发仍须正响应。
         return uds_types.positive_response(0x36, bytes([block_counter]))
 
     if block_counter != state.download_expected_block:
         return uds_types.negative_response(
             0x36, uds_types.NRC_WRONG_BLOCK_SEQUENCE_COUNTER
+        )
+
+    if len(data) > MAX_TRANSFER_REQUEST_LENGTH - 2:
+        return uds_types.negative_response(
+            0x36, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+        )
+
+    if len(state.download_buffer) + len(data) > state.download_size:
+        return uds_types.negative_response(
+            0x36, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
         )
 
     state.download_buffer.extend(data)

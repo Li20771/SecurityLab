@@ -291,6 +291,22 @@ class TestTransferE2E(TransferVcanTestCase):
         self.assertEqual(exchange(block(1, b"\xAA\xBB")), bytes([0x76, 0x01]))
         self.assertEqual(exchange(block(2, b"\xCC\xDD")), bytes([0x76, 0x02]))
 
+    def test_36_duplicate_after_buffer_full(self) -> None:
+        """
+        Blocker 回归（PR #5 review）：buffer 已满时重发上一条完整请求
+        必须是幂等正响应 76 02，而不是 7F 36 13；随后 37 → 77 证明
+        duplicate 不重复追加、不破坏完整性。
+        """
+        exchange(download(size=4))
+        self.assertEqual(exchange(block(1, b"\xAA\xBB")), bytes([0x76, 0x01]))
+        self.assertEqual(exchange(block(2, b"\xCC\xDD")), bytes([0x76, 0x02]))
+
+        # duplicate after buffer full
+        self.assertEqual(exchange(block(2, b"\xCC\xDD")), bytes([0x76, 0x02]))
+
+        # 完整性不受影响：可直接完整退出
+        self.assertEqual(exchange(bytes([0x37])), bytes([0x77]))
+
     def test_36_wrong_bsc(self) -> None:
         exchange(download(size=4))
 

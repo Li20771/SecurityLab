@@ -366,6 +366,41 @@ class TestTransferData(TransferTestCase):
         self.assertEqual(self.snapshot(), after_first,
                          "重复块不得追加 buffer、不得推进 counter")
 
+    def test_duplicate_last_block_when_buffer_full_is_idempotent(self) -> None:
+        """
+        Blocker 回归（PR #5 review）：buffer 已满时重发上一条完整请求，
+        幂等判定必须早于越界检查——否则 4+2 > 4 会误判 0x13。
+
+        场景: 34 size=4 → 36 01 AA BB → 36 02 CC DD（buffer 已满）
+              → 重复 36 02 CC DD → 必须 76 02，状态完全不变。
+        """
+        self.start_download(size=4)
+        handle_uds_request(_block(1, b"\xAA\xBB"), self.state)
+        handle_uds_request(_block(2, b"\xCC\xDD"), self.state)
+
+        expected = self.snapshot()
+
+        response = handle_uds_request(_block(2, b"\xCC\xDD"), self.state)
+
+        self.assertEqual(response, bytes([0x76, 0x02]))
+        self.assertEqual(self.snapshot(), expected)
+        self.assertEqual(self.state.download_buffer, bytearray(b"\xAA\xBB\xCC\xDD"))
+        self.assertEqual(self.state.download_expected_block, 3)
+        self.assertEqual(self.state.download_last_block_request,
+                         _block(2, b"\xCC\xDD"))
+
+        # 连续重复至少 2 次，保持幂等
+        for _ in range(2):
+            response = handle_uds_request(_block(2, b"\xCC\xDD"), self.state)
+            self.assertEqual(response, bytes([0x76, 0x02]))
+            self.assertEqual(self.snapshot(), expected)
+
+        # 后续新块仍按 expected=03 工作（此处 buffer 已满，越界 → 0x13）
+        self.assertEqual(
+            handle_uds_request(_block(3, b"\xEE"), self.state),
+            bytes([0x7F, SID_TRANSFER_DATA, NRC_INCORRECT_MESSAGE_LENGTH]),
+        )
+
     def test_repeated_duplicates_stay_idempotent(self) -> None:
         self.start_download(size=4)
 

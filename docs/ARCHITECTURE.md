@@ -64,7 +64,7 @@ SecurityLab/
   │ test_gateway_unit 13      │            │        ▼  ISO-TP（Normal 11-bit）        │
   │ test_dtc_unit 30          │            │                                       │
   │ test_routine_unit 25      │            │                                       │
-  │ test_transfer_unit 39     │            │                                       │
+  │ test_transfer_unit 40     │            │                                       │
   └───────────────────────────┘            │  SocketCAN vcan0  (TX 0x7E0/RX 0x7E8)  │
                                            │        ▲                                │
   ┌───────────────────────────┐            │  ecu/ecu.py 主循环（帧收发/空响应抑制）  │
@@ -167,7 +167,7 @@ can_capture.py / can_capture_blf.py / capture/capture_lab.sh：
 qa_fast.sh（离线，独立进程）          qa_extended.sh（独占 vcan，串行）
  ├─ ruff check uds-basic              ├─ 确保 vcan0（root/免密 sudo 自建，否则报错退出）
  ├─ mypy ecu 包                       ├─ uds run_tests all
- ├─ uds run_tests unit (264)          ├─ can-tools run_tests all
+ ├─ uds run_tests unit (265)          ├─ can-tools run_tests all
  └─ can-tools run_tests offline(183)  ├─ capture_lab（三格式）
                                       └─ yara scan；[--fuzz] 追加 CAN fuzz smoke
 healthcheck.sh [--extended]：环境/工具/服务/链路总检（PASS/WARN/FAIL，FAIL→exit 1）

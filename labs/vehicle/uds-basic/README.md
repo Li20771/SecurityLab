@@ -698,15 +698,15 @@ bash tests/run_tests.sh e2e    # 只跑 vcan0 端到端测试
 | `tests/test_gateway_unit.py` | 13 | 否 |
 | `tests/test_dtc_unit.py` | 30 | 否 |
 | `tests/test_routine_unit.py` | 25 | 否 |
-| `tests/test_transfer_unit.py` | 39 | 否 |
+| `tests/test_transfer_unit.py` | 40 | 否 |
 | `tests/test_e2e_vcan.py` | 65 | 是 |
 | `tests/test_isotp_options_vcan.py` | 14 | 是 |
 | `tests/test_write_did_vcan.py` | 8 | 是 |
 | `tests/test_multi_ecu_vcan.py` | 4 | 是 |
 | `tests/test_dtc_vcan.py` | 8 | 是 |
 | `tests/test_routine_vcan.py` | 11 | 是 |
-| `tests/test_transfer_vcan.py` | 16 | 是 |
-| **合计** | **390**（unit 264 + e2e 126） | — |
+| `tests/test_transfer_vcan.py` | 17 | 是 |
+| **合计** | **392**（unit 265 + e2e 127） | — |
 
 ### 8.2 离线单元测试（不需要 CAN）
 
@@ -1097,14 +1097,14 @@ uds-basic/
     ├── test_gateway_unit.py     # 多 ECU 路由测试（13 用例，无需 CAN）
     ├── test_dtc_unit.py         # 0x19 单元测试（30 用例，无需 CAN）
     ├── test_routine_unit.py     # 0x31 单元测试（25 用例，无需 CAN）
-    ├── test_transfer_unit.py    # 0x34/36/37 单元测试（39 用例，无需 CAN）
+    ├── test_transfer_unit.py    # 0x34/36/37 单元测试（40 用例，无需 CAN）
     ├── test_e2e_vcan.py         # vcan0 端到端测试（65 用例）
     ├── test_isotp_options_vcan.py   # ISO-TP 传输参数矩阵（14 用例，需 vcan0）
     ├── test_write_did_vcan.py   # 0x2E/0x3E 真实解锁写入（8 用例，需 vcan0）
     ├── test_multi_ecu_vcan.py   # 三 ECU 物理寻址（4 用例，需 vcan0）
     ├── test_dtc_vcan.py         # 0x19 真实链路（8 用例，需 vcan0）
     ├── test_routine_vcan.py     # 0x31 真实链路（11 用例，需 vcan0）
-    └── test_transfer_vcan.py    # 0x34/36/37 真实链路（16 用例，需 vcan0）
+    └── test_transfer_vcan.py    # 0x34/36/37 真实链路（17 用例，需 vcan0）
 ```
 
 > 注意：`ecu.py` 不是 UDS 业务实现层。协议实现位于 `uds_server.py`，
@@ -1150,8 +1150,8 @@ uds-basic/
 - [x] 显式 `EcuState`（10 字段）与单一事实源 `STATE`
 - [x] 静态服务 registry + 协议层 dispatcher
 - [x] transport / protocol 分层与单向依赖（`uds_server` 不反向依赖 `ecu`）
-- [x] 离线单元测试 264 PASS（106 ECU + 34 keygen + 17 services-extra + 13 gateway + 30 dtc + 25 routine + 39 transfer）
-- [x] vcan0 端到端测试 126 PASS（65 e2e + 14 isotp-matrix + 8 write-did + 4 multi-ecu + 8 dtc + 11 routine + 16 transfer）
+- [x] 离线单元测试 265 PASS（106 ECU + 34 keygen + 17 services-extra + 13 gateway + 30 dtc + 25 routine + 40 transfer）
+- [x] vcan0 端到端测试 127 PASS（65 e2e + 14 isotp-matrix + 8 write-did + 4 multi-ecu + 8 dtc + 11 routine + 17 transfer）
 - [x] **三轮连续稳定性验证全部通过**（见第 14.7 节）
 
 ---
@@ -1381,8 +1381,8 @@ P9 阶段**连续执行 3 轮完整回归**，三轮结果逐项完全一致
 工程收口 2026-09-21 基线（Phase 4X 全量，实测）：
 
 ```text
-UDS Unit       264 PASS   （106 ECU + 34 keygen + 17 services-extra + 13 gateway + 30 dtc + 25 routine + 39 transfer）
-E2E（在网）     126 PASS  （65 + 14 isotp-matrix + 8 write-did + 4 multi-ecu + 8 dtc + 11 routine + 16 transfer）
+UDS Unit       265 PASS   （106 ECU + 34 keygen + 17 services-extra + 13 gateway + 30 dtc + 25 routine + 40 transfer）
+E2E（在网）     127 PASS  （65 + 14 isotp-matrix + 8 write-did + 4 multi-ecu + 8 dtc + 11 routine + 17 transfer）
 can-tools 离线 183 PASS   （34 parsers + 50 isotp-options + 99 fuzz-harness，
                           含 kernel oracle 三态 10 例）
 fuzz kernel oracle 三态 AVAILABLE/UNAVAILABLE/ERROR 如实上报
@@ -1391,7 +1391,7 @@ fuzz kernel oracle 三态 AVAILABLE/UNAVAILABLE/ERROR 如实上报
 运行方式：
 
 ```bash
-bash labs/vehicle/uds-basic/tests/run_tests.sh all   # 264 + 126
+bash labs/vehicle/uds-basic/tests/run_tests.sh all   # 265 + 127
 bash scripts/healthcheck.sh                          # 环境 + 离线测试
 ```
 
