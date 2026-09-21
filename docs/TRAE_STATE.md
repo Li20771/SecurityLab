@@ -14,14 +14,14 @@ PR #1 最终审查，第一轮基线准备正式合入 main
 `chore/engineering-close-20260921`
 
 **HEAD**:
-`03258025b5bba5179a41a4a2af392fec04fae8d2`
+`8bfd405bbbbfd215c7077bc208f0bccc64cfe6ec`
 
 **PR**:
 #1 — OPEN / DRAFT
 
 **GitHub CI**:
 Fast QA — PASS
-Run `35575283020`
+Run `35576358620`
 
 **MAIN**:
 当前仍为 `e215b1d6d77d0edfcfd76d6fdf9a4df3fb22c517`

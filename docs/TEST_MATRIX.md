@@ -9,8 +9,8 @@
 > - **Environment audit reported**：来自 2026-09-20/21 审计窗口的既有实测记录
 >   （证据在 `tmp/audit/`，未版本化；本轮以 `scripts/repro/` 重新固化为可复现入口）；
 > - **GitHub CI verified**：真实 GitHub runner **实际运行通过**。
->   当前已验证：SecurityLab CI / Fast QA / run `35575283020` /
->   commit `03258025b5bba5179a41a4a2af392fec04fae8d2`。
+>   当前已验证：SecurityLab CI / Fast QA / run `35576358620` /
+>   commit `8bfd405bbbbfd215c7077bc208f0bccc64cfe6ec`，result = success。
 >   Extended 尚未在真实 runner 验证（仅 workflow_dispatch），见 §8。
 
 ## 1. 分层与入口
@@ -23,7 +23,7 @@
 | Fuzz | 需 vcan0，耗时长 | `scripts/qa_extended.sh --fuzz`；最小复现 `scripts/repro/verify_fuzz_smoke.sh`；AFL 见 labs/fuzzing | CAN/ISO-TP 变异、AFL 崩溃发现 |
 | Repro（可复现验证） | 部分需 vcan | `scripts/repro/verify_{arm,qemu_gdb,ghidra,fuzz_smoke}.sh` | ARM/QEMU-GDB/Ghidra headless/fuzz smoke 最小闭环 |
 | Health | 快速门否 / `--extended` 需 vcan | `scripts/healthcheck.sh [--extended]` | 环境/工具/服务/链路总检 |
-| CI | GitHub runner | `.github/workflows/ci.yml` | fast 自动、extended 手动；**fast 已由 run 35575283020 在真实 GitHub runner 上验证通过** |
+| CI | GitHub runner | `.github/workflows/ci.yml` | fast 自动、extended 手动；**fast 已由 run 35576358620 在真实 GitHub runner 上验证通过** |
 
 > 测试层级职责（pytest / run_tests.sh / qa_*）见 `docs/ARCHITECTURE.md` §5.1。
 
@@ -138,10 +138,12 @@ reported**（含于 `qa_extended.sh`，本机可重跑）。
 - workflow：SecurityLab CI
 - event：push
 - branch：`chore/engineering-close-20260921`
-- commit：`03258025b5bba5179a41a4a2af392fec04fae8d2`
-- run：`35575283020`
+- commit：`8bfd405bbbbfd215c7077bc208f0bccc64cfe6ec`
+- run：`35576358620`
 - result：**success**
 - 覆盖：ruff / mypy / UDS unit / can-tools offline
+- 历史证据：run `35575283020`（commit `03258025…`）为上一轮 push 的
+  Fast QA 结果，同为 success——仅作历史记录，不作当前状态。
 
 **Extended job：**
 
@@ -152,7 +154,7 @@ reported**（含于 `qa_extended.sh`，本机可重跑）。
 
 ```text
 GitHub CI verified:
-    Fast     = YES（run 35575283020 = success）
+    Fast     = YES（run 35576358620 = success）
     Extended = NO / NOT RUN（未在真实 runner 触发）
 ```
 

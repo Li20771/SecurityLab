@@ -1,5 +1,5 @@
 #!/bin/bash
-# binfmt-selfheal.sh — N-01 mitigation (v2.2, 2026-09-21)
+# binfmt-selfheal.sh — N-01 mitigation (v2.3, 2026-09-21)
 #
 # Background (see docs/phases/phase-01-wsl.md and
 # docs/FINAL_ENVIRONMENT_AUDIT_2026-09-20.md):
@@ -117,13 +117,19 @@ heal_once() {
                 "binfmt-register-additive.py missing at $HELPER — fail-closed, NOT falling back to systemd-binfmt ($MODE)"
             return 1
         fi
-        if ! "$HELPER" >/dev/null 2>&1; then
+        # 先保存 helper 的真实退出码，再进分支写日志——日志语句之前
+        # 还有 `[ ... ]` 判定，直接写 $? 会拿到测试的退出码而不是 helper 的。
+        helper_rc=0
+        if "$HELPER" >/dev/null 2>&1; then
+            :
+        else
+            helper_rc=$?
             # Boot-race retries make transient failures possible; log the
             # error once per run, the final verdict below is authoritative.
             if [ "$HELPER_ERROR" = "0" ]; then
                 HELPER_ERROR=1
                 logger -t "$TAG" -p user.err \
-                    "binfmt-register-additive.py failed (rc=$?) — fail-closed, NOT falling back to systemd-binfmt ($MODE)"
+                    "binfmt-register-additive.py failed (rc=$helper_rc) — fail-closed, NOT falling back to systemd-binfmt ($MODE)"
             fi
             return 1
         fi

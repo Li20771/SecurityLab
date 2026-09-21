@@ -9,8 +9,8 @@ SecurityLab 第一轮建设及工程收口已经完成。
 当前正式 review 基线：
 
 - branch: `chore/engineering-close-20260921`
-- HEAD: `03258025b5bba5179a41a4a2af392fec04fae8d2`
-- GitHub Actions Fast QA：PASS（run `35575283020`）
+- HEAD: `8bfd405bbbbfd215c7077bc208f0bccc64cfe6ec`
+- GitHub Actions Fast QA：PASS（run `35576358620`）
 - PR #1：OPEN / DRAFT
 - main 尚未修改，当前仍为 `e215b1d6d77d0edfcfd76d6fdf9a4df3fb22c517`
 
@@ -41,7 +41,7 @@ SecurityLab 第一轮建设及工程收口已经完成。
 | 网络安全工具 | VERIFIED | nmap/tshark/tcpdump/ncat/socat/nft；`scripts/nettools_check.sh` |
 | Docker | VERIFIED（audit/local capability） | Ubuntu CLI → Docker Desktop E2E 已验证；当前 PR 不重新定义 Docker 当前运行态 |
 | 质量门禁 | VERIFIED | `scripts/qa_fast.sh`（离线）/ `qa_extended.sh`（vcan） |
-| CI | VERIFIED（Fast runner） | `.github/workflows/ci.yml`；Fast：GitHub Actions run 35575283020 = success；Extended：仅 workflow_dispatch，目前不作为自动 PR 门禁 |
+| CI | VERIFIED（Fast runner） | `.github/workflows/ci.yml`；Fast：GitHub Actions run 35576358620 = success；Extended：仅 workflow_dispatch，目前不作为自动 PR 门禁 |
 | 统一健康检查 | VERIFIED | `scripts/healthcheck.sh [--extended]` |
 | DSH Agent Web GUI | VERIFIED | `systemctl --user status dsh-web`，http://127.0.0.1:8731 |
 | binfmt / WSL interop | REPO VERIFIED / SYSTEM DEPLOYMENT NOT REVERIFIED | `configs/binfmt/binfmt-selfheal.sh` v2.3 fail-closed（helper 缺失绝不回落 systemd-binfmt） |
@@ -102,7 +102,8 @@ Current deployed system:
 - UDS `0x19 / 0x31 / 0x34 / 0x35 / 0x36 / 0x37`（按 request/response/NRC/state/unit/e2e 六件套逐个补）。
 - JFFS2 / UBIFS 完整 extraction chain（当前 build + identify 已通过）。
 - ✅ 已收口：Python 依赖 transitive lock（`python-network-requirements.lock`）。
-- CI 在真实 GitHub runner 上的运行验证（push 后）。
+- ✅ 已完成：CI Fast 在真实 GitHub runner 上的运行验证
+  （run 35576358620 = success）；Extended 仍仅 workflow_dispatch。
 - 不启动：Docker Security Lab、Obsidian 系统、新真实 CAN 接口（需明确授权）。
 - 可选：jefferson/ubireader、pwndbg/gef、libFuzzer/Honggfuzz、DBC 解析。
 
