@@ -49,8 +49,20 @@ labs/firmware/**/*.squashfs
 # Firmware lab generated ELF samples
 labs/firmware/**/rootfs/usr/bin/ecu-demo
 
+# Synthetic ECU firmware lab: build outputs and local staging
+labs/firmware/**/build/
+labs/firmware/synthetic-ecu/*.jffs2
+labs/firmware/synthetic-ecu/*.ubifs
+labs/firmware/synthetic-ecu/*.ubi
+
+# Real firmware samples stay local (keep the folder + README)
+labs/firmware/samples/MANIFEST.local.yml
+labs/firmware/samples/images/*
+!labs/firmware/samples/images/.gitkeep
+
 # Stateful ISO-TP fuzzing (Phase 4X) generated artifacts
 labs/vehicle/fuzz-out/
 labs/vehicle/fuzz-tmp/
+labs/vehicle/can-tools/fuzz-out/
 labs/vehicle/can-tools/fuzz/__pycache__/
 

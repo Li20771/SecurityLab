@@ -28,7 +28,6 @@ import sys
 
 import isotp
 
-
 INTERFACE = "vcan0"
 
 # Tester -> ECU
@@ -65,7 +64,7 @@ def parse_request(argv: list) -> bytes:
             f"无法解析请求字节：{raw!r}\n"
             f"示例：python isotp_client.py 22 F1 90\n"
             f"错误：{exc}"
-        )
+        ) from exc
 
 
 def describe_response(response: bytes) -> None:

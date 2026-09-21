@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-09-18T23:20:00+08:00",
+  "current_phase": "phase-02-kali",
+  "current_task": "Kali: fix accounts-daemon ordering (After=systemd-logind), document tpm-udev as WSL-normal, verify via Kali reboot",
+  "completed_tasks": [
+    "replay --all directory filtering fix verified (30/30 identity OK, class consistent, issue=0, EXIT=0)",
+    "offline test suites pass: parsers 34/34, isotp_send_options 50/50, fuzz_offline 89/89",
+    "N-01 root cause: Kali cold boot intermittently flushes VM-shared binfmt_misc registry (evidence in .p1x-probe/)",
+    "N-01 cheap recovery verified: systemctl restart systemd-binfmt.service (RC=0)",
+    "Phase 0 baseline rescan done (Ubuntu+Kali)",
+    "Phase 1 DONE: binfmt-selfheal installed on Ubuntu (path+service enabled); Kali cold-boot regression PASSED (33 handlers, interop OK, ARM64 qemu run OK). Doc: docs/phases/phase-01-wsl.md"
+  ],
+  "failed_tasks": [],
+  "modified_files": [
+    "labs/vehicle/can-tools/fuzz/replay.py (pre-existing, user-owned, KEEP)",
+    "labs/vehicle/can-tools/tests/test_fuzz_offline.py (pre-existing, user-owned, KEEP)",
+    ".p1x-probe/* (N-01 probes + evidence, new)",
+    "configs/binfmt/binfmt-selfheal.sh (new)",
+    "configs/systemd/binfmt-selfheal.service (new)",
+    "configs/systemd/binfmt-selfheal.path (new)",
+    "docs/TRAE_STATE.md (new)",
+    "docs/TRAE_STATE.json (new)",
+    "docs/phases/phase-01-wsl.md (new)"
+  ],
+  "modified_system_config": [
+    "Ubuntu: /usr/local/sbin/binfmt-selfheal.sh + /etc/systemd/system/binfmt-selfheal.{service,path}; path unit enabled+active. Rollback: systemctl disable --now binfmt-selfheal.path; rm the three files."
+  ],
+  "next_action": "Phase 2: Kali user@1000.service + tpm-udev/accounts-daemon triage. Then Phase 3 Docker.",
+  "rollback_notes": "Pre-existing uncommitted changes (replay.py, test_fuzz_offline.py, docs/*, fuzz-out/) must NOT be reset/cleaned/committed without explicit user instruction. Self-heal rollback above.",
+  "verification_status": {
+    "wsl_interop": "VERIFIED (fresh session INTEROP_OK after Kali cold boot)",
+    "ubuntu_binfmt": "VERIFIED 33 handlers, self-heal active",
+    "vcan0": "UP",
+    "kali_user1000": "PARTIAL (was active at 22:18; recurring Device-or-resource-busy at boot) - Phase 2",
+    "kali_failed_units": "tpm-udev.path/service, accounts-daemon.service",
+    "docker": "docker-desktop distro Stopped; dangling CLI symlinks in Ubuntu - Phase 3",
+    "github_network": "direct curl 200 OK observed; SSH publickey denied - Phase 4/5"
+  },
+  "protected_assets": [
+    "docs/ENVIRONMENT_INVENTORY_2026-09-17.md",
+    "docs/PHASE0_PHASE1_EXECUTION_2026-09-17.md",
+    "labs/vehicle/fuzz-out/ (30 testcases + smoke-summary)",
+    "all Docker volumes/images/containers"
+  ]
+}

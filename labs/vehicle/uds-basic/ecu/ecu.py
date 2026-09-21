@@ -8,6 +8,8 @@ UDS Basic —— 虚拟 ECU
 - 0x11 ECUReset
 - 0x22 ReadDataByIdentifier（含受保护 DID 的权限检查）
 - 0x27 SecurityAccess（RequestSeed / SendKey）
+- 0x2E WriteDataByIdentifier（仅可写 DID，需非默认会话 + 解锁）
+- 0x3E TesterPresent（支持 suppressPosRspMsgIndicationBit）
 
 安全边界：
 
@@ -38,16 +40,13 @@ dispatcher、NRC/response 组装）位于 ``uds_server.py``。
 import errno
 import os
 import time
-from typing import Optional
 
 import isotp
-
 import uds_server
 import uds_types
 from did_database import PROTECTED_DIDS
 from uds_server import (
     STATE,
-    EcuState,
     reset_security_state,
 )
 
@@ -62,7 +61,7 @@ def _env_int(name: str, default: int) -> int:
     return int(raw, 0)
 
 
-def _env_int_opt(name: str, minimum: int, maximum: int) -> Optional[int]:
+def _env_int_opt(name: str, minimum: int, maximum: int) -> int | None:
     """
     读取可选的整数型环境变量，并做范围校验。
 
@@ -94,7 +93,7 @@ def _env_int_opt(name: str, minimum: int, maximum: int) -> Optional[int]:
     return value
 
 
-def _env_duration_ns(name: str) -> Optional[int]:
+def _env_duration_ns(name: str) -> int | None:
     """
     读取可选的时长型环境变量，统一换算为**纳秒**。
 
@@ -147,7 +146,7 @@ def _env_duration_ns(name: str) -> Optional[int]:
     return nanos
 
 
-def _env_float_opt(name: str, minimum: float) -> Optional[float]:
+def _env_float_opt(name: str, minimum: float) -> float | None:
     """
     读取可选的浮点型环境变量，并做下界校验。
 
@@ -437,7 +436,8 @@ def _is_recoverable_isotp_error(exc: OSError) -> bool:
 
 def _isotp_error_detail(exc: OSError) -> str:
     """格式化 transport error 细节（errno + 助记符 + 异常文本）。"""
-    name = errno.errorcode.get(exc.errno, "?")
+    code = exc.errno
+    name = errno.errorcode.get(code, "?") if code is not None else "?"
 
     return f"errno={exc.errno} ({name}) {exc}"
 
@@ -530,6 +530,12 @@ def main() -> None:
             print(f"RX UDS: {data.hex(' ')}")
 
             response = handle_uds_request(data)
+
+            if not response:
+                # 0x3E TesterPresent 置 suppressPosRspMsgIndicationBit(0x80)
+                # 时协议层返回 b""：按 ISO 14229 抑制响应，不发送任何帧。
+                print("TX UDS: (suppressed — no response to send)")
+                continue
 
             print(f"TX UDS: {response.hex(' ')}")
 

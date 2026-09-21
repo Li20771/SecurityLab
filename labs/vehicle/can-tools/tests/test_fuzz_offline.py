@@ -950,5 +950,266 @@ class TestKernelOracleHelpers(unittest.TestCase):
         self.assertEqual(engine.filter_kernel_anomalies(lines), [])
 
 
+class TestReplayDirectoryFiltering(unittest.TestCase):
+    """
+    replay --all 的目录扫描必须只取真正的 testcase。
+
+    背景：``fuzz-out/`` 同时存放 testcase 与本轮汇总 ``smoke-summary.json``。
+    早期实现用 ``glob('*.json')``，会把 summary 也当成 case，
+    产生 ``schema_version 必须是 1，收到 None`` 并计入 ``issue(s)`` 导致退出码 1。
+    这不是重放失败，但属工程缺陷。
+
+    本组测试**不需要 vcan0**：只验证文件识别与目录扫描，
+    不打开 CAN socket、不启动 ECU。
+    """
+
+    def setUp(self) -> None:
+        import tempfile
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = self._tmp.name
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    # ---- helpers ----
+
+    def _write(self, name: str, payload) -> str:
+        path = os.path.join(self.dir, name)
+
+        if isinstance(payload, (bytes, bytearray)):
+            with open(path, "wb") as fh:
+                fh.write(payload)
+
+            return path
+
+        with open(path, "w", encoding="utf-8") as fh:
+            if isinstance(payload, str):
+                fh.write(payload)
+            else:
+                json.dump(payload, fh, ensure_ascii=False)
+
+        return path
+
+    def _valid_case(self) -> dict:
+        actions, skip = mut.apply_mutation(
+            corpus.get_seed("BASELINE_SF_1001"),
+            {"dimension": mut.DIM_PCI, "label": "pci=0x4X", "params": {"value": 4}},
+        )
+
+        self.assertIsNone(skip)
+
+        case = cs.build_case(
+            case_id="baseline_sf_1001__pci__pci-0x4x",
+            seed_id="BASELINE_SF_1001",
+            mutation={"dimension": mut.DIM_PCI, "label": "pci=0x4X", "params": {"value": 4}},
+            actions=actions,
+            category="baseline",
+        )
+
+        return cs.to_jsonable(case)
+
+    # ---- is_testcase_file ----
+
+    def test_accepts_real_testcase(self) -> None:
+        import replay
+
+        path = self._write("case.json", self._valid_case())
+        self.assertTrue(replay.is_testcase_file(path))
+
+    def test_rejects_smoke_summary_shape(self) -> None:
+        """smoke-summary.json 的真实结构（master_seed/total/summary/high_priority）。"""
+        import replay
+
+        payload = {
+            "master_seed": 12345,
+            "total": 30,
+            "summary": {"DISCARD": 22, "TRANSPORT_ERROR": 7, "NORMAL": 1},
+            "high_priority": [],
+        }
+        path = self._write("smoke-summary.json", payload)
+        self.assertFalse(replay.is_testcase_file(path))
+
+    def test_rejects_non_object_json(self) -> None:
+        import replay
+
+        for name, payload in (("list.json", [1, 2, 3]),
+                              ("str.json", "hello"),
+                              ("null.json", None),
+                              ("num.json", 7)):
+            with self.subTest(name=name):
+                self.assertFalse(replay.is_testcase_file(self._write(name, payload)))
+
+    def test_rejects_invalid_json(self) -> None:
+        import replay
+
+        path = self._write("broken.json", "{not valid json")
+        self.assertFalse(replay.is_testcase_file(path))
+
+    def test_rejects_missing_file(self) -> None:
+        import replay
+
+        self.assertFalse(replay.is_testcase_file(os.path.join(self.dir, "nope.json")))
+
+    def test_partial_testcase_is_still_treated_as_testcase(self) -> None:
+        """
+        含 testcase 特征字段但结构不全 → 仍识别为 testcase，
+        以便重放阶段报出明确错误，而不是被静默当 metadata 跳过。
+        """
+        import replay
+
+        path = self._write("partial.json", {"case_id": "x", "schema_version": 1})
+        self.assertTrue(replay.is_testcase_file(path))
+
+    def test_testcase_with_wrong_schema_version_is_testcase(self) -> None:
+        """schema_version 取值错误也属"损坏的 testcase"，不应被静默忽略。"""
+        import replay
+
+        payload = self._valid_case()
+        payload["schema_version"] = 99
+        path = self._write("badschema.json", payload)
+        self.assertTrue(replay.is_testcase_file(path))
+
+    def test_testcase_with_bad_interface_is_testcase(self) -> None:
+        import replay
+
+        payload = self._valid_case()
+        payload["interface"] = "can0"
+        path = self._write("badif.json", payload)
+        self.assertTrue(replay.is_testcase_file(path))
+
+    # ---- collect_cases ----
+
+    def test_collect_cases_separates_summary_from_cases(self) -> None:
+        import replay
+
+        self._write("a.json", self._valid_case())
+        b = self._valid_case()
+        b["case_id"] = "b_case"
+        self._write("b.json", b)
+        self._write("smoke-summary.json", {"master_seed": 1, "total": 2, "summary": {}})
+        self._write("notes.txt", "not json at all")
+
+        cases, ignored = replay.collect_cases(self.dir)
+
+        self.assertEqual([os.path.basename(p) for p in cases], ["a.json", "b.json"])
+        self.assertEqual([os.path.basename(p) for p in ignored], ["smoke-summary.json"])
+
+    def test_collect_cases_ignores_non_json_files(self) -> None:
+        import replay
+
+        self._write("a.json", self._valid_case())
+        self._write("README.md", "# not a case")
+        self._write("data.bin", b"\x00\x01\x02")
+
+        cases, ignored = replay.collect_cases(self.dir)
+
+        self.assertEqual(len(cases), 1)
+        self.assertEqual(ignored, [])
+
+    def test_collect_cases_empty_dir(self) -> None:
+        import replay
+
+        cases, ignored = replay.collect_cases(self.dir)
+        self.assertEqual(cases, [])
+        self.assertEqual(ignored, [])
+
+    def test_collect_cases_is_sorted(self) -> None:
+        import replay
+
+        for name in ("c.json", "a.json", "b.json"):
+            payload = self._valid_case()
+            payload["case_id"] = name.replace(".json", "")
+            self._write(name, payload)
+
+        cases, _ = replay.collect_cases(self.dir)
+        self.assertEqual([os.path.basename(p) for p in cases],
+                         ["a.json", "b.json", "c.json"])
+
+    # ---- CLI 层：--all 必须 EXIT=0 且不因 summary 计 issue ----
+
+    def test_main_all_ignores_summary_and_exits_zero(self) -> None:
+        """
+        ``replay --all`` 在含 summary 的目录上必须：
+        issue(s)=0、EXIT=0，且只重放真正的 testcase。
+
+        用 stub 替换 ``replay_case``，因此**不需要 vcan0 / ECU**。
+        """
+        import io
+        import contextlib
+        import replay
+
+        self._write("only-case.json", self._valid_case())
+        self._write("smoke-summary.json", {"master_seed": 1, "total": 1, "summary": {}})
+
+        replayed = []
+
+        original = replay.replay_case
+
+        def fake_replay_case(case, repeat=1, keep_artifacts=False):
+            replayed.append(case["case_id"])
+            return [{
+                "case_id": case["case_id"],
+                "frames": case["frames"],
+                "original_class": (case.get("result") or {}).get("class"),
+                "replay_run": 1,
+                "result": {
+                    "class": cs.DISCARD,
+                    "process_alive": True,
+                    "process_returncode": None,
+                    "crash_signature": "",
+                    "response": "(no response)",
+                    "response_kind": "none",
+                    "errno": None,
+                    "new_errno": False,
+                    "recovery": cs.RECOVERY_PASS,
+                    "recovery_response": "50 01 00 32 00 64",
+                    "kernel_events": [],
+                    "kernel_delta_lines": 0,
+                    "hung": False,
+                    "duration_ms": 1,
+                },
+            }]
+
+        replay.replay_case = fake_replay_case
+
+        try:
+            buf = io.StringIO()
+
+            with contextlib.redirect_stdout(buf):
+                rc = replay.main([self.dir, "--all"])
+        finally:
+            replay.replay_case = original
+
+        out = buf.getvalue()
+
+        self.assertEqual(rc, 0, msg=out)
+        self.assertEqual(replayed, ["baseline_sf_1001__pci__pci-0x4x"])
+        self.assertIn("[ignore] smoke-summary.json", out)
+        self.assertNotIn("[skip]", out)
+        self.assertIn("issue(s)           0", out)
+
+    def test_main_all_directory_without_any_case_returns_2(self) -> None:
+        """目录里只有 summary、没有 testcase → 明确报错退出 2，而不是静默成功。"""
+        import io
+        import contextlib
+        import replay
+
+        self._write("smoke-summary.json", {"master_seed": 1, "total": 0, "summary": {}})
+
+        buf = io.StringIO()
+
+        with contextlib.redirect_stdout(buf):
+            rc = replay.main([self.dir, "--all"])
+
+        self.assertEqual(rc, 2)
+        self.assertIn("[ignore] smoke-summary.json", buf.getvalue())
+
+    def test_main_directory_requires_all_flag(self) -> None:
+        import replay
+
+        self.assertEqual(replay.main([self.dir]), 2)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

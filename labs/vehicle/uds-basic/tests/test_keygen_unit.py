@@ -249,7 +249,7 @@ class TestKeygenIsPure(unittest.TestCase):
 
         这样客户端与测试可以只 import keygen 而不拖入 ISO-TP 依赖。
         """
-        source = open(keygen.__file__, "r", encoding="utf-8").read()
+        source = open(keygen.__file__, encoding="utf-8").read()
 
         for forbidden in ("import can", "import isotp", "import socket"):
             with self.subTest(forbidden=forbidden):

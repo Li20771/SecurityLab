@@ -42,7 +42,6 @@ UDS Basic —— 显式 ISO-TP 传输参数实验（Phase 4-P2）
 
 import os
 import signal
-import socket
 import subprocess
 import sys
 import threading
@@ -748,7 +747,6 @@ class TestTxStmin(IsotpOptionTestCase):
         )
 
         measured = gaps_seconds(cf_timestamps)
-        forced_ms = 2.0
         requested_ms = STMIN_BYTE_20MS
 
         for gap in measured:

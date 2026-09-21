@@ -100,6 +100,22 @@ run_unit() {
     fi
 
     echo
+
+    if "$PYTHON_BIN" "$TESTS_DIR/test_services_extra_unit.py"; then
+        ok "0x2E/0x3E extra services unit tests passed"
+    else
+        fail "extra services unit tests failed"
+    fi
+
+    echo
+
+    if "$PYTHON_BIN" "$TESTS_DIR/test_gateway_unit.py"; then
+        ok "multi-ECU gateway routing unit tests passed"
+    else
+        fail "multi-ECU gateway routing unit tests failed"
+    fi
+
+    echo
 }
 
 # ----------------------------------------------------------------------
@@ -138,6 +154,26 @@ run_e2e() {
             ok "ISO-TP transport option tests passed"
         else
             fail "ISO-TP transport option tests failed"
+        fi
+
+        echo
+    fi
+
+    if [ -f "$TESTS_DIR/test_write_did_vcan.py" ]; then
+        if "$PYTHON_BIN" "$TESTS_DIR/test_write_did_vcan.py"; then
+            ok "0x2E/0x3E write-DID / TesterPresent e2e tests passed"
+        else
+            fail "write-DID / TesterPresent e2e tests failed"
+        fi
+
+        echo
+    fi
+
+    if [ -f "$TESTS_DIR/test_multi_ecu_vcan.py" ]; then
+        if "$PYTHON_BIN" "$TESTS_DIR/test_multi_ecu_vcan.py"; then
+            ok "multi-ECU physical addressing e2e tests passed"
+        else
+            fail "multi-ECU physical addressing e2e tests failed"
         fi
 
         echo

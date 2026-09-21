@@ -1,0 +1,13 @@
+# binfmt-selfheal.path — N-01 mitigation
+# Fires whenever the binfmt_misc registry directory changes (entry add/remove
+# bumps its mtime). The companion service is idempotent, so repeated triggers
+# during a flush storm are harmless.
+[Unit]
+Description=Watch binfmt_misc registry for external flushes (N-01)
+
+[Path]
+PathChanged=/proc/sys/fs/binfmt_misc
+Unit=binfmt-selfheal.service
+
+[Install]
+WantedBy=multi-user.target

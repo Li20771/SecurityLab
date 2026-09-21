@@ -1,0 +1,51 @@
+# SecurityLab —— 统一 Python 质量门禁配置
+#
+# 适用范围：labs/vehicle/uds-basic（ecu 协议包 + tests）。
+# can-tools 含协作中的实验脚本（如 fuzz/replay.py），暂不纳入强制 lint，
+# 但其离线测试由 scripts/qa_fast.sh 统一执行。
+#
+# 三检查：lint(ruff) / type(mypy) / test(pytest)。
+# 快速门禁（离线、无需 vcan/root）：bash scripts/qa_fast.sh
+# 扩展安全测试（需 vcan0）：      bash scripts/qa_extended.sh
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [
+    "tmp",
+    "artifacts",
+    "data",
+    "pcaps",
+    "labs/firmware/synthetic-ecu/build",
+    "labs/vehicle/can-tools/fuzz-out",
+    "**/__pycache__",
+]
+
+[tool.ruff.lint]
+# E=pycodestyle, F=pyflakes(未用变量/未定义名等真实问题),
+# I=isort(导入顺序), UP=pyupgrade(现代语法), B=flake8-bugbear(常见坑)
+select = ["E", "F", "I", "UP", "B"]
+# 教学代码包含大量长字节字面量与表格化对齐，不硬性限制单行长度
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试文件允许宽泛异常（刻意构造错误路径）与魔法数字
+"**/tests/**" = ["B905", "E741"]
+
+[tool.mypy]
+python_version = "3.12"
+# 第三方库（isotp/can/udsoncan 等）无完整 type stub
+ignore_missing_imports = true
+warn_unused_ignores = false
+check_untyped_defs = true
+# 教学项目：渐进式类型检查，不把缺失注解当错误
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+# 需要 vcan0 SocketCAN 接口的测试统一打 vcan 标记，
+# 快速门禁用 `-m "not vcan"` 排除（CI runner 无 vcan/root）。
+markers = [
+    "vcan: 需要 vcan0 虚拟 CAN 总线（SocketCAN/ISO-TP）的端到端测试",
+]
+testpaths = ["labs/vehicle/uds-basic/tests", "labs/vehicle/can-tools/tests"]
+addopts = "-ra"

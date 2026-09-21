@@ -1,0 +1,3 @@
+[SYN-ECU] boot: SYN-ECU v1.0
+[SYN-ECU] diagnostic service ready (UDS 0x10/0x11/0x22/0x27)
+[SYN-ECU] CAN iface=vcan0

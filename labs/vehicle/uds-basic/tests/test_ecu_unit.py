@@ -34,12 +34,11 @@ sys.path.insert(0, _ECU_DIR)
 
 import ecu as ecu_module  # noqa: E402
 import keygen  # noqa: E402
+from did_database import DID_DATABASE, PROTECTED_DIDS  # noqa: E402
 from ecu import (  # noqa: E402
     DEFAULT_SESSION,
     handle_uds_request,
 )
-from did_database import DID_DATABASE, PROTECTED_DIDS  # noqa: E402
-
 
 # ----------------------------------------------------------------------
 # UDS 常量（ISO 14229-1）
@@ -398,12 +397,19 @@ class TestReadDataByIdentifier(UdsTestCase):
 class TestUnsupportedServices(UdsTestCase):
     """未实现服务必须返回 ServiceNotSupported (0x11)。"""
 
-    def test_unimplemented_service_0x2e_write_data_by_identifier(self) -> None:
+    def test_write_data_by_identifier_is_implemented(self) -> None:
+        """
+        0x2E 已实现：默认会话写 DID 不再返回 0x11，而是按门控返回
+        7F 2E 7F serviceNotSupportedInActiveSession（证明 SID 已被识别）。
+
+        （本用例原为 test_unimplemented_service_0x2e_write_data_by_identifier，
+        断言 7F 2E 11；WriteDataByIdentifier 落地后改写为断言新行为，
+        与 0x27 的处理方式一致。完整门控 / 写读回 / 复位恢复路径见
+        test_services_extra_unit.py 与 test_write_did_vcan.py。）
+        """
         response = handle_uds_request(bytes([0x2E, 0xF1, 0x90, 0x00]))
 
-        self.assertNegativeResponse(
-            response, 0x2E, NRC_SERVICE_NOT_SUPPORTED
-        )
+        self.assertNegativeResponse(response, 0x2E, 0x7F)
 
     def test_security_access_is_implemented(self) -> None:
         """
@@ -425,12 +431,18 @@ class TestUnsupportedServices(UdsTestCase):
             response, 0x19, NRC_SERVICE_NOT_SUPPORTED
         )
 
-    def test_unimplemented_service_0x3e_tester_present(self) -> None:
+    def test_tester_present_is_implemented(self) -> None:
+        """
+        0x3E 已实现：3E 00 返回 7E 00。
+
+        （本用例原为 test_unimplemented_service_0x3e_tester_present，
+        断言 7F 3E 11；TesterPresent 落地后改写为断言新行为，
+        与 0x27 的处理方式一致。suppress-bit(3E 80) 总线静默、非法子功能
+        等路径见 test_services_extra_unit.py 与 test_write_did_vcan.py。）
+        """
         response = handle_uds_request(bytes([0x3E, 0x00]))
 
-        self.assertNegativeResponse(
-            response, 0x3E, NRC_SERVICE_NOT_SUPPORTED
-        )
+        self.assertEqual(response, bytes([0x7E, 0x00]))
 
     def test_unimplemented_service_0x31_routine_control(self) -> None:
         response = handle_uds_request(bytes([0x31, 0x01]))

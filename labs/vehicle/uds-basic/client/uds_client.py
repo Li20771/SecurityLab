@@ -27,10 +27,8 @@ import sys
 
 import isotp
 import udsoncan
-
 from udsoncan.client import Client
 from udsoncan.connections import IsoTPSocketConnection
-
 
 INTERFACE = "vcan0"
 

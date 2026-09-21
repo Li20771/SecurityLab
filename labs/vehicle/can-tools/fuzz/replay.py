@@ -23,7 +23,7 @@ import glob
 import json
 import os
 import sys
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _TOOLS_DIR = os.path.dirname(_HERE)
@@ -45,6 +45,82 @@ def load_case(path: str) -> Dict:
     cs.validate_case(case)
 
     return case
+
+
+# ----------------------------------------------------------------------
+# 目录扫描：区分 testcase 与 summary / metadata
+# ----------------------------------------------------------------------
+
+#: 判定 testcase 所需的顶层结构字段（存在性即可，取值由 validate_case 负责）
+_TESTCASE_REQUIRED_FIELDS = ("schema_version", "case_id", "seed", "interface",
+                             "can_ids", "frames", "mutation")
+
+
+def is_testcase_file(path: str) -> bool:
+    """
+    判断一个 JSON 文件是否是可重放的 testcase。
+
+    ``fuzz-out/`` 里同时存在两类文件：
+
+    * **testcase** —— 由 ``isotp_fuzz._persist_case()`` 写出，一个 case 一个文件；
+    * **summary / metadata** —— 例如 ``smoke-summary.json``，是整轮的汇总，
+      结构上不是 testcase。
+
+    目录扫描必须只取前者。此处的判定是**存在性 + 严格校验**两级：
+
+    1. 顶层必须是对象，且含 :data:`_TESTCASE_REQUIRED_FIELDS` 全部字段；
+    2. 必须能通过 ``case_schema.validate_case()``（含 ``schema_version`` 取值、
+       ``case_id`` 形态、interface / CAN ID / 帧校验）。
+
+    只做第 1 步不够：一个损坏的 testcase 也应该被识别为 testcase 并在
+    重放时报错，而不是被静默当成 metadata 跳过。因此第 2 步只用于**确认
+    它是 testcase**，不吞掉它的校验错误——真正的错误留给 ``load_case()``
+    在重放时抛出，从而不会被掩盖。
+
+    本函数**不修改**任何 schema，也不放宽 ``canonical_identity``。
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return False
+
+    if not isinstance(raw, dict):
+        return False
+
+    if not any(field in raw for field in _TESTCASE_REQUIRED_FIELDS):
+        # 连一个 testcase 特征字段都没有 → 是 summary / metadata
+        return False
+
+    if not all(field in raw for field in _TESTCASE_REQUIRED_FIELDS):
+        # 部分像 testcase 但结构不全 → 交给重放阶段报明确错误
+        return True
+
+    try:
+        cs.validate_case(cs.from_jsonable(raw))
+    except Exception:  # noqa: BLE001 - 校验失败仍视为 testcase，错误留给重放阶段报
+        return True
+
+    return True
+
+
+def collect_cases(directory: str) -> Tuple[List[str], List[str]]:
+    """
+    扫描目录，返回 ``(testcase_paths, ignored_paths)``。
+
+    ``ignored_paths`` 是形状不像 testcase 的 JSON（如 ``smoke-summary.json``），
+    它们**不是**错误，只是为了透明而回报给调用方。
+    """
+    cases: List[str] = []
+    ignored: List[str] = []
+
+    for path in sorted(glob.glob(os.path.join(directory, "*.json"))):
+        if is_testcase_file(path):
+            cases.append(path)
+        else:
+            ignored.append(path)
+
+    return cases, ignored
 
 
 def replay_case(case: Dict, repeat: int = 1,
@@ -134,14 +210,19 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
 
+    ignored: List[str] = []
+
     if os.path.isdir(args.path):
         if not args.all:
             print("目录输入需要 --all", file=sys.stderr)
             return 2
 
-        paths = sorted(glob.glob(os.path.join(args.path, "*.json")))
+        paths, ignored = collect_cases(args.path)
     else:
         paths = [args.path]
+
+    for path in ignored:
+        print(f"[ignore] {os.path.basename(path)}：不是 testcase（summary / metadata），已跳过")
 
     if not paths:
         print("没有找到 case 文件", file=sys.stderr)

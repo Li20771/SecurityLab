@@ -22,7 +22,7 @@ UDS Basic —— 协议常量与响应构造（零依赖）
 - ISO 15765-2：ISO-TP 传输层
 """
 
-from typing import Callable, FrozenSet
+from collections.abc import Callable
 
 __all__ = [
     # Session
@@ -63,7 +63,7 @@ SESSION_PROGRAMMING = 0x02
 SESSION_EXTENDED = 0x03
 
 #: 本实验实现的会话类型集合。
-SUPPORTED_SESSIONS: FrozenSet[int] = frozenset(
+SUPPORTED_SESSIONS: frozenset[int] = frozenset(
     {
         SESSION_DEFAULT,
         SESSION_PROGRAMMING,

@@ -1,0 +1,29 @@
+=== phase 0: initial ===
+22:47:28.003110007
+120 113 0:35 / /proc/sys/fs/binfmt_misc rw,relatime shared:21 - binfmt_misc binfmt_misc rw
+WSLInterop python3.12 qemu-aarch64 qemu-alpha qemu-arm qemu-armeb qemu-cris qemu-hexagon qemu-hppa qemu-loongarch64 qemu-m68k qemu-microblaze qemu-mips qemu-mips64 qemu-mips64el qemu-mipsel qemu-mipsn32 qemu-mipsn32el qemu-ppc qemu-ppc64 qemu-ppc64le qemu-riscv32 qemu-riscv64 qemu-s390x qemu-sh4 qemu-sh4eb qemu-sparc qemu-sparc32plus qemu-sparc64 qemu-xtensa qemu-xtensaeb register status 
+=== phase 1: delete WSLInterop ===
+delete rc=0
+0
+=== phase 2: manual re-add ===
+readd rc=0
+1
+enabled
+interpreter /init
+flags: P
+offset 0
+magic 4d5a
+=== phase 3: watch 12s, no service ===
+22:47:28.024385141 present=1
+22:47:30.029733497 present=1
+22:47:32.036461493 present=1
+22:47:34.043263383 present=1
+22:47:36.050193766 present=1
+22:47:38.057003342 present=1
+=== phase 4: mountinfo from a systemd service ===
+--- service journal ---
+Sep 18 22:47:40 LiLike systemd[1]: Started n01-mountinfo-probe.service - /tmp/n01-mountinfo.sh.
+Sep 18 22:47:40 LiLike n01-mountinfo.sh[632]: 120 113 0:35 / /proc/sys/fs/binfmt_misc rw,relatime shared:21 - binfmt_misc binfmt_misc rw
+Sep 18 22:47:40 LiLike n01-mountinfo.sh[634]: 1
+Sep 18 22:47:40 LiLike systemd[1]: n01-mountinfo-probe.service: Deactivated successfully.
+PROBE_DONE

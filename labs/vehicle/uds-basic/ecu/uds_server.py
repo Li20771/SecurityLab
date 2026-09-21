@@ -6,11 +6,13 @@ UDS Basic —— ECU 运行时状态与服务处理
 
 - ``EcuState`` / ``STATE``：ECU 的跨请求运行时状态
 - ``reset_security_state()`` / ``required_security_level()``：状态与权限 helper
-- 四个服务处理函数：
+- 六个服务处理函数：
     * ``service_diagnostic_session_control``  (0x10)
     * ``service_ecu_reset``                   (0x11)
     * ``service_read_data_by_identifier``     (0x22)
     * ``service_security_access``             (0x27)
+    * ``service_write_data_by_identifier``    (0x2E)
+    * ``service_tester_present``              (0x3E)
 - ``SERVICES``：静态服务注册表（**不含 0x27**）
 - ``_make_security_access_handler()``：为 0x27 绑定请求时依赖的工厂
 - ``handle_uds_request()``：协议层 dispatcher
@@ -34,12 +36,17 @@ UDS Basic —— ECU 运行时状态与服务处理
 并支持多个 ECU 状态实例。
 """
 
-from dataclasses import dataclass
-from typing import Callable, Mapping, Optional
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 
 import keygen
 import uds_types
-from did_database import DID_DATABASE, PROTECTED_DIDS
+from did_database import (
+    DID_DATABASE,
+    PROTECTED_DIDS,
+    WRITABLE_DID_LENGTHS,
+    WRITABLE_DIDS,
+)
 
 __all__ = [
     "EcuState",
@@ -52,6 +59,8 @@ __all__ = [
     "service_ecu_reset",
     "service_read_data_by_identifier",
     "service_security_access",
+    "service_write_data_by_identifier",
+    "service_tester_present",
     "handle_uds_request",
 ]
 
@@ -103,10 +112,10 @@ class EcuState:
     security_level: int = uds_types.SECURITY_LOCKED
 
     #: 已下发但尚未被使用的 seed（RequestSeed 写入，SendKey 消费）
-    pending_seed: Optional[bytes] = None
+    pending_seed: bytes | None = None
 
     #: seed 下发时刻（time.monotonic() 基准，用于判断 seed 是否过期）
-    seed_issued_at: Optional[float] = None
+    seed_issued_at: float | None = None
 
     #: seed 是否已被成功消费（用于检测重放）
     seed_consumed: bool = False
@@ -115,10 +124,17 @@ class EcuState:
     failed_attempts: int = 0
 
     #: 锁定解除时刻（None 表示未处于锁定）
-    lockout_until: Optional[float] = None
+    lockout_until: float | None = None
 
     #: seed 序号（每次 RequestSeed 递增，使 seed 每次不同）
     seed_counter: int = 0
+
+    #: 0x2E WriteDataByIdentifier 写入的 DID 运行时值覆盖。
+    #:
+    #: 只存放被显式写过的 DID；读取时优先于 ``DID_DATABASE`` 的出厂值。
+    #: ECUReset(hardReset) 清空本字典，使 DID 恢复出厂值。
+    #: 用 field(default_factory=dict) 避免 dataclass 共享可变默认值。
+    did_overrides: dict[int, bytes] = field(default_factory=dict)
 
 
 #: 默认状态单例：ECU 进程使用的唯一运行时状态实例。
@@ -232,6 +248,8 @@ def service_ecu_reset(request: bytes, state: EcuState) -> bytes:
     if reset_type == 0x01:
         state.session = uds_types.SESSION_DEFAULT
         reset_security_state(state)
+        # 复位使通过 0x2E 写入的 DID 恢复出厂默认值
+        state.did_overrides.clear()
 
         return uds_types.positive_response(0x11, bytes([reset_type]))
 
@@ -276,7 +294,12 @@ def service_read_data_by_identifier(request: bytes, state: EcuState) -> bytes:
     for offset in range(1, len(request), 2):
         did = (request[offset] << 8) | request[offset + 1]
 
-        data = DID_DATABASE.get(did)
+        # 优先读取 0x2E 写入的运行时值，否则回落到出厂默认值
+        data: bytes | None
+        if did in state.did_overrides:
+            data = state.did_overrides[did]
+        else:
+            data = DID_DATABASE.get(did)
 
         if data is None:
             return uds_types.negative_response(
@@ -295,7 +318,7 @@ def service_read_data_by_identifier(request: bytes, state: EcuState) -> bytes:
         payload.extend([request[offset], request[offset + 1]])
         payload.extend(data)
 
-    return uds_types.positive_response(0x22, payload)
+    return uds_types.positive_response(0x22, bytes(payload))
 
 
 # ======================================================================
@@ -436,6 +459,117 @@ def service_security_access(
 
 
 # ======================================================================
+# 0x2E WriteDataByIdentifier
+# ======================================================================
+
+
+def service_write_data_by_identifier(request: bytes, state: EcuState) -> bytes:
+    """
+    处理 0x2E WriteDataByIdentifier。
+
+    请求：``2E <DID:2> <data...>``
+    响应：``6E <DID:2>``
+
+    门控顺序（刻意把"只读 DID"放在会话/安全检查之后，语义最清晰）：
+
+        1. 长度         → 0x13（至少 2E + DID:2 + 1 字节数据）
+        2. DID 未知     → 0x31 requestOutOfRange
+        3. 会话         → defaultSession 返回 0x7F
+                          serviceNotSupportedInActiveSession
+        4. 安全         → 未解锁返回 0x33 securityAccessDenied
+        5. DID 只读     → 0x22 conditionsNotCorrect
+        6. 数据长度越界 → 0x13
+        7. 写入并返回 6E <DID:2>
+
+    写入值进入 ``state.did_overrides``，随后 0x22 会读到新值；
+    ECUReset(hardReset) 清空覆盖，恢复出厂默认值。
+    """
+    if len(request) < 4:
+        return uds_types.negative_response(
+            0x2E, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+        )
+
+    did = (request[1] << 8) | request[2]
+    data = bytes(request[3:])
+
+    if did not in DID_DATABASE:
+        return uds_types.negative_response(
+            0x2E, uds_types.NRC_REQUEST_OUT_OF_RANGE
+        )
+
+    if state.session == uds_types.SESSION_DEFAULT:
+        return uds_types.negative_response(
+            0x2E, uds_types.NRC_SERVICE_NOT_SUPPORTED_IN_SESSION
+        )
+
+    if state.security_level < uds_types.SECURITY_LEVEL1:
+        return uds_types.negative_response(
+            0x2E, uds_types.NRC_SECURITY_ACCESS_DENIED
+        )
+
+    if did not in WRITABLE_DIDS:
+        # 已知但只读的 DID（如 VIN 0xF190）
+        return uds_types.negative_response(
+            0x2E, uds_types.NRC_CONDITIONS_NOT_CORRECT
+        )
+
+    min_len, max_len = WRITABLE_DID_LENGTHS[did]
+    if not min_len <= len(data) <= max_len:
+        return uds_types.negative_response(
+            0x2E, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+        )
+
+    state.did_overrides[did] = data
+
+    return uds_types.positive_response(0x2E, bytes([request[1], request[2]]))
+
+
+# ======================================================================
+# 0x3E TesterPresent
+# ======================================================================
+
+#: TesterPresent 唯一支持的子功能（zeroSubFunction）。
+_TESTER_PRESENT_ZERO_SUBFUNCTION = 0x00
+
+#: suppressPosRspMsgIndicationBit（子功能字节最高位）。
+_SUPPRESS_POS_RSP_BIT = 0x80
+
+
+def service_tester_present(request: bytes, state: EcuState) -> bytes:
+    """
+    处理 0x3E TesterPresent。
+
+    请求：``3E <subFunction>``
+
+    - ``3E 00``：响应 ``7E 00``。
+    - ``3E 80``：子功能为 0 且置 suppressPosRspMsgIndicationBit，
+      返回空字节 ``b""``，入口层（``ecu.py``）据此**抑制**任何响应。
+    - 其它子功能（剥离 bit7 后非 0）：NRC 0x12 subFunctionNotSupported。
+    - 长度不为 2：NRC 0x13。
+
+    TesterPresent 在任意会话可用、不改变任何状态（真实 ECU 用它维持
+    非默认会话的 S3* 定时器；本实验 ECU 不实现 S3* 自动退会话，故无副作用）。
+    """
+    if len(request) != 2:
+        return uds_types.negative_response(
+            0x3E, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+        )
+
+    subfunction = request[1]
+
+    if (subfunction & 0x7F) != _TESTER_PRESENT_ZERO_SUBFUNCTION:
+        return uds_types.negative_response(
+            0x3E, uds_types.NRC_SUBFUNCTION_NOT_SUPPORTED
+        )
+
+    if subfunction & _SUPPRESS_POS_RSP_BIT:
+        # 抑制正响应：dispatcher 回传 b""，ecu.py 主循环不得发送空帧。
+        return b""
+
+    return uds_types.positive_response(0x3E, bytes([0x00]))
+
+
+# ======================================================================
 # UDS 服务分发
 # ======================================================================
 
@@ -483,6 +617,8 @@ SERVICES = {
     0x10: service_diagnostic_session_control,
     0x11: service_ecu_reset,
     0x22: service_read_data_by_identifier,
+    0x2E: service_write_data_by_identifier,
+    0x3E: service_tester_present,
 }
 
 
@@ -490,7 +626,7 @@ def handle_uds_request(
     request: bytes,
     state: EcuState,
     *,
-    services: Optional[Mapping[int, Callable[[bytes, EcuState], bytes]]] = None,
+    services: Mapping[int, Callable[[bytes, EcuState], bytes]] | None = None,
 ) -> bytes:
     """
     处理一条 UDS 请求，返回响应字节。
