@@ -154,9 +154,20 @@ reported**（含于 `qa_extended.sh`，本机可重跑）。
 
 ```text
 GitHub CI verified:
-    Fast     = YES（run 35576358620 = success）
+    Fast     = YES（branch run 35576358620 = success；
+              post-merge main run 35582069002 = success）
     Extended = NO / NOT RUN（未在真实 runner 触发）
 ```
+
+**Post-merge（main）证据：**
+
+- workflow：SecurityLab CI
+- event：push
+- branch：main
+- commit：`89a12a0cf43c6a23bf9cb5c6d393d1aa0198f87a`（PR #1 merge commit）
+- run：`35582069002`
+- result：**success**
+- 覆盖：ruff / mypy / UDS unit / can-tools offline
 
 - Fuzz 不进 CI（耗时/不确定），归手动 extended/专项（`qa_extended.sh --fuzz` /
   `scripts/repro/verify_fuzz_smoke.sh`）。

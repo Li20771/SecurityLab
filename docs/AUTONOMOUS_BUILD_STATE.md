@@ -6,33 +6,68 @@
 
 ## CURRENT STATE — 2026-09-21
 
-**CURRENT_PHASE**: Phase 3 — Formal Integration Review
+**CURRENT_PHASE**: Phase 4 — Second-Round Planning
 
 **CURRENT_TASK**:
-PR #1 最终 review；第一轮正式基线尚未 merge
+完成第一轮合入后的基线封存，盘点第二轮缺口并确定第一项实施任务
 
 **BRANCH**:
-`chore/engineering-close-20260921`
-
-**HEAD**:
-`8bfd405bbbbfd215c7077bc208f0bccc64cfe6ec`
-
-**GitHub CI**:
-Fast QA = PASS
-Run = `35576358620`
+`chore/engineering-close-20260921`（已合并，历史分支；
+第二轮能力一律新建 feature branch）
 
 **PR**:
-#1 OPEN / DRAFT
+#1 MERGED / CLOSED
+merge commit `89a12a0cf43c6a23bf9cb5c6d393d1aa0198f87a`
 
 **MAIN**:
-`e215b1d6d77d0edfcfd76d6fdf9a4df3fb22c517`
+`89a12a0cf43c6a23bf9cb5c6d393d1aa0198f87a`（= 第一轮正式基线）
+
+**GitHub CI**:
+post-merge Fast QA = PASS
+Run = `35582069002`（event=push，branch=main）
 
 **NEXT_STEP**:
-最终 PR review → 确认无阻塞 → 决定 merge main。
+完成第二轮能力盘点与优先级设计 → 确定第一项能力 →
+创建独立 feature branch 开发（小功能 → 小 PR → 可验证 → 合入）。
 
-**SECOND-ROUND FREEZE**:
-第一轮正式 baseline merge 前，不开始新的 UDS / Gateway / Docker Lab /
-firmware extraction / large fuzz / Obsidian 等第二轮能力建设。
+**SECOND-ROUND MODE**:
+不再把多个大型能力一次性堆进 main；每个能力单独 feature branch、
+单独 PR、单独审查与回滚。
+
+**SECOND-ROUND FIRST TARGET — UDS 0x19 ReadDTCInformation
+（设计已修正 2026-09-21，按此执行，未实现）**:
+
+- 子功能与报文（教学实验统一 DTCFormatIdentifier = 0x01，
+  ISO 14229-1 DTC format）:
+  - `19 01 <DTCStatusMask>` → `59 01 <DTCStatusAvailabilityMask>
+    <DTCFormatIdentifier> <DTCCount_H> <DTCCount_L>`；
+  - `19 02 <DTCStatusMask>` → `59 02 <DTCStatusAvailabilityMask>
+    [(DTC_H DTC_M DTC_L) <statusOfDTC>]*`，匹配规则
+    `(statusOfDTC & DTCStatusMask) != 0`，**不含 DTCCount**；
+  - `19 0A` → `59 0A <DTCStatusAvailabilityMask>
+    [(DTC_H DTC_M DTC_L) <statusOfDTC>]*`（报告支持的 DTC 及其状态，
+    不是只回 availability mask）。
+- 长度/子功能 NRC 固化（按项目既有语义）：
+  `19 01` 缺 mask、`19 01` 多余数据、`19 02` 缺 mask、`19 02` 多余数据、
+  `19 0A` 多余数据 → 0x13；非法 reportType `19 03` / `19 7F` → 7F 19 12。
+- scope 边界：本 feature 只实现 reportType 01/02/0A 的正常正响应路径；
+  suppressPosRspMsgIndicationBit 不在本 PR 单独实现
+  （项目尚无统一 suppression 抽象，作为后续服务框架统一处理项）。
+- DTC 状态架构（固定）:
+  - `ecu/dtc_database.py` 只存静态定义：
+    `DTC_DATABASE = {0x100001: <default status>, ...}`、
+    `DTC_STATUS_AVAILABILITY_MASK = 0xFF`、
+    `DTC_FORMAT_IDENTIFIER = 0x01`；
+  - 运行时状态放 `EcuState.dtc_records: dict[int, int]`，跨请求保持，
+    不创建模块级可变全局状态；
+  - `0x11 hardReset` **保持 dtc_records**（DTC 是故障记忆，不采用
+    DID override 的"复位即恢复默认值"语义）；该行为必须写入
+    unit + e2e 测试。
+- 验收：request/positive/NRC/state 四件套 + unit + e2e 六件套；
+  既有 168 unit + 91 e2e 回归全绿；run_tests.sh / qa_fast / qa_extended
+  收录；feature branch 自己的 Fast CI = success；TEST_MATRIX / README 同步。
+  实施时创建独立 feature branch（如 feat/uds-0x19-read-dtc），
+  不在本规划分支上实现。
 
 > 以下各节为历史断点（Historical checkpoints），按当时状态记录，不再回改。
 

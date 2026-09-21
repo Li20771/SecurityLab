@@ -4,19 +4,17 @@
 
 ## 一句话现状
 
-SecurityLab 第一轮建设及工程收口已经完成。
+SecurityLab 第一轮建设及工程收口已经完成，**PR #1 已合入 main**。
 
-当前正式 review 基线：
+第一轮正式基线：
 
-- branch: `chore/engineering-close-20260921`
-- HEAD: `8bfd405bbbbfd215c7077bc208f0bccc64cfe6ec`
-- GitHub Actions Fast QA：PASS（run `35576358620`）
-- PR #1：OPEN / DRAFT
-- main 尚未修改，当前仍为 `e215b1d6d77d0edfcfd76d6fdf9a4df3fb22c517`
+- PR #1：**MERGED / CLOSED**
+- merge commit / main HEAD：`89a12a0cf43c6a23bf9cb5c6d393d1aa0198f87a`
+- post-merge GitHub Actions Fast QA：PASS（run `35582069002`，event=push，branch=main）
 
-当前阶段不是功能建设，而是第一轮正式合入前的最终 review。
-
-第二轮功能建设暂不启动。
+当前阶段：**Phase 4 — Second-Round Planning**——第一轮状态封存、
+第二轮缺口盘点与优先级设计；第二轮能力将按
+"小功能 → feature branch → 小 PR → 可验证 → 合入"节奏推进。
 
 ## 能力看板
 
@@ -41,7 +39,7 @@ SecurityLab 第一轮建设及工程收口已经完成。
 | 网络安全工具 | VERIFIED | nmap/tshark/tcpdump/ncat/socat/nft；`scripts/nettools_check.sh` |
 | Docker | VERIFIED（audit/local capability） | Ubuntu CLI → Docker Desktop E2E 已验证；当前 PR 不重新定义 Docker 当前运行态 |
 | 质量门禁 | VERIFIED | `scripts/qa_fast.sh`（离线）/ `qa_extended.sh`（vcan） |
-| CI | VERIFIED（Fast runner） | `.github/workflows/ci.yml`；Fast：GitHub Actions run 35576358620 = success；Extended：仅 workflow_dispatch，目前不作为自动 PR 门禁 |
+| CI | VERIFIED（Fast runner，branch + main 双证） | `.github/workflows/ci.yml`；Fast：branch 上 run 35576358620 = success（历史证据），main 上 post-merge run 35582069002 = success；Extended：仅 workflow_dispatch，目前不作为自动 PR 门禁 |
 | 统一健康检查 | VERIFIED | `scripts/healthcheck.sh [--extended]` |
 | DSH Agent Web GUI | VERIFIED | `systemctl --user status dsh-web`，http://127.0.0.1:8731 |
 | binfmt / WSL interop | REPO VERIFIED / SYSTEM DEPLOYMENT NOT REVERIFIED | `configs/binfmt/binfmt-selfheal.sh` v2.3 fail-closed（helper 缺失绝不回落 systemd-binfmt） |
@@ -76,13 +74,12 @@ journalctl --user -u dsh-web -f        # 取首次访问 token
 ## 待你处理（不可代做）
 
 1. binfmt 系统侧 v2.3 当前部署是否需要重新确认（`/usr/local/sbin/binfmt-selfheal.sh`
-   是否升级到 repo 源真版本；当前 PR 未重新完成 sudo 部署确认）。
-2. main merge 授权（PR #1 最终 review 通过后由你决定是否 merge）。
-3. `docker_data.vhdx` 压缩回收约 16GB（需你在本机 `wsl --shutdown` + Optimize-VHD；
+   是否升级到 repo 源真版本；第一轮未重新完成 sudo 部署确认）。
+2. `docker_data.vhdx` 压缩回收约 16GB（需你在本机 `wsl --shutdown` + Optimize-VHD；
    该 shutdown 在本自动化环境被宿主策略禁止）。
 
-> 已完成的既往待办（ssh-add、0 字节怪文件删除、本分支 push、PR 创建、
-> CI 首次 runner 验证）不再列出。
+> 已完成的既往待办（ssh-add、0 字节怪文件删除、本分支 push、PR #1 创建与
+> merge、CI runner 验证）不再列出。
 
 ### binfmt 状态口径
 
