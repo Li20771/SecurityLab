@@ -28,6 +28,13 @@
 #   shell). Cross-distro interpreter paths are reconciled with compat symlinks
 #   (Kali: /usr/libexec/qemu-binfmt/*-binfmt-P -> /usr/bin/qemu-*).
 #
+# v2.3 fail-closed hardening (2026-09-21 engineering close):
+#   additive-only means additive-ONLY: when binfmt-register-additive.py is
+#   missing or fails, this script logs a clear error and reports failure.
+#   It NEVER falls back to /usr/lib/systemd/systemd-binfmt, because that
+#   fallback flushes the shared registry and re-triggers the cross-distro
+#   flush oscillation this design exists to prevent.
+#
 # This script is idempotent and additive-only (never unregisters anything):
 #   * WSLInterop absence is a heal trigger ON ITS OWN;
 #   * default mode ("full", used by the .path unit): six quick attempts win
@@ -36,12 +43,28 @@
 #   * --quick mode (used by the .timer safety net): one single check, for
 #     cases where the .path watch silently stops firing across a remount;
 #   * flock: overlapping triggers never run concurrently.
+#
+# Test seams (defaults unchanged; overridden only by
+# configs/binfmt/tests/selfheal_failclosed_test.sh):
+#   BINFMT_REGISTRY  binfmt_misc mount point      (default /proc/sys/fs/binfmt_misc)
+#   BINFMT_LOCK      flock file                   (default /run/binfmt-selfheal.lock)
+#   BINFMT_HELPER    additive helper path         (default /usr/local/sbin/binfmt-register-additive.py)
+#   BINFMT_D_DIRS    binfmt.d conf directories    (default /etc/binfmt.d /run/binfmt.d /usr/lib/binfmt.d)
 set -u
 
-B=/proc/sys/fs/binfmt_misc
+B=${BINFMT_REGISTRY:-/proc/sys/fs/binfmt_misc}
 TAG=binfmt-selfheal
-LOCK=/run/binfmt-selfheal.lock
+LOCK=${BINFMT_LOCK:-/run/binfmt-selfheal.lock}
+HELPER=${BINFMT_HELPER:-/usr/local/sbin/binfmt-register-additive.py}
+D_DIRS=${BINFMT_D_DIRS:-/etc/binfmt.d /run/binfmt.d /usr/lib/binfmt.d}
 MODE=${1:-full}
+
+# Helper missing is a permanent condition: log the error once, then keep
+# the heal loop alive (WSLInterop may still need healing) without spam.
+HELPER_MISSING=0
+# Helper execution failure: log once per run (boot-race retries may
+# legitimately fail transiently); the final verdict decides the exit code.
+HELPER_ERROR=0
 
 exec 9>"$LOCK"
 flock -n 9 || exit 0
@@ -50,14 +73,16 @@ flock -n 9 || exit 0
 [ -e "$B/status" ] || exit 0
 
 need_distro_entries() {
-    local conf name
-    for conf in /etc/binfmt.d/*.conf /run/binfmt.d/*.conf /usr/lib/binfmt.d/*.conf; do
-        [ -e "$conf" ] || continue
-        # entry name = first ':'-separated field of the registration line
-        name=$(sed -n 's/^[[:space:]]*:\([^:]*\):.*/\1/p' "$conf" | head -n1)
-        if [ -n "$name" ] && [ ! -e "$B/$name" ]; then
-            return 0
-        fi
+    local dir conf name
+    for dir in $D_DIRS; do
+        for conf in "$dir"/*.conf; do
+            [ -e "$conf" ] || continue
+            # entry name = first ':'-separated field of the registration line
+            name=$(sed -n 's/^[[:space:]]*:\([^:]*\):.*/\1/p' "$conf" | head -n1)
+            if [ -n "$name" ] && [ ! -e "$B/$name" ]; then
+                return 0
+            fi
+        done
     done
     return 1
 }
@@ -78,18 +103,32 @@ heal_once() {
         fi
     fi
     # Distro-local binfmt.d entries (qemu-*, python3.x, ...) — nothing else
-    # restores these if another distro blanks them. v2.2: add ONLY the missing
-    # rules, never run systemd-binfmt (it flushes the whole shared registry and
-    # starts the cross-distro flush oscillation).
+    # restores these if another distro blanks them. Add ONLY the missing
+    # rules via the additive helper. v2.3: FAIL-CLOSED — if the helper is
+    # missing or fails, report the error and NEVER fall back to
+    # systemd-binfmt (its flush starts the cross-distro oscillation).
     if need_distro_entries; then
-        if [ -x /usr/local/sbin/binfmt-register-additive.py ]; then
-            /usr/local/sbin/binfmt-register-additive.py >/dev/null 2>&1
-        else
-            # Fallback (older deploy): direct systemd-binfmt flushes, acceptable
-            # at boot but not during steady-state hot-share.
-            /usr/lib/systemd/systemd-binfmt 2>/dev/null
+        if [ "$HELPER_MISSING" = "1" ]; then
+            return 1
+        fi
+        if [ ! -x "$HELPER" ]; then
+            HELPER_MISSING=1
+            logger -t "$TAG" -p user.err \
+                "binfmt-register-additive.py missing at $HELPER — fail-closed, NOT falling back to systemd-binfmt ($MODE)"
+            return 1
+        fi
+        if ! "$HELPER" >/dev/null 2>&1; then
+            # Boot-race retries make transient failures possible; log the
+            # error once per run, the final verdict below is authoritative.
+            if [ "$HELPER_ERROR" = "0" ]; then
+                HELPER_ERROR=1
+                logger -t "$TAG" -p user.err \
+                    "binfmt-register-additive.py failed (rc=$?) — fail-closed, NOT falling back to systemd-binfmt ($MODE)"
+            fi
+            return 1
         fi
     fi
+    return 0
 }
 
 if [ "$MODE" = "--quick" ] || [ "$MODE" = "quick" ]; then
@@ -120,5 +159,6 @@ done
 rc=0
 [ ! -e "$B/WSLInterop" ] && { logger -t "$TAG" -p user.warning "WSLInterop still missing after heal window"; rc=1; }
 need_distro_entries && { logger -t "$TAG" -p user.warning "binfmt.d entries still missing after heal window"; rc=1; }
+[ "$HELPER_MISSING" = "1" ] && { logger -t "$TAG" -p user.err "additive helper missing — registry NOT restored (fail-closed)"; rc=1; }
 [ "$rc" -eq 0 ] && logger -t "$TAG" "binfmt_misc registry verified/restored"
 exit "$rc"
