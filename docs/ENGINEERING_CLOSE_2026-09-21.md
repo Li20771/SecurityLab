@@ -14,7 +14,7 @@
 branch:       chore/engineering-close-20260921
 base:         audit/environment-20260921 (snapshot commit 14ddb75bcfad5105d8b91455ed4d4cfe2fae8c6a)
 main:         e215b1d（本分支未触碰）
-final commit: （见 §7 顶部 commit 列表）
+final commit: 45c72ca（docs: add engineering close report）
 ```
 
 ## 2. 修改文件
@@ -201,16 +201,46 @@ final commit: （见 §7 顶部 commit 列表）
 ## 7. Git
 
 ```bash
-git status
-git log --oneline --decorate -n 15
-git diff main...HEAD --stat
-```
+$ git status
+On branch chore/engineering-close-20260921
+nothing to commit, working tree clean
 
-（输出见收口会话最终执行记录；本分支**不合并 main**。）
+$ git log --oneline --decorate -n 15
+45c72ca (HEAD -> chore/engineering-close-20260921) docs: add engineering close report
+7d6db1c docs: synchronize environment and UDS status with source reality
+258bf07 chore(deps): add transitive lock for network requirements
+40fef72 chore(repro): add reproducible verification entrypoints
+d738822 fix(healthcheck): correct qemu fallback status handling
+549a212 fix(binfmt): remove unsafe selfheal fallback
+4f5fb62 fix(fuzz): make kernel oracle fail-closed
+14ddb75 (origin/audit/environment-20260921, audit/environment-20260921) chore(audit): snapshot environment build 2026-09-21
+d9c548c (refactor/uds-architecture) docs(can-tools): document BS remaining-CF boundary and test count
+c3c9f62 feat(can-tools): add remaining-CF-count BS boundary mutation
+83fb38b feat(can-tools): add stateful ISO-TP fuzz harness
+126dcdf fix(isotp): contain overflow transport error
+9ee291d docs(test): drop stale expectedFailure claim in cable helper
+c884aad fix(isotp): contain transport socket errors
+34cdf33 test(can-tools): add malformed ISO-TP experiments
+
+$ git diff main...HEAD --stat | tail -8
+ ...（112 files changed, 21901 insertions(+), 651 deletions(-)；
+      包含自 main 基线以来整个审计分支的累积改动 + 本分支 7 个 commit）...
+
+本分支自身 7 个 commit 的净改动：
+
+$ git diff audit/environment-20260921...HEAD --stat | tail -6
+ scripts/repro/verify_arm.sh                        |  110 +
+ scripts/repro/verify_fuzz_smoke.sh                 |  160 ++
+ scripts/repro/verify_ghidra.sh                     |  131 ++
+ scripts/repro/verify_qemu_gdb.sh                   |  103 +
+ scripts/tests/healthcheck_qemu_fallback_test.sh    |  113 +
+ 20 files changed, 1711 insertions(+), 137 deletions(-)
+```
 
 - 提交纪律：7 个 commit，每个单一工程目的——fix(fuzz) / fix(binfmt) /
   fix(healthcheck) / chore(repro) / chore(deps) / docs(sync) / docs(close-report)。
 - main 未改动；`audit/environment-20260921` 快照未改动（以其为 base 新建分支）。
+- 本分支**不合并 main**、零 push，等待用户授权。
 
 ---
 
