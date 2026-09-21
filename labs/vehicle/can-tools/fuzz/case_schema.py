@@ -77,6 +77,46 @@ RECOVERY_PASS = "PASS"
 RECOVERY_FAIL = "FAIL"
 RECOVERY_NOT_RUN = "NOT_RUN"
 
+# ----------------------------------------------------------------------
+# kernel oracle 三态（工程收口 2026-09-21：oracle 不可用 ≠ 0 kernel event）
+# ----------------------------------------------------------------------
+#
+# 历史问题：``dmesg_snapshot()`` 读取失败时返回 ``[]``，下游把空列表
+# 当作"检查成功且无内核事件"（``kernel_events = 0``），无法区分
+# "oracle 正常且无命中" 与 "oracle 根本不可用"。
+#
+# 现在 kernel oracle 明确为三态（记录在 ``result.kernel_oracle``）：
+#
+#   AVAILABLE    dmesg 成功读取（即便 0 行）——只有此时 kernel_events 才有意义
+#   UNAVAILABLE  dmesg 因权限/环境不可用（二进制缺失、非零退出码等）
+#   ERROR        dmesg 执行异常（超时、意外 OSError 等）
+#
+# 约定：oracle 非 AVAILABLE 时 ``kernel_events`` / ``kernel_delta_lines``
+# 记为 ``None``，**绝不**伪报 0。schema_version 不变（result 字段纯增量，
+# 不参与 replay identity）。
+
+KERNEL_ORACLE_AVAILABLE = "AVAILABLE"
+KERNEL_ORACLE_UNAVAILABLE = "UNAVAILABLE"
+KERNEL_ORACLE_ERROR = "ERROR"
+
+KERNEL_ORACLE_STATUSES = (
+    KERNEL_ORACLE_AVAILABLE,
+    KERNEL_ORACLE_UNAVAILABLE,
+    KERNEL_ORACLE_ERROR,
+)
+
+
+def combine_oracle_status(*statuses: str) -> str:
+    """
+    合并多个快照的 oracle 状态：只要任一为 ERROR 则整体 ERROR；
+    否则任一 UNAVAILABLE 则整体 UNAVAILABLE；全 AVAILABLE 才 AVAILABLE。
+    """
+    if any(s == KERNEL_ORACLE_ERROR for s in statuses):
+        return KERNEL_ORACLE_ERROR
+    if any(s == KERNEL_ORACLE_UNAVAILABLE for s in statuses):
+        return KERNEL_ORACLE_UNAVAILABLE
+    return KERNEL_ORACLE_AVAILABLE
+
 #: 已 containment 的 errno（P3R/P3R2）。出现其它 errno → NEW_ERRNO 标记。
 CONTAINED_ERRNOS = (84, 70, 90)
 

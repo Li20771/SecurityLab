@@ -171,7 +171,13 @@ def _print_outcome(case: Dict, outcome: Dict, show_frames: bool = False) -> None
     print(f"  response  : {res['response_kind']}  {res['response']}")
     print(f"  errno     : {res['errno']}  new_errno={res['new_errno']}")
     print(f"  recovery  : {res['recovery']}  {res.get('recovery_response')}")
-    print(f"  kernel    : {res['kernel_events'] or '(no anomaly)'}")
+
+    oracle = res.get("kernel_oracle", cs.KERNEL_ORACLE_UNAVAILABLE)
+
+    if oracle != cs.KERNEL_ORACLE_AVAILABLE:
+        print(f"  kernel    : oracle={oracle} —— kernel_events 不可判定（非 0）")
+    else:
+        print(f"  kernel    : {res['kernel_events'] or '(no anomaly)'}")
     print(f"  duration  : {res['duration_ms']} ms")
 
     if res.get("crash_signature"):

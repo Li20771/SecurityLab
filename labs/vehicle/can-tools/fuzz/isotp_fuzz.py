@@ -22,6 +22,9 @@ Oracle（P1 §10/§21/§22/§23）::
     recovery  : 硬 oracle —— 10 01 → 50 01 00 32 00 64
     runtime   : normal / timeout / hang / crash
     kernel    : dmesg before/after 快照 + 过滤差分（**绝不** dmesg -c）
+                三态：AVAILABLE / UNAVAILABLE / ERROR（见 case_schema）。
+                oracle 非 AVAILABLE 时 kernel_events 记为 None，
+                **绝不**伪装成 "0 kernel event"。
 
 分类顺序固定（见 ``case_schema.CLASS_PRIORITY``）::
 
@@ -93,15 +96,53 @@ KNOWN_TRANSPORT_ERRNOS = (84, 70, 90)
 # ----------------------------------------------------------------------
 
 
-def dmesg_snapshot() -> List[str]:
-    """读取 dmesg 全量快照（只读）。不可用时返回空列表。"""
+def dmesg_snapshot() -> Tuple[str, List[str]]:
+    """
+    读取 dmesg 全量快照（只读）。返回 ``(oracle_status, lines)``。
+
+    三态语义（工程收口 2026-09-21，见 ``case_schema``）：
+
+    * ``AVAILABLE`` —— dmesg 成功执行（exit 0），lines 为全量行；
+    * ``UNAVAILABLE`` —— dmesg 因权限/环境不可用（二进制缺失、
+      非零退出码），lines 为空但**不代表** 0 kernel event；
+    * ``ERROR`` —— dmesg 执行异常（超时、意外 OSError）。
+
+    刻意不再静默吞掉异常：任何非 AVAILABLE 状态都必须显式进入
+    ``result.kernel_oracle``，由汇总层如实呈现。
+    """
     try:
         proc = subprocess.run(
             ["dmesg"], capture_output=True, text=True, timeout=10
         )
-        return proc.stdout.splitlines()
-    except (OSError, subprocess.SubprocessError):
-        return []
+    except FileNotFoundError:
+        # dmesg 二进制不存在（如精简容器/无 util-linux）
+        return cs.KERNEL_ORACLE_UNAVAILABLE, []
+    except subprocess.TimeoutExpired:
+        return cs.KERNEL_ORACLE_ERROR, []
+    except OSError:
+        # 启动失败等意外执行异常——不是"可用但无事件"
+        return cs.KERNEL_ORACLE_ERROR, []
+
+    if proc.returncode != 0:
+        # dmesg 返回非零（典型：无 root 时的 "Operation not permitted"）
+        return cs.KERNEL_ORACLE_UNAVAILABLE, []
+
+    return cs.KERNEL_ORACLE_AVAILABLE, proc.stdout.splitlines()
+
+
+def kernel_oracle_result(status: str, delta: List[str]) -> Tuple[Optional[List[str]], bool]:
+    """
+    由 oracle 状态与内核差分行得到 ``(kernel_events, kernel_anomaly)``。
+
+    oracle 非 AVAILABLE 时返回 ``(None, False)``：**None 明确表示
+    "不可判定"**，与空列表（= 检查成功且无事件）严格区分。
+    """
+    if status != cs.KERNEL_ORACLE_AVAILABLE:
+        return None, False
+
+    hits = filter_kernel_anomalies(delta)
+
+    return hits, bool(hits)
 
 
 def dmesg_delta(before: List[str], after: List[str]) -> List[str]:
@@ -397,7 +438,7 @@ def execute_case(case: Dict, out_dir: Optional[str] = None,
 
     ecu = EcuProcess()
     channel = None
-    kernel_before = dmesg_snapshot()
+    kernel_before_status, kernel_before = dmesg_snapshot()
 
     observed_frames: List[bytes] = []
     injected: List[Tuple[int, bytes]] = []
@@ -435,7 +476,7 @@ def execute_case(case: Dict, out_dir: Optional[str] = None,
 
         if not ready:
             return _finish_case(
-                case, ecu, started, kernel_before,
+                case, ecu, started, kernel_before_status, kernel_before,
                 observed_frames, injected, transport_errnos,
                 hung=False, ready=False, out_dir=out_dir,
                 keep_artifacts=keep_artifacts,
@@ -498,9 +539,12 @@ def execute_case(case: Dict, out_dir: Optional[str] = None,
         # 即使进程已死也跑一次：能区分"进程死了"与"进程活着但服务坏了"
         recovery, recovery_payload = recovery_probe(case["interface"])
 
-        kernel_after = dmesg_snapshot()
+        kernel_after_status, kernel_after = dmesg_snapshot()
+        kernel_oracle = cs.combine_oracle_status(
+            kernel_before_status, kernel_after_status
+        )
         kernel_delta = dmesg_delta(kernel_before, kernel_after)
-        kernel_anomalies = filter_kernel_anomalies(kernel_delta)
+        kernel_events, kernel_anomaly = kernel_oracle_result(kernel_oracle, kernel_delta)
 
         ecu.stop()
 
@@ -513,7 +557,7 @@ def execute_case(case: Dict, out_dir: Optional[str] = None,
         response_kind=response_kind,
         recovery=recovery,
         errno=errno,
-        kernel_anomaly=bool(kernel_anomalies),
+        kernel_anomaly=kernel_anomaly,
         hung=hung,
     )
 
@@ -531,8 +575,13 @@ def execute_case(case: Dict, out_dir: Optional[str] = None,
         "recovery_response": (
             recovery_payload.hex(" ") if recovery_payload else None
         ),
-        "kernel_events": kernel_anomalies,
-        "kernel_delta_lines": len(kernel_delta),
+        "kernel_oracle": kernel_oracle,
+        "kernel_events": kernel_events,
+        "kernel_delta_lines": (
+            len(kernel_delta)
+            if kernel_oracle == cs.KERNEL_ORACLE_AVAILABLE
+            else None
+        ),
         "hung": hung,
         "duration_ms": int((time.time() - started) * 1000),
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -586,10 +635,10 @@ def _persist_case(case: Dict, out_dir: str, kernel_before: List[str],
 
 
 def _finish_case(case: Dict, ecu: EcuProcess, started: float,
-                 kernel_before: List[str], observed: List[bytes],
-                 injected: List[Tuple[int, bytes]], errnos: List[int],
-                 hung: bool, ready: bool, out_dir: Optional[str],
-                 keep_artifacts: bool) -> Dict:
+                 kernel_before_status: str, kernel_before: List[str],
+                 observed: List[bytes], injected: List[Tuple[int, bytes]],
+                 errnos: List[int], hung: bool, ready: bool,
+                 out_dir: Optional[str], keep_artifacts: bool) -> Dict:
     """ECU 未就绪时的收尾（不把"起不来"误判成 case 结果）。"""
     alive = ecu.alive()
     crash_sig = ecu.crash_signature()
@@ -608,8 +657,13 @@ def _finish_case(case: Dict, ecu: EcuProcess, started: float,
         "new_errno": False,
         "recovery": cs.RECOVERY_NOT_RUN,
         "recovery_response": None,
-        "kernel_events": [],
-        "kernel_delta_lines": 0,
+        "kernel_oracle": kernel_before_status,
+        "kernel_events": (
+            [] if kernel_before_status == cs.KERNEL_ORACLE_AVAILABLE else None
+        ),
+        "kernel_delta_lines": (
+            0 if kernel_before_status == cs.KERNEL_ORACLE_AVAILABLE else None
+        ),
         "hung": hung,
         "ready": ready,
         "duration_ms": int((time.time() - started) * 1000),
@@ -822,6 +876,7 @@ def main(argv=None) -> int:
     print()
 
     summary: Dict[str, int] = {}
+    oracle_summary: Dict[str, int] = {s: 0 for s in cs.KERNEL_ORACLE_STATUSES}
     high_priority: List[Dict] = []
 
     for index, case in enumerate(cases):
@@ -831,12 +886,15 @@ def main(argv=None) -> int:
         result = execute_case(case, out_dir=out_dir, keep_artifacts=not args.no_artifacts)
         cls = result["result"]["class"]
         summary[cls] = summary.get(cls, 0) + 1
+        oracle = result["result"].get("kernel_oracle", cs.KERNEL_ORACLE_UNAVAILABLE)
+        oracle_summary[oracle] = oracle_summary.get(oracle, 0) + 1
 
         print(
             f"[{index + 1:>2}/{len(cases)}] {result['case_id'][:58]:<58} "
             f"{cls:<17} errno={result['result']['errno']} "
             f"alive={result['result']['process_alive']} "
-            f"recovery={result['result']['recovery']}"
+            f"recovery={result['result']['recovery']} "
+            f"oracle={oracle}"
         )
 
         if cls in cs.HIGH_PRIORITY_CLASSES or result["result"].get("new_errno"):
@@ -845,7 +903,9 @@ def main(argv=None) -> int:
             print(f"           !! {cls} — 保存最小复现并停止该 mutation family")
             print(f"           crash: {result['result']['crash_signature']}")
 
-            if result["result"].get("kernel_events"):
+            if oracle != cs.KERNEL_ORACLE_AVAILABLE:
+                print(f"           kernel oracle: {oracle} —— kernel_events 不可判定")
+            elif result["result"].get("kernel_events"):
                 print(f"           kernel: {result['result']['kernel_events'][:2]}")
 
             break  # P1 §37/§40：不继续大量重复，先停在结果上
@@ -859,6 +919,14 @@ def main(argv=None) -> int:
     print(f"  {'NEW_ERRNO cases':<18} "
           f"{sum(1 for c in cases if c.get('result', {}).get('new_errno'))}")
 
+    print("  kernel oracle     "
+          + " / ".join(f"{s}={oracle_summary.get(s, 0)}"
+                       for s in cs.KERNEL_ORACLE_STATUSES))
+
+    if oracle_summary.get(cs.KERNEL_ORACLE_AVAILABLE, 0) < len(cases):
+        print("  !! kernel oracle 未全程 AVAILABLE：受影响 case 的 "
+              "kernel_events=None（≠0），KERNEL_ANOMALY 分类降级为不可判定")
+
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
         summary_path = os.path.join(out_dir, "smoke-summary.json")
@@ -869,6 +937,7 @@ def main(argv=None) -> int:
                     "master_seed": args.seed,
                     "total": len(cases),
                     "summary": summary,
+                    "kernel_oracle": oracle_summary,
                     "high_priority": [c["case_id"] for c in high_priority],
                 },
                 fh,

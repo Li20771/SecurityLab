@@ -14,6 +14,8 @@ P4X 离线测试：schema / mutator / determinism / replay
     case_id 稳定
     replay frames identical
     SN / PCI / SF / FF / FC status / BS / STmin / padding mutation
+    kernel oracle 三态（AVAILABLE / UNAVAILABLE / ERROR）与
+        "oracle 不可用 ≠ kernel_events == 0" 不变量
 
 运行::
 
@@ -948,6 +950,147 @@ class TestKernelOracleHelpers(unittest.TestCase):
 
         lines = ["can you believe this", "scanning done", "American"]
         self.assertEqual(engine.filter_kernel_anomalies(lines), [])
+
+
+class TestKernelOracleStatus(unittest.TestCase):
+    """
+    kernel oracle 三态（工程收口 2026-09-21）。
+
+    核心不变量：**oracle 不可用 ≠ kernel_events == 0**。
+    oracle 非 AVAILABLE 时必须显式记为 UNAVAILABLE/ERROR，
+    ``kernel_events`` / ``kernel_delta_lines`` 为 None（不可判定），
+    绝不伪装成"0 kernel event"。
+    """
+
+    def setUp(self) -> None:
+        import isotp_fuzz as engine
+
+        self.engine = engine
+
+    def _fake_run(self, **kwargs):
+        """构造一个成功的 CompletedProcess 替身。"""
+        from unittest.mock import MagicMock
+
+        proc = MagicMock()
+        proc.returncode = kwargs.get("returncode", 0)
+        proc.stdout = kwargs.get("stdout", "")
+        return proc
+
+    def test_dmesg_normal_available(self) -> None:
+        import subprocess
+        from unittest.mock import patch
+
+        with patch.object(subprocess, "run", return_value=self._fake_run(
+                stdout="line1\nline2\n")) as fake_run:
+            status, lines = self.engine.dmesg_snapshot()
+
+        self.assertEqual(status, cs.KERNEL_ORACLE_AVAILABLE)
+        self.assertEqual(lines, ["line1", "line2"])
+        fake_run.assert_called_once()
+
+    def test_dmesg_missing_binary_unavailable(self) -> None:
+        import subprocess
+        from unittest.mock import patch
+
+        with patch.object(subprocess, "run",
+                          side_effect=FileNotFoundError("dmesg")):
+            status, lines = self.engine.dmesg_snapshot()
+
+        self.assertEqual(status, cs.KERNEL_ORACLE_UNAVAILABLE)
+        self.assertEqual(lines, [])
+
+    def test_dmesg_permission_denied_unavailable(self) -> None:
+        """dmesg 非零退出（无 root 权限）→ UNAVAILABLE，而不是空事件。"""
+        import subprocess
+        from unittest.mock import patch
+
+        with patch.object(subprocess, "run", return_value=self._fake_run(
+                returncode=1, stdout="")) as fake_run:
+            status, lines = self.engine.dmesg_snapshot()
+
+        self.assertEqual(status, cs.KERNEL_ORACLE_UNAVAILABLE)
+        self.assertEqual(lines, [])
+        fake_run.assert_called_once()
+
+    def test_dmesg_timeout_error(self) -> None:
+        import subprocess
+        from unittest.mock import patch
+
+        with patch.object(subprocess, "run",
+                          side_effect=subprocess.TimeoutExpired("dmesg", 10)):
+            status, lines = self.engine.dmesg_snapshot()
+
+        self.assertEqual(status, cs.KERNEL_ORACLE_ERROR)
+        self.assertEqual(lines, [])
+
+    def test_dmesg_oserror_error(self) -> None:
+        import subprocess
+        from unittest.mock import patch
+
+        with patch.object(subprocess, "run", side_effect=OSError("spawn failed")):
+            status, lines = self.engine.dmesg_snapshot()
+
+        self.assertEqual(status, cs.KERNEL_ORACLE_ERROR)
+        self.assertEqual(lines, [])
+
+    def test_combine_oracle_status(self) -> None:
+        self.assertEqual(
+            cs.combine_oracle_status(cs.KERNEL_ORACLE_AVAILABLE,
+                                     cs.KERNEL_ORACLE_AVAILABLE),
+            cs.KERNEL_ORACLE_AVAILABLE,
+        )
+        self.assertEqual(
+            cs.combine_oracle_status(cs.KERNEL_ORACLE_AVAILABLE,
+                                     cs.KERNEL_ORACLE_UNAVAILABLE),
+            cs.KERNEL_ORACLE_UNAVAILABLE,
+        )
+        # ERROR 优先于 UNAVAILABLE
+        self.assertEqual(
+            cs.combine_oracle_status(cs.KERNEL_ORACLE_UNAVAILABLE,
+                                     cs.KERNEL_ORACLE_ERROR),
+            cs.KERNEL_ORACLE_ERROR,
+        )
+
+    def test_unavailable_oracle_gives_none_not_zero_events(self) -> None:
+        """oracle 不可用 ≠ kernel_events == 0：必须返回 (None, False)。"""
+        for status in (cs.KERNEL_ORACLE_UNAVAILABLE, cs.KERNEL_ORACLE_ERROR):
+            with self.subTest(status=status):
+                events, anomaly = self.engine.kernel_oracle_result(status, [])
+
+                self.assertIsNone(events, "不可判定不得表示为空列表")
+                self.assertFalse(anomaly)
+
+    def test_available_oracle_no_delta_keeps_compat_behavior(self) -> None:
+        """AVAILABLE + 无命中 → 空列表（= 0 events），与旧行为兼容。"""
+        events, anomaly = self.engine.kernel_oracle_result(
+            cs.KERNEL_ORACLE_AVAILABLE, []
+        )
+
+        self.assertEqual(events, [])
+        self.assertFalse(anomaly)
+
+    def test_available_oracle_with_hits(self) -> None:
+        events, anomaly = self.engine.kernel_oracle_result(
+            cs.KERNEL_ORACLE_AVAILABLE,
+            ["BUG: unable to handle kernel NULL pointer dereference"],
+        )
+
+        self.assertEqual(len(events), 1)
+        self.assertTrue(anomaly)
+
+    def test_unavailable_oracle_never_classifies_kernel_anomaly(self) -> None:
+        """oracle 不可用时不得把 case 误判成 KERNEL_ANOMALY。"""
+        for status in (cs.KERNEL_ORACLE_UNAVAILABLE, cs.KERNEL_ORACLE_ERROR):
+            with self.subTest(status=status):
+                events, anomaly = self.engine.kernel_oracle_result(status, [])
+
+                self.assertEqual(
+                    cs.classify_result(False, "none", cs.RECOVERY_FAIL, None,
+                                       anomaly, False),
+                    cs.ECU_CRASH,
+                    "oracle 不可用必须不影响既有分类优先级",
+                )
+                self.assertIsNone(events)
 
 
 class TestReplayDirectoryFiltering(unittest.TestCase):
