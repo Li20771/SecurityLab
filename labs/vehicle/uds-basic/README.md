@@ -179,13 +179,14 @@ UDS_INTERFACE=vcan1 UDS_RX_ID=0x7E1 UDS_TX_ID=0x7E9 \
 | `0x22` | ReadDataByIdentifier | —（支持多 DID） | `0x62` | 已实现 |
 | `0x27` | SecurityAccess | `0x01` RequestSeed<br>`0x02` SendKey | `0x67` | 已实现 |
 | `0x2E` | WriteDataByIdentifier | —（可写 DID 见 4.3） | `0x6E` | 已实现 |
+| `0x31` | RoutineControl | `0x01` Start<br>`0x02` Stop<br>`0x03` RequestResults | `0x71` | 已实现（见 4.5） |
 | `0x3E` | TesterPresent | `0x00` zeroSubFunction<br>`0x80` 抑制正响应 | `0x7E` / 无响应 | 已实现 |
 
 **尚未实现**（会返回 `NRC 0x11 ServiceNotSupported`）：
 
 `0x14` ClearDiagnosticInformation、`0x19` 的其余 reportType
 （03/04/05/06/07/08/09/0B…）、`0x28` CommunicationControl、
-`0x31` RoutineControl、`0x85` ControlDTCSetting 等。
+`0x85` ControlDTCSetting 等。
 
 ### 4.1 响应格式
 
@@ -315,6 +316,29 @@ S3* 自动退会话，故无副作用）。
 
 ---
 
+### 4.5 0x31 RoutineControl
+
+本实验实现三个子功能，请求固定 4 字节（不实现 routineControlOptionRecord）：
+
+```
+31 01 <RID:2> → 71 01 <RID:2>     StartRoutine
+31 02 <RID:2> → 71 02 <RID:2>     StopRoutine
+31 03 <RID:2> → 71 03 <RID:2> <result:4>   RequestRoutineResults
+```
+
+- 本 feature 实现两个 synthetic routine（`ecu/routine_database.py`）：
+  `0x2001` start-counter（Results 返回 Start 次数的 4 字节 big-endian）、
+  `0x2002` magic-echo（Results 返回固定魔数 `31 41 59 26`）。
+- 状态机：Start 进入 active（重复 Start → `NRC 0x22` 且状态不变）；
+  Stop 要求 active（否则 `NRC 0x22` 且状态不变）；Results 是纯查询，
+  未 Start 也可查（start-counter 初始 count=0）。
+- NRC：subFunction 非 01/02/03 → `0x12`；长度 ≠ 4 → `0x13`；
+  未知 RID → `0x31`。**不实现** 0x33 / 0x7E / 0x7F（权限/会话门控
+  属未来 framework），正响应不携带 routineStatusRecord（最小模型）。
+- 生命周期：**hardReset 清空** routine 状态（active 集合 + 计数）；
+  **session 切换不影响** routine 状态；DTC（0x19）不受 routine reset
+  影响（故障记忆保留，测试成对固化）。
+
 ## 5. 支持的 NRC
 
 | NRC | 名称 | 本实验触发条件 |
@@ -380,6 +404,14 @@ S3* 自动退会话，故无副作用）。
 | `19 01 FF` | `59 FF 01 00 03` | 3 个 DTC 匹配（DTCCount=3） |
 | `19 02 01` | `59 FF 10 00 01 01` | 只返回 status bit0 置位的 DTC |
 | `19 0A` | `59 FF 10 00 01 01 10 00 02 02 10 00 03 04` | 全部支持的 DTC |
+| `31 01`（长度 ≠ 4） | `7F 31 13` | 请求形态固定 4 字节 |
+| `31 04 20 01` | `7F 31 12` | 子功能不支持 |
+| `31 01 AA AA` | `7F 31 31` | 未知 routineIdentifier |
+| `31 01 20 01`（重复 Start） | `7F 31 22` | 已 active，状态不变 |
+| `31 02 20 01`（未 active） | `7F 31 22` | 未 active，状态不变 |
+| `31 01 20 01` | `71 01 20 01` | Start 成功（0x2001 count+1） |
+| `31 03 20 01`（Start 1 次后） | `71 03 20 01 00 00 00 01` | Results（4 字节 BE 计数） |
+| `31 03 20 02` | `71 03 20 02 31 41 59 26` | magic-echo 固定结果 |
 | 空请求 | `7F 00 13` | 无法解析 |
 
 **重要设计原则**：
@@ -622,12 +654,14 @@ bash tests/run_tests.sh e2e    # 只跑 vcan0 端到端测试
 | `tests/test_services_extra_unit.py` | 17 | 否 |
 | `tests/test_gateway_unit.py` | 13 | 否 |
 | `tests/test_dtc_unit.py` | 30 | 否 |
+| `tests/test_routine_unit.py` | 25 | 否 |
 | `tests/test_e2e_vcan.py` | 65 | 是 |
 | `tests/test_isotp_options_vcan.py` | 14 | 是 |
 | `tests/test_write_did_vcan.py` | 8 | 是 |
 | `tests/test_multi_ecu_vcan.py` | 4 | 是 |
 | `tests/test_dtc_vcan.py` | 8 | 是 |
-| **合计** | **298**（unit 199 + e2e 99） | — |
+| `tests/test_routine_vcan.py` | 11 | 是 |
+| **合计** | **335**（unit 225 + e2e 110） | — |
 
 ### 8.2 离线单元测试（不需要 CAN）
 
@@ -1006,6 +1040,7 @@ uds-basic/
 │   ├── uds_types.py         # 协议常量 + 响应构造（零依赖）
 │   ├── did_database.py      # DID 数据库（受保护/可写 DID 标记）
 │   ├── dtc_database.py      # DTC 静态数据库（合成 DTC + mask/format 常量）
+│   ├── routine_database.py   # Routine 静态数据库（0x2001/0x2002 定义）
 │   ├── gateway.py           # 多 ECU 路由（VirtualEcu / DiagnosticGateway）
 │   └── keygen.py            # 教学用 seed/key 算法（无 CAN 依赖）
 └── tests/
@@ -1015,11 +1050,13 @@ uds-basic/
     ├── test_services_extra_unit.py  # 0x2E/0x3E 单元测试（17 用例，无需 CAN）
     ├── test_gateway_unit.py     # 多 ECU 路由测试（13 用例，无需 CAN）
     ├── test_dtc_unit.py         # 0x19 单元测试（30 用例，无需 CAN）
+    ├── test_routine_unit.py     # 0x31 单元测试（25 用例，无需 CAN）
     ├── test_e2e_vcan.py         # vcan0 端到端测试（65 用例）
     ├── test_isotp_options_vcan.py   # ISO-TP 传输参数矩阵（14 用例，需 vcan0）
     ├── test_write_did_vcan.py   # 0x2E/0x3E 真实解锁写入（8 用例，需 vcan0）
     ├── test_multi_ecu_vcan.py   # 三 ECU 物理寻址（4 用例，需 vcan0）
-    └── test_dtc_vcan.py         # 0x19 真实链路（8 用例，需 vcan0）
+    ├── test_dtc_vcan.py         # 0x19 真实链路（8 用例，需 vcan0）
+    └── test_routine_vcan.py     # 0x31 真实链路（11 用例，需 vcan0）
 ```
 
 > 注意：`ecu.py` 不是 UDS 业务实现层。协议实现位于 `uds_server.py`，
@@ -1041,6 +1078,10 @@ uds-basic/
 - [x] `0x3E` TesterPresent（`3E 00→7E 00`；`3E 80` 抑制；非法子功能 12；长度错 13）
 - [x] `0x19` ReadDTCInformation（reportType 01/02/0A；mask 过滤、稳定排序、
   DTCCount 16-bit BE；非法 reportType 12、长度错 13）
+- [x] `0x31` RoutineControl（Start/Stop/RequestResults；0x2001 start-counter +
+  0x2002 magic-echo；状态机 22、未知 RID 31、长度 13、子功能 12）
+- [x] routine 生命周期：hardReset 清空 routine 状态、session 切换保留、
+  DTC 故障记忆不受影响（unit + e2e 固化）
 - [x] DTC 模型：静态 `dtc_database.py` + `EcuState.dtc_records` 运行时状态；
   hardReset 保留 DTC（故障记忆语义，unit + e2e 固化）
 - [x] `0x7F` 否定响应与 NRC 判定（0x11/0x12/0x13/0x22/0x24/0x31/0x33/0x35/0x36/0x37/0x7F）
@@ -1056,8 +1097,8 @@ uds-basic/
 - [x] 显式 `EcuState`（10 字段）与单一事实源 `STATE`
 - [x] 静态服务 registry + 协议层 dispatcher
 - [x] transport / protocol 分层与单向依赖（`uds_server` 不反向依赖 `ecu`）
-- [x] 离线单元测试 199 PASS（105 ECU + 34 keygen + 17 services-extra + 13 gateway + 30 dtc）
-- [x] vcan0 端到端测试 99 PASS（65 e2e + 14 isotp-matrix + 8 write-did + 4 multi-ecu + 8 dtc）
+- [x] 离线单元测试 225 PASS（106 ECU + 34 keygen + 17 services-extra + 13 gateway + 30 dtc + 25 routine）
+- [x] vcan0 端到端测试 110 PASS（65 e2e + 14 isotp-matrix + 8 write-did + 4 multi-ecu + 8 dtc + 11 routine）
 - [x] **三轮连续稳定性验证全部通过**（见第 14.7 节）
 
 ---
@@ -1140,7 +1181,7 @@ _security_services()            —— 每次请求现场构造 SecurityAccess h
 
 | 组成 | 说明 |
 |---|---|
-| `EcuState` | 运行时状态对象，**恰好 10 个字段**（见下） |
+| `EcuState` | 运行时状态对象，**恰好 12 个字段**（见下） |
 | `STATE` | 默认单例，**唯一事实源** |
 | `reset_security_state(state)` | 清除解锁与 seed 生命周期，保留失败计数与锁定 |
 | `required_security_level(did)` | DID → 所需安全等级 |
@@ -1152,10 +1193,11 @@ _security_services()            —— 每次请求现场构造 SecurityAccess h
 | `service_write_data_by_identifier` | 0x2E handler（门控链见 4.3，写入 `did_overrides`） |
 | `service_tester_present` | 0x3E handler（`3E 80` 返回空字节由入口层抑制发帧） |
 | `service_read_dtc_information` | 0x19 handler（reportType 01/02/0A，只读 `dtc_records`） |
-| `SERVICES` | **静态** registry（0x10 / 0x11 / 0x19 / 0x22 / 0x2E / 0x3E） |
+| `service_routine_control` | 0x31 handler（Start/Stop/Results 状态机，见 4.5） |
+| `SERVICES` | **静态** registry（0x10 / 0x11 / 0x19 / 0x22 / 0x2E / 0x31 / 0x3E） |
 | `handle_uds_request(request, state, *, services=None)` | 协议层 dispatcher |
 
-**`EcuState` 的 10 个字段**（当前实现，不多不少）：
+**`EcuState` 的 12 个字段**（当前实现，不多不少）：
 
 ```text
 session          当前诊断会话
@@ -1168,6 +1210,8 @@ lockout_until    锁定解除时刻
 seed_counter     seed 序号
 did_overrides    0x2E 写入的 DID 运行时覆盖（hardReset 清空）
 dtc_records      0x19 的运行时 DTC 状态（hardReset **保留**，故障记忆）
+active_routines  0x31 active 状态集合（hardReset 清空，session 切换保留）
+routine_start_counts 0x31 start-counter 计数（hardReset 清空）
 ```
 
 > 当前**不包含** S3 定时器、`last_request_sid`、`unlocked_at`、
@@ -1193,8 +1237,8 @@ dtc_records      0x19 的运行时 DTC 状态（hardReset **保留**，故障记
 
 ### 14.6 Service registry 与 dispatcher
 
-静态 registry 定义在 `uds_server.py`，**含六个服务**
-（0x2E / 0x3E 为 Phase 4X 新增，0x19 为第二轮第一项新增）：
+静态 registry 定义在 `uds_server.py`，**含七个服务**
+（0x2E / 0x3E 为 Phase 4X 新增，0x19 / 0x31 为第二轮新增）：
 
 ```python
 SERVICES = {
@@ -1203,6 +1247,7 @@ SERVICES = {
     0x19: service_read_dtc_information,
     0x22: service_read_data_by_identifier,
     0x2E: service_write_data_by_identifier,
+    0x31: service_routine_control,
     0x3E: service_tester_present,
 }
 ```
@@ -1271,8 +1316,8 @@ P9 阶段**连续执行 3 轮完整回归**，三轮结果逐项完全一致
 工程收口 2026-09-21 基线（Phase 4X 全量，实测）：
 
 ```text
-UDS Unit       199 PASS   （105 ECU + 34 keygen + 17 services-extra + 13 gateway + 30 dtc）
-E2E（在网）     99 PASS   （65 + 14 isotp-matrix + 8 write-did + 4 multi-ecu + 8 dtc）
+UDS Unit       225 PASS   （106 ECU + 34 keygen + 17 services-extra + 13 gateway + 30 dtc + 25 routine）
+E2E（在网）     110 PASS  （65 + 14 isotp-matrix + 8 write-did + 4 multi-ecu + 8 dtc + 11 routine）
 can-tools 离线 183 PASS   （34 parsers + 50 isotp-options + 99 fuzz-harness，
                           含 kernel oracle 三态 10 例）
 fuzz kernel oracle 三态 AVAILABLE/UNAVAILABLE/ERROR 如实上报
@@ -1281,7 +1326,7 @@ fuzz kernel oracle 三态 AVAILABLE/UNAVAILABLE/ERROR 如实上报
 运行方式：
 
 ```bash
-bash labs/vehicle/uds-basic/tests/run_tests.sh all   # 199 + 99
+bash labs/vehicle/uds-basic/tests/run_tests.sh all   # 225 + 110
 bash scripts/healthcheck.sh                          # 环境 + 离线测试
 ```
 
@@ -1550,7 +1595,9 @@ Phase 3 完成的是一次**结构性重构**（行为保持不变）：
 - ✅ 已完成：`0x3E` TesterPresent（见 4.1）
 - ✅ 已完成：`0x19` ReadDTCInformation 的 reportType 01/02/0A
   （其余 reportType 与 0x85 DTC 控制属后续）
-- `0x31` RoutineControl：例程控制
+- ✅ 已完成：`0x31` RoutineControl（Start/Stop/RequestResults +
+  0x2001/0x2002 synthetic routines；routineControlOptionRecord /
+  routineStatusRecord 与权限/会话门控属后续）
 - `0x28` CommunicationControl、`0x85` ControlDTCSetting
 - `0x78` ResponsePending 与 P2* 超时处理
 - `0x27` 多安全等级（Level 2：`0x03`/`0x04`，需位掩码式安全等级）

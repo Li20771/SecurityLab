@@ -6,7 +6,7 @@ UDS Basic —— ECU 运行时状态与服务处理
 
 - ``EcuState`` / ``STATE``：ECU 的跨请求运行时状态
 - ``reset_security_state()`` / ``required_security_level()``：状态与权限 helper
-- 七个服务处理函数：
+- 八个服务处理函数：
     * ``service_diagnostic_session_control``  (0x10)
     * ``service_ecu_reset``                   (0x11)
     * ``service_read_data_by_identifier``     (0x22)
@@ -14,6 +14,7 @@ UDS Basic —— ECU 运行时状态与服务处理
     * ``service_write_data_by_identifier``    (0x2E)
     * ``service_tester_present``              (0x3E)
     * ``service_read_dtc_information``        (0x19)
+    * ``service_routine_control``             (0x31)
 - ``SERVICES``：静态服务注册表（**不含 0x27**）
 - ``_make_security_access_handler()``：为 0x27 绑定请求时依赖的工厂
 - ``handle_uds_request()``：协议层 dispatcher
@@ -53,6 +54,13 @@ from dtc_database import (
     DTC_FORMAT_IDENTIFIER,
     DTC_STATUS_AVAILABILITY_MASK,
 )
+from routine_database import (
+    MAGIC_ECHO_RESULT,
+    ROUTINE_MAGIC_ECHO,
+    ROUTINE_NAMES,
+    ROUTINE_RESULT_LENGTH,
+    ROUTINE_START_COUNTER,
+)
 
 __all__ = [
     "EcuState",
@@ -68,6 +76,7 @@ __all__ = [
     "service_write_data_by_identifier",
     "service_tester_present",
     "service_read_dtc_information",
+    "service_routine_control",
     "handle_uds_request",
 ]
 
@@ -159,6 +168,20 @@ class EcuState:
     #: ECUReset(hardReset) **不清除**本字典——DTC 是故障历史记忆，
     #: 与 ``did_overrides`` 的"复位即恢复出厂"语义刻意不同（测试固化）。
     dtc_records: dict[int, int] = field(default_factory=_default_dtc_records)
+
+    #: 0x31 RoutineControl：当前处于 active 状态的 routine 标识符集合。
+    #:
+    #: StartRoutine 加入、StopRoutine 移除；重复 Start / 未 active 的
+    #: Stop 都由本集合判定（NRC 0x22）。ECUReset(hardReset) 清空。
+    #: session 切换**不影响**本集合（0x31 无会话门控，见设计文档）。
+    active_routines: set[int] = field(default_factory=set)
+
+    #: 0x31 RoutineControl：start-counter routine 的 Start 累计次数。
+    #:
+    #: 只被 StartRoutine 递增；RequestRoutineResults 是纯查询，
+    #: 结果由本字典即时推导（不缓存 routine_results）。
+    #: ECUReset(hardReset) 清空；session 切换不影响。
+    routine_start_counts: dict[int, int] = field(default_factory=dict)
 
 
 #: 默认状态单例：ECU 进程使用的唯一运行时状态实例。
@@ -259,7 +282,8 @@ def service_ecu_reset(request: bytes, state: EcuState) -> bytes:
     响应：``51 <resetType>``
 
     目前仅实现 hardReset (0x01)：会话复位为 defaultSession，
-    并清除解锁状态与 seed 生命周期（保留失败计数与锁定）。
+    清除解锁状态与 seed 生命周期（保留失败计数与锁定）、清空
+    DID override 与 routine 状态（保留 DTC 故障记忆）。
     """
     if len(request) != 2:
         return uds_types.negative_response(
@@ -274,6 +298,10 @@ def service_ecu_reset(request: bytes, state: EcuState) -> bytes:
         reset_security_state(state)
         # 复位使通过 0x2E 写入的 DID 恢复出厂默认值
         state.did_overrides.clear()
+        # routine 状态是易失瞬态：复位清空（与 dtc_records 的故障
+        # 记忆语义刻意相反——DTC 保留、routine 清空，测试成对固化）
+        state.active_routines.clear()
+        state.routine_start_counts.clear()
 
         return uds_types.positive_response(0x11, bytes([reset_type]))
 
@@ -704,6 +732,108 @@ def service_read_dtc_information(request: bytes, state: EcuState) -> bytes:
 
 
 # ======================================================================
+# 0x31 RoutineControl
+# ======================================================================
+
+#: 本 feature 实现的 0x31 子功能。
+ROUTINE_START = 0x01
+ROUTINE_STOP = 0x02
+ROUTINE_REQUEST_RESULTS = 0x03
+
+
+def _routine_result(state: EcuState, routine_id: int) -> bytes:
+    """
+    计算指定 routine 的 Results 内容（纯查询，不修改任何状态）。
+
+    - start-counter：``routine_start_counts`` 的 4 字节 big-endian；
+    - magic-echo：固定魔数 ``MAGIC_ECHO_RESULT``。
+    """
+    if routine_id == ROUTINE_START_COUNTER:
+        count = state.routine_start_counts.get(routine_id, 0)
+        return count.to_bytes(ROUTINE_RESULT_LENGTH, "big")
+
+    if routine_id == ROUTINE_MAGIC_ECHO:
+        return MAGIC_ECHO_RESULT
+
+    # 不可达：调用方已做过 RID 存在性检查，此处仅作防御。
+    raise ValueError(f"未知 routine identifier：0x{routine_id:04X}")
+
+
+def service_routine_control(request: bytes, state: EcuState) -> bytes:
+    """
+    处理 0x31 RoutineControl。
+
+    本 feature 固定请求形态（不实现 routineControlOptionRecord）：
+
+        ``31 <subFunction> <routineIdentifier:2>``，严格 4 字节。
+
+    - ``01`` StartRoutine：routine 未 active → 标记 active、递增
+      start-counter（仅 0x2001 有计数语义）、返回 ``71 01 <RID:2>``；
+      已 active → 7F 31 22（状态不变）。
+    - ``02`` StopRoutine：active → 取消标记、返回 ``71 02 <RID:2>``；
+      未 active → 7F 31 22（状态不变）。
+    - ``03`` RequestRoutineResults：任意时刻可查（纯读，不要求 active）、
+      返回 ``71 03 <RID:2> <result:4>``。
+
+    NRC：subFunction 非 01/02/03 → 0x12；长度 ≠ 4 → 0x13；
+    未知 RID → 0x31。不实现 0x33 / 0x7E / 0x7F（权限/会话门控属
+    未来 framework）；正响应刻意不携带 routineStatusRecord（最小模型，
+    文档化于 README）。
+    """
+    if len(request) != 4:
+        return uds_types.negative_response(
+            0x31, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+        )
+
+    sub_function = request[1]
+    routine_id = (request[2] << 8) | request[3]
+
+    if sub_function not in (ROUTINE_START, ROUTINE_STOP, ROUTINE_REQUEST_RESULTS):
+        return uds_types.negative_response(
+            0x31, uds_types.NRC_SUBFUNCTION_NOT_SUPPORTED
+        )
+
+    if routine_id not in ROUTINE_NAMES:
+        return uds_types.negative_response(
+            0x31, uds_types.NRC_REQUEST_OUT_OF_RANGE
+        )
+
+    if sub_function == ROUTINE_START:
+        if routine_id in state.active_routines:
+            # 重复 Start：状态机不允许，且不得改变任何状态。
+            return uds_types.negative_response(
+                0x31, uds_types.NRC_CONDITIONS_NOT_CORRECT
+            )
+
+        state.active_routines.add(routine_id)
+
+        if routine_id == ROUTINE_START_COUNTER:
+            state.routine_start_counts[routine_id] = (
+                state.routine_start_counts.get(routine_id, 0) + 1
+            )
+
+        return uds_types.positive_response(0x31, bytes([ROUTINE_START, request[2], request[3]]))
+
+    if sub_function == ROUTINE_STOP:
+        if routine_id not in state.active_routines:
+            # 未 active 的 Stop：状态机不允许，且不得改变任何状态。
+            return uds_types.negative_response(
+                0x31, uds_types.NRC_CONDITIONS_NOT_CORRECT
+            )
+
+        state.active_routines.remove(routine_id)
+
+        return uds_types.positive_response(0x31, bytes([ROUTINE_STOP, request[2], request[3]]))
+
+    # ROUTINE_REQUEST_RESULTS：纯查询，不改变任何状态。
+    result = _routine_result(state, routine_id)
+
+    return uds_types.positive_response(
+        0x31, bytes([ROUTINE_REQUEST_RESULTS, request[2], request[3]]) + result
+    )
+
+
+# ======================================================================
 # UDS 服务分发
 # ======================================================================
 
@@ -753,6 +883,7 @@ SERVICES = {
     0x19: service_read_dtc_information,
     0x22: service_read_data_by_identifier,
     0x2E: service_write_data_by_identifier,
+    0x31: service_routine_control,
     0x3E: service_tester_present,
 }
 
