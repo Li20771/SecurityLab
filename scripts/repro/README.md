@@ -16,7 +16,7 @@ repo 重现"。本目录把这些验证固化为版本化的最小可复现脚�
 |------|----------|----------|------|
 | `verify_arm.sh` | AArch64 编译+执行、armhf 编译、qemu-arm 执行 | aarch64/armhf 交叉 gcc、qemu-arm（qemu-aarch64 仅 binfmt 不可用时需要） | 秒级 |
 | `verify_qemu_gdb.sh` | qemu-aarch64 -g ↔ gdb-multiarch remote：断点命中→continue→exit 0 | 交叉 gcc、qemu-aarch64、gdb-multiarch | ~10s |
-| `verify_ghidra.sh` | sample ELF → analyzeHeadless 分析 → 架构检查 → main 反汇编（postScript `ghidra_scripts/DumpDisasm.java`） | gcc、Ghidra（`GHIDRA_BIN` 可覆盖，默认 `/opt/ghidra/support/analyzeHeadless`） | 1-3 分钟 |
+| `verify_ghidra.sh` | **AArch64** ELF → analyzeHeadless 分析 → Architecture=AARCH64 → ERROR_COUNT=0 → main 反汇编 12 条（postScript `ghidra_scripts/DumpDisasm.java`） | aarch64-linux-gnu-gcc、Ghidra（`GHIDRA_BIN` 可覆盖，默认 `/opt/ghidra/support/analyzeHeadless`） | 1-3 分钟 |
 | `verify_fuzz_smoke.sh` | fuzz harness + case schema + 分类 + kernel oracle 三态 + replay（3 case） | vcan0 UP（**独占**）、venv 含 python-can/can-isotp（`PYTHON` 可覆盖） | ~30s |
 
 ## 用法

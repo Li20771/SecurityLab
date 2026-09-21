@@ -109,7 +109,7 @@ reported**（含于 `qa_extended.sh`，本机可重跑）。
 | AArch64 编译+执行 | `scripts/repro/verify_arm.sh` | aarch64-gcc 静态编译；透明执行（binfmt，qemu-aarch64 回退）输出 ARM_RUNTIME_OK 42 | Local verified（6/6） |
 | armhf 编译+执行 | 同上 | armhf-gcc 编译 + qemu-arm 执行输出 ARM_RUNTIME_OK 42；readelf 架构检查 | Local verified |
 | QEMU+GDB 远程 | `scripts/repro/verify_qemu_gdb.sh` | qemu-aarch64 -g ↔ gdb-multiarch target remote；main 断点命中→continue→exited→rc0 | Local verified（4/4） |
-| Ghidra headless 分析 | `scripts/repro/verify_ghidra.sh` | RC=0、语言与编译目标一致、ERROR_COUNT=0、main 反汇编 12 条 | Local verified（6/6） |
+| Ghidra headless 分析 | `scripts/repro/verify_ghidra.sh` | AArch64 ELF（脚本自生成）→ RC=0、Architecture=AARCH64、ERROR_COUNT=0、main 反汇编 12 条 | Local verified（8/8） |
 | fuzz smoke 最小复现 | `scripts/repro/verify_fuzz_smoke.sh` | 3 case：harness/分类/oracle 三态/replay issue(s)=0 | Local verified（8/8） |
 
 > 历史证据脚本仍在 `tmp/audit/`（gitignore）；凡与仓库未来状态相关的验证

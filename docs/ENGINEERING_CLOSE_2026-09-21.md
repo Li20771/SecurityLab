@@ -14,7 +14,8 @@
 branch:       chore/engineering-close-20260921
 base:         audit/environment-20260921 (snapshot commit 14ddb75bcfad5105d8b91455ed4d4cfe2fae8c6a)
 main:         e215b1d（本分支未触碰）
-final commit: a772423（docs: finalize engineering close report with git evidence）
+final commit: 07be67ad47aab7f061751a0a17aee5bd5a628c69
+              （docs: correct close report final diffstat and commit count）
 ```
 
 ## 2. 修改文件
@@ -95,7 +96,13 @@ final commit: a772423（docs: finalize engineering close report with git evidenc
   - helper 执行失败 → 错误记日志（每轮一次，容忍 boot 竞态瞬态失败），最终判定返回非零；
   - 新增测试接缝 `BINFMT_REGISTRY / BINFMT_LOCK / BINFMT_HELPER / BINFMT_D_DIRS`（默认值不变，仅测试用）。
 - **验证**：`configs/binfmt/tests/selfheal_failclosed_test.sh` **11/11 PASS**——情况 A（helper 正常，quick 退出 0 且条目被注册）、情况 B（helper 缺失，退出 1、日志含 missing+fail-closed、register 未被写入）、情况 C（helper 失败，退出 1、错误向上）、源码级护栏（无 systemd-binfmt 执行调用）。
-- **遗留（需授权）**：系统侧 `/usr/local/sbin/binfmt-selfheal.sh` 部署更新到 v2.3 需 sudo；repo 内 `configs/binfmt/` 为源真。
+- **binfmt 状态必须分开表述**（未做 sudo 部署，不得写成"fully fixed"）：
+
+```text
+Repository source:    v2.3 fail-closed（configs/binfmt/binfmt-selfheal.sh）
+Current deployed system: not upgraded（/usr/local/sbin/binfmt-selfheal.sh
+                      仍是审计期部署版本；升级需 sudo 授权）→ BLOCKED / NOT DEPLOYED
+```
 
 ### P1-E healthcheck QEMU fallback `&&` 短路
 
@@ -119,7 +126,13 @@ final commit: a772423（docs: finalize engineering close report with git evidenc
 
 - **问题**：ARM/QEMU-GDB/Ghidra 验证证据仅在 `tmp/audit/`（gitignore），换机无法只靠 repo 重现。
 - **修改**：新增 `scripts/repro/`（§5），统一退出码语义（0 过 / 1 验证失败 / 2 环境缺失），全部 mktemp 产物即用即删。
-- **验证**：见 §5 实测结果。
+- **Ghidra repro 与第一轮目标对齐（证据修正）**：脚本自身生成
+  AArch64 静态 ELF（`aarch64-linux-gnu-gcc -static -g`），断言
+  `Architecture = AARCH64` 与 `ERROR_COUNT = 0`，postScript 反汇编
+  main 12 条 AArch64 指令——即"**AArch64 ELF → headless analyze →
+  AARCH64 language → ERROR_COUNT=0 → AArch64 反汇编**"完整闭环，
+  不再使用 x86 sample。
+- **验证**：见 §5 实测结果（2026-09-21 证据修正后全量重跑）。
 
 ### P1-F 测试层级混乱
 
@@ -151,7 +164,7 @@ final commit: a772423（docs: finalize engineering close report with git evidenc
 | L4 环境 | `healthcheck.sh --extended` | PASS 78 / WARN 2 / FAIL 0 | **PASS**（见 WARN） |
 | L4 环境 | `verify_arm.sh` | 6/6 | **PASS** |
 | L4 环境 | `verify_qemu_gdb.sh` | 4/4 | **PASS** |
-| L4 环境 | `verify_ghidra.sh` | 6/6 | **PASS** |
+| L4 环境 | `verify_ghidra.sh` | 8/8（AArch64 样本：Architecture=AARCH64、ERROR_COUNT=0、main 反汇编 12 条） | **PASS** |
 | L4 环境 | `verify_fuzz_smoke.sh` | 8/8 | **PASS** |
 | L4 环境 | binfmt fail-closed 回归 | 11/11 | **PASS** |
 | L4 环境 | healthcheck fallback 回归 | 3/3 | **PASS** |
@@ -180,7 +193,7 @@ final commit: a772423（docs: finalize engineering close report with git evidenc
 |------|------|------------------|
 | `verify_arm.sh` | `bash scripts/repro/verify_arm.sh` | 6/6：AArch64 编译+执行（binfmt/qemu 回退）、armhf 编译、qemu-arm 执行、readelf 架构 |
 | `verify_qemu_gdb.sh` | `bash scripts/repro/verify_qemu_gdb.sh`（端口 `REPRO_GDB_PORT` 可覆盖） | 4/4：qemu -g 挂起→gdb remote→main 断点→continue→rc0 |
-| `verify_ghidra.sh` | `bash scripts/repro/verify_ghidra.sh`（`GHIDRA_BIN` 可覆盖） | 6/6：导入→分析 rc0→x86:LE:64→ERROR_COUNT=0→main 反汇编 12 条 |
+| `verify_ghidra.sh` | `bash scripts/repro/verify_ghidra.sh`（`GHIDRA_BIN` 可覆盖） | 8/8：AArch64 ELF（脚本自生成）→ analyzeHeadless rc0 → Architecture=AARCH64 → ERROR_COUNT=0 → main 反汇编 12 条 AArch64 指令 |
 | `verify_fuzz_smoke.sh` | `bash scripts/repro/verify_fuzz_smoke.sh`（**独占 vcan**；`PYTHON` 可覆盖） | 8/8：3 case harness→schema/分类→oracle 三态→replay issue(s)=0 |
 
 统一约定：依赖缺失退出 2（环境不可用，非验证失败）；验证失败退出 1；产物在 mktemp 目录即用即删。完整 fuzz campaign 继续属于实验，不进默认 CI。
@@ -205,38 +218,66 @@ $ git status
 On branch chore/engineering-close-20260921
 nothing to commit, working tree clean
 
-$ git log --oneline --decorate -n 15
-45c72ca (HEAD -> chore/engineering-close-20260921) docs: add engineering close report
+$ git rev-parse HEAD
+07be67ad47aab7f061751a0a17aee5bd5a628c69
+
+$ git log --oneline audit/environment-20260921..HEAD   # 9 个 commit
+07be67a docs: correct close report final diffstat and commit count
+a772423 docs: finalize engineering close report with git evidence
+45c72ca docs: add engineering close report
 7d6db1c docs: synchronize environment and UDS status with source reality
 258bf07 chore(deps): add transitive lock for network requirements
 40fef72 chore(repro): add reproducible verification entrypoints
 d738822 fix(healthcheck): correct qemu fallback status handling
 549a212 fix(binfmt): remove unsafe selfheal fallback
 4f5fb62 fix(fuzz): make kernel oracle fail-closed
-14ddb75 (origin/audit/environment-20260921, audit/environment-20260921) chore(audit): snapshot environment build 2026-09-21
-d9c548c (refactor/uds-architecture) docs(can-tools): document BS remaining-CF boundary and test count
-c3c9f62 feat(can-tools): add remaining-CF-count BS boundary mutation
-83fb38b feat(can-tools): add stateful ISO-TP fuzz harness
-126dcdf fix(isotp): contain overflow transport error
-9ee291d docs(test): drop stale expectedFailure claim in cable helper
-c884aad fix(isotp): contain transport socket errors
-34cdf33 test(can-tools): add malformed ISO-TP experiments
 
-$ git diff main...HEAD --stat | tail -8
- ...（112 files changed, 21901 insertions(+), 651 deletions(-)；
-      包含自 main 基线以来整个审计分支的累积改动 + 本分支 7 个 commit）...
-
-本分支自身 8 个 commit 的净改动：
+$ git diff --check
+（无输出，通过）
 
 $ git diff audit/environment-20260921...HEAD --stat | tail -1
- 24 files changed, 2076 insertions(+), 198 deletions(-)
+ 24 files changed, 2072 insertions(+), 198 deletions(-)
+
+$ git diff main...HEAD --stat | tail -1
+ 112 files changed, 21901 insertions(+), 651 deletions(-)
+（含自 main 基线以来整个审计分支的累积改动 + 本分支 9 个 commit）
 ```
 
-- 提交纪律：8 个 commit，每个单一工程目的——fix(fuzz) / fix(binfmt) /
+- 提交纪律：9 个 commit，每个单一工程目的——fix(fuzz) / fix(binfmt) /
   fix(healthcheck) / chore(repro) / chore(deps) / docs(sync) /
-  docs(close-report) / docs(finalize-report)。
+  docs(close-report) / docs(finalize-report) / docs(correct-report)。
 - main 未改动；`audit/environment-20260921` 快照未改动（以其为 base 新建分支）。
 - 本分支**不合并 main**、零 push，等待用户授权。
+
+> 本报告所有 Git 数字由命令实时生成，不手工维护：
+> `git rev-parse HEAD` / `git log audit/environment-20260921..HEAD` /
+> `git diff --check` / `git status` / `git diff ... --stat`。
+
+---
+
+## Final Evidence Snapshot（2026-09-21 证据修正后全量重跑）
+
+```text
+branch:        chore/engineering-close-20260921
+base:          audit/environment-20260921 (14ddb75bcfad5105d8b91455ed4d4cfe2fae8c6a)
+HEAD:          07be67ad47aab7f061751a0a17aee5bd5a628c69
+working_tree:  clean（Windows 侧 git status --short 为空；
+               WSL 侧 .p1x-probe/n01-acceptance2-OUTPUT.txt 行尾 artifact 见 §4 WARN）
+commit_count:  9（git log --oneline audit/environment-20260921..HEAD）
+
+git_diff_check:       PASS（无输出）
+repro_arm:            6/6 PASS（AArch64 compile+exec、armhf compile、qemu-arm exec）
+repro_qemu_gdb:       4/4 PASS（qemu -g → gdb remote → breakpoint → continue → exit 0）
+repro_ghidra:         8/8 PASS（AArch64 ELF → AARCH64 language → ERROR_COUNT=0 →
+                      main 反汇编 12 条 AArch64 指令）
+repro_fuzz_smoke:     8/8 PASS（harness/schema/classification/oracle/replay；
+                      kernel oracle AVAILABLE=3）
+binfmt_regression:    11/11 PASS（repo source v2.3 fail-closed；
+                      系统部署 NOT DEPLOYED —— BLOCKED，需 sudo）
+healthcheck_fallback: 3/3 PASS
+
+GitHub CI:            NOT RUN（workflow 未在真实 runner 触发，无 push 授权）
+```
 
 ---
 
