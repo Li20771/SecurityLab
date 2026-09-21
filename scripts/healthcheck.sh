@@ -70,14 +70,25 @@ ARM_TMP="$(mktemp -d)"
 if command -v aarch64-linux-gnu-gcc >/dev/null 2>&1; then
     if printf 'int main(void){return 42;}\n' > "$ARM_TMP/t.c" \
        && aarch64-linux-gnu-gcc -static "$ARM_TMP/t.c" -o "$ARM_TMP/t" 2>/dev/null; then
-        if "$ARM_TMP/t" >/dev/null 2>&1; then RC=$?; else RC=$?; fi
-        if [ "${RC:-1}" = "42" ]; then
+        # 透明执行（binfmt）：显式保存退出码。
+        # 历史缺陷：`if cmd; then RC=$?; else RC=$?; fi` 与 `&& [ "$?" = 42 ]`
+        # 在 qemu 透传 guest 退出码 42（非零）时会短路，fallback 永不触发。
+        "$ARM_TMP/t" >/dev/null 2>&1
+        RC=$?
+        if [ "$RC" -eq 42 ]; then
             ok "ARM64 compile + transparent exec (exit 42)"
-        elif command -v qemu-aarch64 >/dev/null 2>&1 && qemu-aarch64 "$ARM_TMP/t" >/dev/null 2>&1 \
-             && [ "$?" = "42" ]; then
-            ok "ARM64 compile + qemu-aarch64 exec (exit 42)"
+        elif command -v qemu-aarch64 >/dev/null 2>&1; then
+            # fallback：qemu-user 显式执行（qemu 透传 guest 退出码，
+            # 因此必须先保存返回值再比较，不能用 && 链）。
+            qemu-aarch64 "$ARM_TMP/t" >/dev/null 2>&1
+            QRC=$?
+            if [ "$QRC" -eq 42 ]; then
+                ok "ARM64 compile + qemu-aarch64 exec (exit 42)"
+            else
+                fail "ARM64 binary built but neither binfmt nor qemu-aarch64 executed it (transparent rc=$RC, qemu rc=$QRC)"
+            fi
         else
-            fail "ARM64 binary built but neither binfmt nor qemu-aarch64 executed it (rc=${RC:-?})"
+            fail "ARM64 binary built but transparent exec failed (rc=$RC) and qemu-aarch64 not found"
         fi
     else
         fail "aarch64-linux-gnu-gcc failed to build static binary"
