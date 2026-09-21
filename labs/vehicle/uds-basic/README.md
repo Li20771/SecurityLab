@@ -180,6 +180,9 @@ UDS_INTERFACE=vcan1 UDS_RX_ID=0x7E1 UDS_TX_ID=0x7E9 \
 | `0x27` | SecurityAccess | `0x01` RequestSeed<br>`0x02` SendKey | `0x67` | 已实现 |
 | `0x2E` | WriteDataByIdentifier | —（可写 DID 见 4.3） | `0x6E` | 已实现 |
 | `0x31` | RoutineControl | `0x01` Start<br>`0x02` Stop<br>`0x03` RequestResults | `0x71` | 已实现（见 4.5） |
+| `0x34` | RequestDownload | —（DFI=00，ALFID=23） | `0x74` | 已实现（见 4.6） |
+| `0x36` | TransferData | —（BSC 块序） | `0x76` | 已实现（见 4.6） |
+| `0x37` | RequestTransferExit | — | `0x77` | 已实现（见 4.6） |
 | `0x3E` | TesterPresent | `0x00` zeroSubFunction<br>`0x80` 抑制正响应 | `0x7E` / 无响应 | 已实现 |
 
 **尚未实现**（会返回 `NRC 0x11 ServiceNotSupported`）：
@@ -339,6 +342,34 @@ S3* 自动退会话，故无副作用）。
   **session 切换不影响** routine 状态；DTC（0x19）不受 routine reset
   影响（故障记忆保留，测试成对固化）。
 
+### 4.6 0x34/0x36/0x37 Download Transfer（atomic feature）
+
+synthetic in-memory 下载目标（**不是真实 Flash、不接触文件系统、
+不执行真实刷写**）：
+
+```
+34 00 23 <ADDR:3> <SIZE:2>   → 74 20 00 80   RequestDownload
+36 <BSC:1> <data...>         → 76 <BSC>      TransferData
+37                           → 77            RequestTransferExit
+```
+
+- 0x34：DFI=0x00、ALFID=0x23（高半字节=sizeLength 2，低半字节=
+  addressLength 3）为唯一支持值（其它 → `NRC 0x31`）；size 必须
+  1..65535（0 或超限 → `0x31`；65535 = 2 字节 wire 字段最大值，
+  超限护栏仅内部 helper 单测）；已有 active → `0x22`。
+  `maxNumberOfBlockLength = 128` 是**完整 TransferData 请求**长度上限，
+  纯 data 上限 = 126。
+- 0x36：BSC 从 1 起、+1 回绕（…FF→00→01）；错序/跳号 → `0x73`；
+  **完全重复上一条请求 → 幂等重传**（正响应、不追加、不推进）；
+  无 active → `0x24`；越界（received 会超过 requested）→ `0x13`。
+- 0x37：received < requested → `0x22`（保持 active 可继续）；
+  received == requested → `77` 并**立即清理全部 transfer 状态**回
+  IDLE；无 active → `0x24`。
+- 生命周期：**hardReset 清空** transfer 状态（routine 清 / DID 清 /
+  DTC 保留的四路语义）；**session 切换不终止** download（0x10 未改）。
+- 层次区分：ISO-TP 的 FF/CF/FC 分段是传输层信封，与 UDS 层
+  blockSequenceCounter 完全无关。
+
 ## 5. 支持的 NRC
 
 | NRC | 名称 | 本实验触发条件 |
@@ -412,6 +443,18 @@ S3* 自动退会话，故无副作用）。
 | `31 01 20 01` | `71 01 20 01` | Start 成功（0x2001 count+1） |
 | `31 03 20 01`（Start 1 次后） | `71 03 20 01 00 00 00 01` | Results（4 字节 BE 计数） |
 | `31 03 20 02` | `71 03 20 02 31 41 59 26` | magic-echo 固定结果 |
+| `34`（长度 ≠ 8） | `7F 34 13` | 结构畸形 |
+| `34 01 23 ...` | `7F 34 31` | DFI 不支持 |
+| `34 00 32 ...` | `7F 34 31` | ALFID 不支持 |
+| `34 00 23 ... 00 00` | `7F 34 31` | size=0 |
+| `34 00 23 ...`（已有 active） | `7F 34 22` | 重复 RequestDownload |
+| `34 00 23 <ADDR:3> <SIZE:2>` | `74 20 00 80` | 建立 download session |
+| `36`（无 active） | `7F 36 24` | 序列错误 |
+| `36 02 ...`（期望 1） | `7F 36 73` | BSC 错序（真正的 sequence error） |
+| `36 01 ...`（完全重复上一条） | `76 01` | 幂等重传（不追加、不推进） |
+| `36 <BSC> <data≤126>`（正常块） | `76 <BSC>` | 追加数据，counter+1 回绕 |
+| `37`（未传完） | `7F 37 22` | 条件不满足（保持 active） |
+| `37`（传完） | `77` | 成功并清理全部 transfer 状态 |
 | 空请求 | `7F 00 13` | 无法解析 |
 
 **重要设计原则**：
@@ -655,13 +698,15 @@ bash tests/run_tests.sh e2e    # 只跑 vcan0 端到端测试
 | `tests/test_gateway_unit.py` | 13 | 否 |
 | `tests/test_dtc_unit.py` | 30 | 否 |
 | `tests/test_routine_unit.py` | 25 | 否 |
+| `tests/test_transfer_unit.py` | 40 | 否 |
 | `tests/test_e2e_vcan.py` | 65 | 是 |
 | `tests/test_isotp_options_vcan.py` | 14 | 是 |
 | `tests/test_write_did_vcan.py` | 8 | 是 |
 | `tests/test_multi_ecu_vcan.py` | 4 | 是 |
 | `tests/test_dtc_vcan.py` | 8 | 是 |
 | `tests/test_routine_vcan.py` | 11 | 是 |
-| **合计** | **335**（unit 225 + e2e 110） | — |
+| `tests/test_transfer_vcan.py` | 17 | 是 |
+| **合计** | **392**（unit 265 + e2e 127） | — |
 
 ### 8.2 离线单元测试（不需要 CAN）
 
@@ -1041,6 +1086,7 @@ uds-basic/
 │   ├── did_database.py      # DID 数据库（受保护/可写 DID 标记）
 │   ├── dtc_database.py      # DTC 静态数据库（合成 DTC + mask/format 常量）
 │   ├── routine_database.py   # Routine 静态数据库（0x2001/0x2002 定义）
+│   ├── transfer_database.py   # Download transfer 静态配置（DFI/ALFID/上限）
 │   ├── gateway.py           # 多 ECU 路由（VirtualEcu / DiagnosticGateway）
 │   └── keygen.py            # 教学用 seed/key 算法（无 CAN 依赖）
 └── tests/
@@ -1051,12 +1097,14 @@ uds-basic/
     ├── test_gateway_unit.py     # 多 ECU 路由测试（13 用例，无需 CAN）
     ├── test_dtc_unit.py         # 0x19 单元测试（30 用例，无需 CAN）
     ├── test_routine_unit.py     # 0x31 单元测试（25 用例，无需 CAN）
+    ├── test_transfer_unit.py    # 0x34/36/37 单元测试（40 用例，无需 CAN）
     ├── test_e2e_vcan.py         # vcan0 端到端测试（65 用例）
     ├── test_isotp_options_vcan.py   # ISO-TP 传输参数矩阵（14 用例，需 vcan0）
     ├── test_write_did_vcan.py   # 0x2E/0x3E 真实解锁写入（8 用例，需 vcan0）
     ├── test_multi_ecu_vcan.py   # 三 ECU 物理寻址（4 用例，需 vcan0）
     ├── test_dtc_vcan.py         # 0x19 真实链路（8 用例，需 vcan0）
-    └── test_routine_vcan.py     # 0x31 真实链路（11 用例，需 vcan0）
+    ├── test_routine_vcan.py     # 0x31 真实链路（11 用例，需 vcan0）
+    └── test_transfer_vcan.py    # 0x34/36/37 真实链路（17 用例，需 vcan0）
 ```
 
 > 注意：`ecu.py` 不是 UDS 业务实现层。协议实现位于 `uds_server.py`，
@@ -1082,6 +1130,11 @@ uds-basic/
   0x2002 magic-echo；状态机 22、未知 RID 31、长度 13、子功能 12）
 - [x] routine 生命周期：hardReset 清空 routine 状态、session 切换保留、
   DTC 故障记忆不受影响（unit + e2e 固化）
+- [x] `0x34/0x36/0x37` Download Transfer（synthetic in-memory 目标；
+  DFI=00/ALFID=23；BSC 块序 + 幂等重传 + 回绕；size accounting 防越界；
+  0x37 完整性检查 + 状态清理）
+- [x] transfer 生命周期：hardReset 中止下载、session 切换保持 active、
+  四路 reset 语义（transfer/routine/DID 清、DTC 保留）
 - [x] DTC 模型：静态 `dtc_database.py` + `EcuState.dtc_records` 运行时状态；
   hardReset 保留 DTC（故障记忆语义，unit + e2e 固化）
 - [x] `0x7F` 否定响应与 NRC 判定（0x11/0x12/0x13/0x22/0x24/0x31/0x33/0x35/0x36/0x37/0x7F）
@@ -1097,8 +1150,8 @@ uds-basic/
 - [x] 显式 `EcuState`（10 字段）与单一事实源 `STATE`
 - [x] 静态服务 registry + 协议层 dispatcher
 - [x] transport / protocol 分层与单向依赖（`uds_server` 不反向依赖 `ecu`）
-- [x] 离线单元测试 225 PASS（106 ECU + 34 keygen + 17 services-extra + 13 gateway + 30 dtc + 25 routine）
-- [x] vcan0 端到端测试 110 PASS（65 e2e + 14 isotp-matrix + 8 write-did + 4 multi-ecu + 8 dtc + 11 routine）
+- [x] 离线单元测试 265 PASS（106 ECU + 34 keygen + 17 services-extra + 13 gateway + 30 dtc + 25 routine + 40 transfer）
+- [x] vcan0 端到端测试 127 PASS（65 e2e + 14 isotp-matrix + 8 write-did + 4 multi-ecu + 8 dtc + 11 routine + 17 transfer）
 - [x] **三轮连续稳定性验证全部通过**（见第 14.7 节）
 
 ---
@@ -1181,7 +1234,7 @@ _security_services()            —— 每次请求现场构造 SecurityAccess h
 
 | 组成 | 说明 |
 |---|---|
-| `EcuState` | 运行时状态对象，**恰好 12 个字段**（见下） |
+| `EcuState` | 运行时状态对象，**恰好 18 个字段**（见下） |
 | `STATE` | 默认单例，**唯一事实源** |
 | `reset_security_state(state)` | 清除解锁与 seed 生命周期，保留失败计数与锁定 |
 | `required_security_level(did)` | DID → 所需安全等级 |
@@ -1194,10 +1247,13 @@ _security_services()            —— 每次请求现场构造 SecurityAccess h
 | `service_tester_present` | 0x3E handler（`3E 80` 返回空字节由入口层抑制发帧） |
 | `service_read_dtc_information` | 0x19 handler（reportType 01/02/0A，只读 `dtc_records`） |
 | `service_routine_control` | 0x31 handler（Start/Stop/Results 状态机，见 4.5） |
-| `SERVICES` | **静态** registry（0x10 / 0x11 / 0x19 / 0x22 / 0x2E / 0x31 / 0x3E） |
+| `service_request_download` | 0x34 handler（DFI/ALFID 校验 + 建立 download session，见 4.6） |
+| `service_transfer_data` | 0x36 handler（BSC 校验 + 幂等重传 + size 防越界） |
+| `service_request_transfer_exit` | 0x37 handler（完整性检查 + 状态清理） |
+| `SERVICES` | **静态** registry（0x10 / 0x11 / 0x19 / 0x22 / 0x2E / 0x31 / 0x34 / 0x36 / 0x37 / 0x3E） |
 | `handle_uds_request(request, state, *, services=None)` | 协议层 dispatcher |
 
-**`EcuState` 的 12 个字段**（当前实现，不多不少）：
+**`EcuState` 的 18 个字段**（当前实现，不多不少）：
 
 ```text
 session          当前诊断会话
@@ -1212,6 +1268,12 @@ did_overrides    0x2E 写入的 DID 运行时覆盖（hardReset 清空）
 dtc_records      0x19 的运行时 DTC 状态（hardReset **保留**，故障记忆）
 active_routines  0x31 active 状态集合（hardReset 清空，session 切换保留）
 routine_start_counts 0x31 start-counter 计数（hardReset 清空）
+download_active  0x34/36/37 download 会话是否进行中
+download_address 0x34 memoryAddress metadata
+download_size    0x34 声明的下载总长（完整性/防越界依据）
+download_expected_block 期望的下一个 BSC（1 起，&0xFF 回绕）
+download_buffer  合成内存缓冲（received = len(buffer) 推导）
+download_last_block_request 上一条被接受的完整 0x36 请求（幂等重传判定）
 ```
 
 > 当前**不包含** S3 定时器、`last_request_sid`、`unlocked_at`、
@@ -1237,8 +1299,8 @@ routine_start_counts 0x31 start-counter 计数（hardReset 清空）
 
 ### 14.6 Service registry 与 dispatcher
 
-静态 registry 定义在 `uds_server.py`，**含七个服务**
-（0x2E / 0x3E 为 Phase 4X 新增，0x19 / 0x31 为第二轮新增）：
+静态 registry 定义在 `uds_server.py`，**含十个服务**
+（0x2E / 0x3E 为 Phase 4X 新增，0x19 / 0x31 / 0x34 / 0x36 / 0x37 为第二轮新增）：
 
 ```python
 SERVICES = {
@@ -1248,6 +1310,9 @@ SERVICES = {
     0x22: service_read_data_by_identifier,
     0x2E: service_write_data_by_identifier,
     0x31: service_routine_control,
+    0x34: service_request_download,
+    0x36: service_transfer_data,
+    0x37: service_request_transfer_exit,
     0x3E: service_tester_present,
 }
 ```
@@ -1316,8 +1381,8 @@ P9 阶段**连续执行 3 轮完整回归**，三轮结果逐项完全一致
 工程收口 2026-09-21 基线（Phase 4X 全量，实测）：
 
 ```text
-UDS Unit       225 PASS   （106 ECU + 34 keygen + 17 services-extra + 13 gateway + 30 dtc + 25 routine）
-E2E（在网）     110 PASS  （65 + 14 isotp-matrix + 8 write-did + 4 multi-ecu + 8 dtc + 11 routine）
+UDS Unit       265 PASS   （106 ECU + 34 keygen + 17 services-extra + 13 gateway + 30 dtc + 25 routine + 40 transfer）
+E2E（在网）     127 PASS  （65 + 14 isotp-matrix + 8 write-did + 4 multi-ecu + 8 dtc + 11 routine + 17 transfer）
 can-tools 离线 183 PASS   （34 parsers + 50 isotp-options + 99 fuzz-harness，
                           含 kernel oracle 三态 10 例）
 fuzz kernel oracle 三态 AVAILABLE/UNAVAILABLE/ERROR 如实上报
@@ -1326,7 +1391,7 @@ fuzz kernel oracle 三态 AVAILABLE/UNAVAILABLE/ERROR 如实上报
 运行方式：
 
 ```bash
-bash labs/vehicle/uds-basic/tests/run_tests.sh all   # 225 + 110
+bash labs/vehicle/uds-basic/tests/run_tests.sh all   # 265 + 127
 bash scripts/healthcheck.sh                          # 环境 + 离线测试
 ```
 
@@ -1598,6 +1663,8 @@ Phase 3 完成的是一次**结构性重构**（行为保持不变）：
 - ✅ 已完成：`0x31` RoutineControl（Start/Stop/RequestResults +
   0x2001/0x2002 synthetic routines；routineControlOptionRecord /
   routineStatusRecord 与权限/会话门控属后续）
+- ✅ 已完成：`0x34/0x36/0x37` Download Transfer（synthetic in-memory
+  目标 + BSC 幂等重传；0x35 与真实 Flash/签名校验属后续）
 - `0x28` CommunicationControl、`0x85` ControlDTCSetting
 - `0x78` ResponsePending 与 P2* 超时处理
 - `0x27` 多安全等级（Level 2：`0x03`/`0x04`，需位掩码式安全等级）

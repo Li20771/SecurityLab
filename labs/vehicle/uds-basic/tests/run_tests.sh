@@ -132,6 +132,14 @@ run_unit() {
     fi
 
     echo
+
+    if "$PYTHON_BIN" "$TESTS_DIR/test_transfer_unit.py"; then
+        ok "0x34/0x36/0x37 download transfer unit tests passed"
+    else
+        fail "download transfer unit tests failed"
+    fi
+
+    echo
 }
 
 # ----------------------------------------------------------------------
@@ -210,6 +218,16 @@ run_e2e() {
             ok "0x31 RoutineControl e2e tests passed"
         else
             fail "RoutineControl e2e tests failed"
+        fi
+
+        echo
+    fi
+
+    if [ -f "$TESTS_DIR/test_transfer_vcan.py" ]; then
+        if "$PYTHON_BIN" "$TESTS_DIR/test_transfer_vcan.py"; then
+            ok "0x34/0x36/0x37 download transfer e2e tests passed"
+        else
+            fail "download transfer e2e tests failed"
         fi
 
         echo

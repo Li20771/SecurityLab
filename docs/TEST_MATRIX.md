@@ -40,14 +40,16 @@
 | test_gateway_unit.py | unit | 13 | 多 ECU 拓扑、物理/功能寻址、状态隔离、广播不泄漏、构造护栏 | Local verified |
 | test_dtc_unit.py | unit | 30 | 0x19/01/02/0A 报文与 mask 过滤、NRC 12/13、DTC 静态库约束、运行时状态与实例隔离 | Local verified |
 | test_routine_unit.py | unit | 25 | 0x31 Start/Stop/Results 状态机、NRC 12/13/22/31、hardReset 清 routine 保 DTC、session 保留、实例隔离 | Local verified |
+| test_transfer_unit.py | unit | 40 | 0x34/36/37 状态机、NRC 13/22/24/31/73、BSC 回绕与幂等重传、size accounting、hardReset/session 生命周期 | Local verified |
 | test_e2e_vcan.py | e2e(vcan) | 65 | ECU 启动/请求响应/异常/超时/cleanup、SecurityAccess 全流程 | Local verified |
 | test_isotp_options_vcan.py | e2e(vcan) | 14（矩阵） | ISO-TP SF/FF/CF/FC、STmin/BS、超时、malformed PCI | Local verified |
 | test_write_did_vcan.py | e2e(vcan) | 8 | 真实解锁写 DID→读回、hardReset 恢复、3E 80 总线静默 | Local verified |
 | test_multi_ecu_vcan.py | e2e(vcan) | 4（5.2s） | 三 ECU 进程物理寻址、会话隔离、错误地址无应答 | Local verified |
 | test_dtc_vcan.py | e2e(vcan) | 8 | 0x19 正响应/NRC 真实链路、hardReset 前后 DTC 一致 | Local verified |
 | test_routine_vcan.py | e2e(vcan) | 11 | 0x31 状态机/NRC 真实链路、hardReset 清 routine（Start→11 01→Stop=0x22） | Local verified |
+| test_transfer_vcan.py | e2e(vcan) | 17 | 0x34/36/37 真实链路（含 126 字节 ISO-TP 多帧 vs UDS BSC 分层、幂等重传、hardReset abort、session mid-transfer） | Local verified |
 
-- 汇总：`run_tests.sh all` → **PASS 13 / WARN 0 / FAIL 0**（unit 225 + e2e 110）。
+- 汇总：`run_tests.sh all` → **PASS 15 / WARN 0 / FAIL 0**（unit 265 + e2e 127）。
 - 已知非致命：`test_isotp_options_vcan.py:186` ResourceWarning（子进程 BufferedReader 未关）。
 
 ## 3. 车联网（can-tools）测试明细

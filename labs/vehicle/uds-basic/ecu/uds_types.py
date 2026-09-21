@@ -45,6 +45,7 @@ __all__ = [
     "NRC_INVALID_KEY",
     "NRC_EXCEED_NUMBER_OF_ATTEMPTS",
     "NRC_REQUIRED_TIME_DELAY_NOT_EXPIRED",
+    "NRC_WRONG_BLOCK_SEQUENCE_COUNTER",
     "NRC_SERVICE_NOT_SUPPORTED_IN_SESSION",
     # 响应构造
     "negative_response",
@@ -100,6 +101,10 @@ NRC_SECURITY_ACCESS_DENIED = 0x33
 NRC_INVALID_KEY = 0x35
 NRC_EXCEED_NUMBER_OF_ATTEMPTS = 0x36
 NRC_REQUIRED_TIME_DELAY_NOT_EXPIRED = 0x37
+
+#: 0x36 TransferData 的 blockSequenceCounter 不匹配（真正的 sequence error；
+#: 完全重复的上一条请求按幂等重传处理，不落本 NRC）。
+NRC_WRONG_BLOCK_SEQUENCE_COUNTER = 0x73
 
 #: 服务在当前会话不可用。
 #: 当前 4 个服务在任意会话都可用，因此本常量暂未被门控逻辑使用，

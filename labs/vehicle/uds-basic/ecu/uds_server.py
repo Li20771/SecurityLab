@@ -6,7 +6,7 @@ UDS Basic —— ECU 运行时状态与服务处理
 
 - ``EcuState`` / ``STATE``：ECU 的跨请求运行时状态
 - ``reset_security_state()`` / ``required_security_level()``：状态与权限 helper
-- 八个服务处理函数：
+- 十一个服务处理函数：
     * ``service_diagnostic_session_control``  (0x10)
     * ``service_ecu_reset``                   (0x11)
     * ``service_read_data_by_identifier``     (0x22)
@@ -15,6 +15,9 @@ UDS Basic —— ECU 运行时状态与服务处理
     * ``service_tester_present``              (0x3E)
     * ``service_read_dtc_information``        (0x19)
     * ``service_routine_control``             (0x31)
+    * ``service_request_download``            (0x34)
+    * ``service_transfer_data``               (0x36)
+    * ``service_request_transfer_exit``       (0x37)
 - ``SERVICES``：静态服务注册表（**不含 0x27**）
 - ``_make_security_access_handler()``：为 0x27 绑定请求时依赖的工厂
 - ``handle_uds_request()``：协议层 dispatcher
@@ -61,6 +64,15 @@ from routine_database import (
     ROUTINE_RESULT_LENGTH,
     ROUTINE_START_COUNTER,
 )
+from transfer_database import (
+    DOWNLOAD_ADDRESS_LENGTH,
+    DOWNLOAD_SIZE_LENGTH,
+    MAX_BLOCK_LENGTH_BYTES,
+    MAX_DOWNLOAD_SIZE,
+    MAX_TRANSFER_REQUEST_LENGTH,
+    REQUEST_DOWNLOAD_ALFID,
+    REQUEST_DOWNLOAD_DFI,
+)
 
 __all__ = [
     "EcuState",
@@ -77,6 +89,9 @@ __all__ = [
     "service_tester_present",
     "service_read_dtc_information",
     "service_routine_control",
+    "service_request_download",
+    "service_transfer_data",
+    "service_request_transfer_exit",
     "handle_uds_request",
 ]
 
@@ -182,6 +197,33 @@ class EcuState:
     #: 结果由本字典即时推导（不缓存 routine_results）。
     #: ECUReset(hardReset) 清空；session 切换不影响。
     routine_start_counts: dict[int, int] = field(default_factory=dict)
+
+    # ---- 0x34/0x36/0x37 download transfer 运行时状态 ----
+    #
+    # 全部是 synthetic in-memory 下载目标的协议层状态（不是真实 Flash、
+    # 不接触文件系统）；transport 层不保存任何 transfer 状态。
+    # received 一律由 ``len(download_buffer)`` 推导，不设独立计数器。
+
+    #: 是否有进行中的 download session（IDLE / ACTIVE 判定源）。
+    download_active: bool = False
+
+    #: 0x34 解析出的 memoryAddress（仅 metadata，教学保存，不访问真实地址）。
+    download_address: int = 0
+
+    #: 0x34 声明的下载总长度（0x36 越界保护与 0x37 完整性判定的依据）。
+    download_size: int = 0
+
+    #: 期望的下一个 blockSequenceCounter（0x34 后为 1；成功 +1 并 &0xFF
+    #: 回绕；0 表示无进行中会话）。
+    download_expected_block: int = 0
+
+    #: 已接收数据的合成内存缓冲（synthetic download target）。
+    #: 0x34 时清空；0x36 追加；大小恒 ≤ download_size。
+    download_buffer: bytearray = field(default_factory=bytearray)
+
+    #: 上一条被接受的**完整** TransferData 请求（BSC+data）。
+    #: 全字节相等的重传是幂等操作（不追加、不推进 counter、仍正响应）。
+    download_last_block_request: bytes | None = None
 
 
 #: 默认状态单例：ECU 进程使用的唯一运行时状态实例。
@@ -302,6 +344,14 @@ def service_ecu_reset(request: bytes, state: EcuState) -> bytes:
         # 记忆语义刻意相反——DTC 保留、routine 清空，测试成对固化）
         state.active_routines.clear()
         state.routine_start_counts.clear()
+        # download transfer 同样是进行中的瞬态操作：复位必然中止
+        # （buffer/counter/last_block 全清，回到 IDLE）
+        state.download_active = False
+        state.download_address = 0
+        state.download_size = 0
+        state.download_expected_block = 0
+        state.download_buffer.clear()
+        state.download_last_block_request = None
 
         return uds_types.positive_response(0x11, bytes([reset_type]))
 
@@ -834,6 +884,201 @@ def service_routine_control(request: bytes, state: EcuState) -> bytes:
 
 
 # ======================================================================
+# 0x34 / 0x36 / 0x37 download transfer（atomic feature）
+# ======================================================================
+
+
+def _validate_download_size(size: int) -> bool:
+    """
+    校验下载大小是否在本实验支持范围内。
+
+    独立纯函数：wire 上 2 字节 size 字段最大可编码 0xFFFF（= MAX_DOWNLOAD_SIZE），
+    因此超限请求无法通过合法 wire 请求构造；本护栏仍保留并单独单测
+    （defense-in-depth，直接以 65536 等值调用本函数验证拒绝路径）。
+    """
+    return 0 < size <= MAX_DOWNLOAD_SIZE
+
+
+def _parse_request_download(request: bytes) -> tuple[int, int] | None:
+    """解析 0x34 请求，返回 (address, size)；结构非法返回 None。
+
+    结构非法（长度 ≠ 8）与字段值不支持（DFI/ALFID/size）分开处理：
+    本函数只负责结构；值校验在 handler 中映射到 0x31。
+    """
+    if len(request) != 1 + 1 + 1 + DOWNLOAD_ADDRESS_LENGTH + DOWNLOAD_SIZE_LENGTH:
+        return None
+
+    address = (request[3] << 16) | (request[4] << 8) | request[5]
+    size = (request[6] << 8) | request[7]
+
+    return address, size
+
+
+def service_request_download(request: bytes, state: EcuState) -> bytes:
+    """
+    处理 0x34 RequestDownload。
+
+    本 feature 只支持一种格式（8 字节）::
+
+        34 00 23 <memoryAddress:3> <memorySize:2>
+
+    - DFI=0x00、ALFID=0x23（sizeLength=2 高半字节 + addressLength=3
+      低半字节）为唯一支持值，其它值 → 7F 34 31；
+    - size 必须 1..MAX_DOWNLOAD_SIZE（0 或超限 → 7F 34 31；
+      超限护栏见 ``_validate_download_size``）；
+    - 已有 active download 时 → 7F 34 22，状态不变。
+
+    成功：建立全新 download session（expected=1、buffer 清空、
+    last_block=None——不保留上一 session 的任何状态），返回
+    ``74 20 00 80``（maxNumberOfBlockLength=128 = 完整 TransferData
+    请求长度上限，数据部分上限 126）。
+    """
+    parsed = _parse_request_download(request)
+
+    if parsed is None:
+        return uds_types.negative_response(
+            0x34, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+        )
+
+    if request[1] != REQUEST_DOWNLOAD_DFI:
+        return uds_types.negative_response(
+            0x34, uds_types.NRC_REQUEST_OUT_OF_RANGE
+        )
+
+    if request[2] != REQUEST_DOWNLOAD_ALFID:
+        return uds_types.negative_response(
+            0x34, uds_types.NRC_REQUEST_OUT_OF_RANGE
+        )
+
+    address, size = parsed
+
+    if not _validate_download_size(size):
+        return uds_types.negative_response(
+            0x34, uds_types.NRC_REQUEST_OUT_OF_RANGE
+        )
+
+    if state.download_active:
+        return uds_types.negative_response(
+            0x34, uds_types.NRC_CONDITIONS_NOT_CORRECT
+        )
+
+    state.download_active = True
+    state.download_address = address
+    state.download_size = size
+    state.download_expected_block = 1
+    state.download_buffer.clear()
+    state.download_last_block_request = None
+
+    # lengthFormatIdentifier：高半字节 = maxNumberOfBlockLength 的字节数（2），
+    # 低半字节固定 0 → 0x20。
+    return uds_types.positive_response(
+        0x34, bytes([
+            MAX_BLOCK_LENGTH_BYTES << 4,
+            (MAX_TRANSFER_REQUEST_LENGTH >> 8) & 0xFF,
+            MAX_TRANSFER_REQUEST_LENGTH & 0xFF,
+        ])
+    )
+
+
+def service_transfer_data(request: bytes, state: EcuState) -> bytes:
+    """
+    处理 0x36 TransferData。
+
+    请求: ``36 <blockSequenceCounter:1> <transferData...>``
+    （3 ≤ len ≤ MAX_TRANSFER_REQUEST_LENGTH=128；data ≤ 126）。
+
+    判定顺序（幂等重传必须早于越界检查——buffer 已满时重发
+    上一条完整请求仍必须是正响应，而不是 0x13）：
+
+    1. len(request) < 3 或 > 128 → 7F 36 13；
+    2. 无 active download → 7F 36 24（状态不变）；
+    3. 请求 == 上一条被接受的完整请求 → **幂等重传**：76 <BSC>，
+       不追加、不推进、不改 last_block（连续重复亦然，不是 0x73）；
+    4. BSC != expected → 7F 36 73（真正的 sequence error，状态不变）；
+    5. data > 126 或 len(buffer)+len(data) > download_size → 7F 36 13
+       （**绝不 received > requested**，状态不变）；
+    6. 正常新 block → 追加、expected=(expected+1)&0xFF、last_block=
+       本请求，返回 76 <BSC>。
+    """
+    if len(request) < 3 or len(request) > MAX_TRANSFER_REQUEST_LENGTH:
+        return uds_types.negative_response(
+            0x36, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+        )
+
+    block_counter = request[1]
+    data = bytes(request[2:])
+
+    if not state.download_active:
+        return uds_types.negative_response(
+            0x36, uds_types.NRC_REQUEST_SEQUENCE_ERROR
+        )
+
+    if request == state.download_last_block_request:
+        # 幂等重传：上一条完整请求的完全重复（含 BSC 相同）。
+        # 刻意放在越界检查**之前**：buffer 已满时重发仍须正响应。
+        return uds_types.positive_response(0x36, bytes([block_counter]))
+
+    if block_counter != state.download_expected_block:
+        return uds_types.negative_response(
+            0x36, uds_types.NRC_WRONG_BLOCK_SEQUENCE_COUNTER
+        )
+
+    if len(data) > MAX_TRANSFER_REQUEST_LENGTH - 2:
+        return uds_types.negative_response(
+            0x36, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+        )
+
+    if len(state.download_buffer) + len(data) > state.download_size:
+        return uds_types.negative_response(
+            0x36, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+        )
+
+    state.download_buffer.extend(data)
+    state.download_expected_block = (state.download_expected_block + 1) & 0xFF
+    state.download_last_block_request = request
+
+    return uds_types.positive_response(0x36, bytes([block_counter]))
+
+
+def service_request_transfer_exit(request: bytes, state: EcuState) -> bytes:
+    """
+    处理 0x37 RequestTransferExit。
+
+    请求严格 1 字节（本 feature 不实现 requestTransferExitRecord）。
+
+    - 无 active download → 7F 37 24（状态不变）；
+    - received < requested → 7F 37 22（条件不满足；保持 active，
+      Tester 可继续 0x36 或 hardReset）；
+    - received == requested → 77，**立即清理全部 transfer 状态**回
+      IDLE——单次 download 流程，成功后 0x36/0x37 都得到确定性的
+      7F 37/36 24，无悬挂状态。
+    """
+    if len(request) != 1:
+        return uds_types.negative_response(
+            0x37, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+        )
+
+    if not state.download_active:
+        return uds_types.negative_response(
+            0x37, uds_types.NRC_REQUEST_SEQUENCE_ERROR
+        )
+
+    if len(state.download_buffer) < state.download_size:
+        return uds_types.negative_response(
+            0x37, uds_types.NRC_CONDITIONS_NOT_CORRECT
+        )
+
+    state.download_active = False
+    state.download_address = 0
+    state.download_size = 0
+    state.download_expected_block = 0
+    state.download_buffer.clear()
+    state.download_last_block_request = None
+
+    return uds_types.positive_response(0x37)
+
+
+# ======================================================================
 # UDS 服务分发
 # ======================================================================
 
@@ -884,6 +1129,9 @@ SERVICES = {
     0x22: service_read_data_by_identifier,
     0x2E: service_write_data_by_identifier,
     0x31: service_routine_control,
+    0x34: service_request_download,
+    0x36: service_transfer_data,
+    0x37: service_request_transfer_exit,
     0x3E: service_tester_present,
 }
 
