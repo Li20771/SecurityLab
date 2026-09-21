@@ -4,7 +4,19 @@
 
 ## 一句话现状
 
-本地车联网安全实验室已建成并通过冷启动回归；2026-09-21 完成第一轮工程收口（分支 `chore/engineering-close-20260921`）：kernel oracle 三态 fail-closed、binfmt selfheal fail-closed（不回落 systemd-binfmt）、healthcheck QEMU fallback 修复、关键验证可复现入口（`scripts/repro/`）、文档与源码对齐。**快速门 75 PASS / 2 WARN / 0 FAIL；qa_fast / qa_extended 均 PASS**。CAN→ISO-TP→UDS→多 ECU→fuzz→replay、ARM/AArch64 编译→QEMU→GDB、Ghidra/radare2 逆向、固件分析、AFL++、YARA、网络工具、Docker、DSH Web GUI 均 VERIFIED。
+SecurityLab 第一轮建设及工程收口已经完成。
+
+当前正式 review 基线：
+
+- branch: `chore/engineering-close-20260921`
+- HEAD: `03258025b5bba5179a41a4a2af392fec04fae8d2`
+- GitHub Actions Fast QA：PASS（run `35575283020`）
+- PR #1：OPEN / DRAFT
+- main 尚未修改，当前仍为 `e215b1d6d77d0edfcfd76d6fdf9a4df3fb22c517`
+
+当前阶段不是功能建设，而是第一轮正式合入前的最终 review。
+
+第二轮功能建设暂不启动。
 
 ## 能力看板
 
@@ -27,12 +39,12 @@
 | 通用 fuzz（AFL++） | VERIFIED | `labs/fuzzing/afl-demo/`（用 afl-gcc） |
 | YARA / IOC | VERIFIED | `labs/yara-basic/scan.sh` |
 | 网络安全工具 | VERIFIED | nmap/tshark/tcpdump/ncat/socat/nft；`scripts/nettools_check.sh` |
-| Docker | VERIFIED | Ubuntu CLI → Docker Desktop 29.7.2 |
+| Docker | VERIFIED（audit/local capability） | Ubuntu CLI → Docker Desktop E2E 已验证；当前 PR 不重新定义 Docker 当前运行态 |
 | 质量门禁 | VERIFIED | `scripts/qa_fast.sh`（离线）/ `qa_extended.sh`（vcan） |
-| CI | 已建 / runner 未实测 | `.github/workflows/ci.yml` |
+| CI | VERIFIED（Fast runner） | `.github/workflows/ci.yml`；Fast：GitHub Actions run 35575283020 = success；Extended：仅 workflow_dispatch，目前不作为自动 PR 门禁 |
 | 统一健康检查 | VERIFIED | `scripts/healthcheck.sh [--extended]` |
 | DSH Agent Web GUI | VERIFIED | `systemctl --user status dsh-web`，http://127.0.0.1:8731 |
-| binfmt / WSL interop | VERIFIED | selfheal v2.3 双端（fail-closed：helper 缺失绝不回落 systemd-binfmt） |
+| binfmt / WSL interop | REPO VERIFIED / SYSTEM DEPLOYMENT NOT REVERIFIED | `configs/binfmt/binfmt-selfheal.sh` v2.3 fail-closed（helper 缺失绝不回落 systemd-binfmt） |
 | Kali 辅助环境 | VERIFIED | 冷启动 0 failed |
 
 状态图例：VERIFIED = 装得上+跑得通+测试对+可重复；PARTIAL = 主体可用、遗留明确；BLOCKED = 受外部条件阻塞。
@@ -63,10 +75,26 @@ journalctl --user -u dsh-web -f        # 取首次访问 token
 
 ## 待你处理（不可代做）
 
-1. WSL 终端执行一次 `ssh-add`（输入私钥 passphrase）→ 解锁私有仓库 SSH（公钥已授权）。
-2. 仓库根 0 字节怪文件 `` ; else echo MISS `` 的删除授权（git 未跟踪，不属本分支）。
-3. `docker_data.vhdx` 压缩回收约 16GB（需你在本机 `wsl --shutdown` + Optimize-VHD；该 shutdown 在本自动化环境被宿主策略禁止）。
-4. 本分支 push / PR 合入 `main` 的授权（工程收口分支 `chore/engineering-close-20260921`，已本地分组 commit，零 push）。
+1. binfmt 系统侧 v2.3 当前部署是否需要重新确认（`/usr/local/sbin/binfmt-selfheal.sh`
+   是否升级到 repo 源真版本；当前 PR 未重新完成 sudo 部署确认）。
+2. main merge 授权（PR #1 最终 review 通过后由你决定是否 merge）。
+3. `docker_data.vhdx` 压缩回收约 16GB（需你在本机 `wsl --shutdown` + Optimize-VHD；
+   该 shutdown 在本自动化环境被宿主策略禁止）。
+
+> 已完成的既往待办（ssh-add、0 字节怪文件删除、本分支 push、PR 创建、
+> CI 首次 runner 验证）不再列出。
+
+### binfmt 状态口径
+
+```text
+Repository source:
+    v2.3 fail-closed（configs/binfmt/binfmt-selfheal.sh，
+    fail-closed 回归 11/11 PASS）
+
+Current deployed system:
+    当前 PR 未重新完成 sudo 部署确认，
+    因此不把系统侧 v2.3 部署写成当前 VERIFIED。
+```
 
 ## 明确的 PARTIAL / 路线图（非空壳，第二轮能力建设）
 

@@ -8,6 +8,29 @@
 
 ---
 
+## Final Integration Status — 2026-09-21
+
+本文件主体记录工程收口阶段的历史状态。
+以下为该收口分支进入 GitHub 正式 review 后的最终集成状态：
+
+- branch: `chore/engineering-close-20260921`
+- HEAD: `03258025b5bba5179a41a4a2af392fec04fae8d2`
+- main: `e215b1d6d77d0edfcfd76d6fdf9a4df3fb22c517`
+- GitHub Actions Fast QA: **PASS**
+- workflow run: `35575283020`
+- PR: `#1`
+- PR state: **OPEN / DRAFT**
+- main merge: **NOT MERGED**
+- `.p1x-probe/*-OUTPUT.txt`: 已从版本库移除
+- 历史 0 字节异常文件 `; else echo MISS`: 已删除
+
+> 注意：本报告后续章节中的"未 push / CI 未运行 / PR 未创建"等内容，
+> 均属于工程收口当时的历史状态，不代表当前 PR 集成状态。
+> 当前集成状态以本节、`TEST_MATRIX.md` 和 `SECURITY_LAB_STATUS.md`
+> 的当前状态为准。
+
+---
+
 ## 1. Branch
 
 ```text
@@ -207,12 +230,14 @@ Current deployed system: not upgraded（/usr/local/sbin/binfmt-selfheal.sh
   实时三 ECU Gateway daemon（0x7DF 用户态守护进程）；Docker Security Lab；
   完整 JFFS2 / UBIFS extraction chain；大型新 fuzz campaign；Obsidian 知识系统；
   新的真实 CAN 接口（需明确授权范围）。
-- **仍阻塞的 P2**：GitHub CI runner 实测（待 push 授权）；selfheal v2.3
-  双端系统部署（待 sudo 授权）。
+- **仍阻塞的 P2**：selfheal v2.3 双端系统部署（待 sudo 授权）。
+  [Historical state at engineering-close collection point —— CI runner
+  实测已完成（run 35575283020 = success）、push 已完成、PR #1 已建。]
 - **当前环境限制**：`wsl --shutdown` 被宿主策略禁止（冷启动级验证受限）；
   Docker Desktop 当前未运行（SOP 可恢复）。
-- **用户待办**：`ssh-add`（私钥 passphrase）；0 字节怪文件
-  `` ; else echo MISS `` 处置；`docker_data.vhdx` 压缩授权；本分支 push/PR 授权。
+- **用户待办**（历史状态，见顶部 Final Integration Status）：`ssh-add`
+  （已完成）；0 字节怪文件 `` ; else echo MISS ``（已删除）；
+  `docker_data.vhdx` 压缩授权（仍待）；本分支 push/PR 授权（已完成，PR #1）。
 
 ## 7. Git
 
@@ -253,6 +278,8 @@ $ git diff main...HEAD --stat | tail -1
   fix(repro-ghidra-evidence)。
 - main 未改动；`audit/environment-20260921` 快照未改动（以其为 base 新建分支）。
 - 本分支**不合并 main**、零 push，等待用户授权。
+  [Historical state at engineering-close collection point —— 后续已 push、
+  CI 已跑、PR #1 已建，见本文档顶部 Final Integration Status]
 
 > 本报告所有 Git 数字由命令实时生成，不手工维护：
 > `git rev-parse HEAD` / `git log audit/environment-20260921..HEAD` /

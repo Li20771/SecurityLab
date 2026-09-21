@@ -8,8 +8,10 @@
 > - **Local verified**：本机 WSL Ubuntu 实测（`run_tests.sh` / `qa_*` / `scripts/repro/*` 实际运行输出）；
 > - **Environment audit reported**：来自 2026-09-20/21 审计窗口的既有实测记录
 >   （证据在 `tmp/audit/`，未版本化；本轮以 `scripts/repro/` 重新固化为可复现入口）；
-> - **GitHub CI verified**：真实 GitHub runner 运行通过——**目前尚无任何条目**，
->   workflow 已编写但未经 push 授权触发，见 §8。
+> - **GitHub CI verified**：真实 GitHub runner **实际运行通过**。
+>   当前已验证：SecurityLab CI / Fast QA / run `35575283020` /
+>   commit `03258025b5bba5179a41a4a2af392fec04fae8d2`。
+>   Extended 尚未在真实 runner 验证（仅 workflow_dispatch），见 §8。
 
 ## 1. 分层与入口
 
@@ -21,7 +23,7 @@
 | Fuzz | 需 vcan0，耗时长 | `scripts/qa_extended.sh --fuzz`；最小复现 `scripts/repro/verify_fuzz_smoke.sh`；AFL 见 labs/fuzzing | CAN/ISO-TP 变异、AFL 崩溃发现 |
 | Repro（可复现验证） | 部分需 vcan | `scripts/repro/verify_{arm,qemu_gdb,ghidra,fuzz_smoke}.sh` | ARM/QEMU-GDB/Ghidra headless/fuzz smoke 最小闭环 |
 | Health | 快速门否 / `--extended` 需 vcan | `scripts/healthcheck.sh [--extended]` | 环境/工具/服务/链路总检 |
-| CI | GitHub runner | `.github/workflows/ci.yml` | fast 自动、extended 手动（runner 实测待 push 后） |
+| CI | GitHub runner | `.github/workflows/ci.yml` | fast 自动、extended 手动；**fast 已由 run 35575283020 在真实 GitHub runner 上验证通过** |
 
 > 测试层级职责（pytest / run_tests.sh / qa_*）见 `docs/ARCHITECTURE.md` §5.1。
 
@@ -125,13 +127,34 @@ reported**（含于 `qa_extended.sh`，本机可重跑）。
 | binfmt interop | selfheal v2.3 + 冷启动实验 F/G | 双端 qemu=32、interop OK、ARM64=42、无振荡；fail-closed 回归 `configs/binfmt/tests/selfheal_failclosed_test.sh` 11/11 | Environment audit reported（冷启动）/ Local verified（fail-closed 回归） |
 | DSH Web 服务 | `systemctl --user status dsh-web` | active/enabled、127.0.0.1:8731、冷启动自启、NRestarts=0 | Environment audit reported |
 | Kali 系统健康 | `systemctl is-system-running` | running、0 failed | Environment audit reported |
-| GitHub HTTPS/SSH | `configs/network/proxy.env` 后 ls-remote / ssh -T | HTTPS rc0、SSH Server accepts key（ssh-add 待用户） | Environment audit reported / 1 USER-ACTION |
+| GitHub HTTPS/SSH | `configs/network/proxy.env` 后 ls-remote / ssh -T | HTTPS rc0、SSH Server accepts key；ssh-add 已完成，本分支 push 均经此链路成功 | Environment audit reported / Local verified（push 实测） |
 
 ## 8. CI 映射
 
-- `.github/workflows/ci.yml` **fast**（push/PR）：装 python-network + python-dev requirements → `qa_fast.sh`（无需 vcan，适合云端 runner）。
-- **extended**（仅 workflow_dispatch）：`sudo modprobe vcan` + `ip link add/up vcan0` + apt can-utils/tshark/yara → `qa_extended.sh`。
-- Fuzz 不进 CI（耗时/不确定），归手动 extended/专项。
-- 说明：**GitHub CI 尚未在真实 runner 触发**（无 push 授权）——本矩阵没有任何
-  "GitHub CI verified" 条目；workflow 脚本本体在本地等价环境已全绿
-  （qa_fast / qa_extended 本地 PASS）。
+### GitHub CI
+
+**Fast job：**
+
+- workflow：SecurityLab CI
+- event：push
+- branch：`chore/engineering-close-20260921`
+- commit：`03258025b5bba5179a41a4a2af392fec04fae8d2`
+- run：`35575283020`
+- result：**success**
+- 覆盖：ruff / mypy / UDS unit / can-tools offline
+
+**Extended job：**
+
+- 当前 workflow 设计为 workflow_dispatch
+- 本 PR 未将 extended 作为自动 push 门禁
+- 本地 qa_extended 已通过（Local verified）
+- 不把本地 qa_extended 写成 GitHub CI verified
+
+```text
+GitHub CI verified:
+    Fast     = YES（run 35575283020 = success）
+    Extended = NO / NOT RUN（未在真实 runner 触发）
+```
+
+- Fuzz 不进 CI（耗时/不确定），归手动 extended/专项（`qa_extended.sh --fuzz` /
+  `scripts/repro/verify_fuzz_smoke.sh`）。

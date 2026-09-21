@@ -2,6 +2,36 @@
 
 > 断点恢复文件。任何 `wsl --shutdown` / `--terminate` / Docker Desktop 重启 / 系统服务修改之前更新此文件与 TRAE_STATE.json。
 
+# Current State — 2026-09-21
+
+**CURRENT_PHASE**:
+Phase 3 — Formal Integration Review
+
+**CURRENT_TASK**:
+PR #1 最终审查，第一轮基线准备正式合入 main
+
+**CURRENT_BRANCH**:
+`chore/engineering-close-20260921`
+
+**HEAD**:
+`03258025b5bba5179a41a4a2af392fec04fae8d2`
+
+**PR**:
+#1 — OPEN / DRAFT
+
+**GitHub CI**:
+Fast QA — PASS
+Run `35575283020`
+
+**MAIN**:
+当前仍为 `e215b1d6d77d0edfcfd76d6fdf9a4df3fb22c517`
+
+**NEXT ACTION**:
+完成最终 review；确认无阻塞项后决定是否 merge。
+第二轮功能建设在第一轮 baseline merge 前保持冻结。
+
+---
+
 ## 2026-09-18 (evening session)
 
 **current_phase**: Phase 1 — WSL / Interop (N-01 durable fix)

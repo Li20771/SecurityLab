@@ -4,6 +4,40 @@
 >
 > 规则：只记录经实际命令验证的事实；状态取值 VERIFIED / PARTIAL / BLOCKED / NOT_APPLICABLE。
 
+## CURRENT STATE — 2026-09-21
+
+**CURRENT_PHASE**: Phase 3 — Formal Integration Review
+
+**CURRENT_TASK**:
+PR #1 最终 review；第一轮正式基线尚未 merge
+
+**BRANCH**:
+`chore/engineering-close-20260921`
+
+**HEAD**:
+`03258025b5bba5179a41a4a2af392fec04fae8d2`
+
+**GitHub CI**:
+Fast QA = PASS
+Run = `35575283020`
+
+**PR**:
+#1 OPEN / DRAFT
+
+**MAIN**:
+`e215b1d6d77d0edfcfd76d6fdf9a4df3fb22c517`
+
+**NEXT_STEP**:
+最终 PR review → 确认无阻塞 → 决定 merge main。
+
+**SECOND-ROUND FREEZE**:
+第一轮正式 baseline merge 前，不开始新的 UDS / Gateway / Docker Lab /
+firmware extraction / large fuzz / Obsidian 等第二轮能力建设。
+
+> 以下各节为历史断点（Historical checkpoints），按当时状态记录，不再回改。
+
+---
+
 ## 2026-09-21 工程收口（Engineering Close Phase 1，Claude Code）
 
 **CURRENT_PHASE**: 第一轮建设工程收口（分支 `chore/engineering-close-20260921`，
@@ -34,9 +68,10 @@ base `audit/environment-20260921`；禁止修改 main）
 - 第二轮能力建设（0x19/0x31/0x34-37、实时 0x7DF 网关、JFFS2/UBIFS extraction、
   Docker Lab、Obsidian）——本分支**不做**。
 
-**KNOWN_ISSUES**: 同上文（ssh-add、vhdx 压缩、CI runner 实测见 Phase 2；
-0 字节文件 `; else echo MISS` 已随 cleanup commit `chore(repo): remove
-environment probe artifacts` 删除；`.p1x-probe/*-OUTPUT.txt` 已移出版本库并 gitignore）。
+**KNOWN_ISSUES**: 同上文（vhdx 压缩；ssh-add 已完成、本分支 push 正常；
+CI runner 实测见 Phase 2/3；0 字节文件 `; else echo MISS` 已随 cleanup
+commit `chore(repo): remove environment probe artifacts` 删除；
+`.p1x-probe/*-OUTPUT.txt` 已移出版本库并 gitignore）。
 
 ## 2026-09-20 (current session, Doubao)
 

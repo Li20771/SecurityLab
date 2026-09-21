@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-09-18T23:20:00+08:00",
-  "current_phase": "phase-02-kali",
-  "current_task": "Kali: fix accounts-daemon ordering (After=systemd-logind), document tpm-udev as WSL-normal, verify via Kali reboot",
+  "updated_at": "2026-09-21T12:00:00+08:00",
+  "current_phase": "phase-03-formal-integration-review",
+  "current_task": "PR #1 review: finalize SecurityLab first-round baseline before main merge",
   "completed_tasks": [
     "replay --all directory filtering fix verified (30/30 identity OK, class consistent, issue=0, EXIT=0)",
     "offline test suites pass: parsers 34/34, isotp_send_options 50/50, fuzz_offline 89/89",
@@ -26,7 +26,21 @@
   "modified_system_config": [
     "Ubuntu: /usr/local/sbin/binfmt-selfheal.sh + /etc/systemd/system/binfmt-selfheal.{service,path}; path unit enabled+active. Rollback: systemctl disable --now binfmt-selfheal.path; rm the three files."
   ],
-  "next_action": "Phase 2: Kali user@1000.service + tpm-udev/accounts-daemon triage. Then Phase 3 Docker.",
+  "next_action": "Complete PR #1 review; after final approval decide whether to merge into main. Do not start second-round feature development before first-round baseline is merged.",
+  "current_review": {
+    "pr": 1,
+    "state": "OPEN_DRAFT",
+    "branch": "chore/engineering-close-20260921",
+    "head": "03258025b5bba5179a41a4a2af392fec04fae8d2",
+    "base": "main",
+    "ci": {
+      "workflow": "SecurityLab CI",
+      "run_id": 35575283020,
+      "result": "success",
+      "scope": "fast"
+    },
+    "main_merged": false
+  },
   "rollback_notes": "Pre-existing uncommitted changes (replay.py, test_fuzz_offline.py, docs/*, fuzz-out/) must NOT be reset/cleaned/committed without explicit user instruction. Self-heal rollback above.",
   "verification_status": {
     "wsl_interop": "VERIFIED (fresh session INTEROP_OK after Kali cold boot)",
