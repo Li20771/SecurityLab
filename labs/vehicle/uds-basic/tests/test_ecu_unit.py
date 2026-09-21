@@ -35,6 +35,7 @@ sys.path.insert(0, _ECU_DIR)
 import ecu as ecu_module  # noqa: E402
 import keygen  # noqa: E402
 from did_database import DID_DATABASE, PROTECTED_DIDS  # noqa: E402
+from dtc_database import DTC_DATABASE  # noqa: E402
 from ecu import (  # noqa: E402
     DEFAULT_SESSION,
     handle_uds_request,
@@ -100,6 +101,10 @@ class UdsTestCase(unittest.TestCase):
 
         ecu.STATE.session = DEFAULT_SESSION
         ecu.reset_all_security_state()
+        # DTC 运行时状态恢复出厂默认（0x19 只读查询不该被其它测试的
+        # 临时注入污染；hardReset 也刻意不清除 DTC，见 TestEcuReset）。
+        ecu.STATE.dtc_records.clear()
+        ecu.STATE.dtc_records.update(dict(DTC_DATABASE))
 
     # ---- 断言辅助 ----
 
@@ -226,6 +231,37 @@ class TestEcuReset(UdsTestCase):
 
         handle_uds_request(bytes([0x11, 0x01]))
         self.assertEqual(ecu.STATE.session, DEFAULT_SESSION)
+
+    def test_hard_reset_preserves_dtc_records(self) -> None:
+        """
+        DTC 是故障历史记忆：hardReset **不删除** DTC。
+
+        与 did_overrides 的"复位即恢复出厂"语义刻意区分：
+        session → default、security → locked、did_overrides → 清空、
+        dtc_records → **保留**（含运行时注入的自定义 DTC）。
+        """
+        import ecu
+
+        original_dtc = dict(ecu.STATE.dtc_records)
+        original_overrides = dict(ecu.STATE.did_overrides)
+
+        try:
+            ecu.STATE.dtc_records[0x100009] = 0x09
+            ecu.STATE.did_overrides[0xF102] = b"X"
+
+            handle_uds_request(bytes([0x10, 0x03]))
+            handle_uds_request(bytes([0x11, 0x01]))
+
+            self.assertEqual(ecu.STATE.session, DEFAULT_SESSION)
+            self.assertEqual(ecu.STATE.security_level, ecu.SECURITY_LOCKED)
+            self.assertEqual(ecu.STATE.did_overrides, {})
+            self.assertIn(0x100009, ecu.STATE.dtc_records)
+            self.assertEqual(ecu.STATE.dtc_records[0x100009], 0x09)
+        finally:
+            ecu.STATE.dtc_records.clear()
+            ecu.STATE.dtc_records.update(original_dtc)
+            ecu.STATE.did_overrides.clear()
+            ecu.STATE.did_overrides.update(original_overrides)
 
     def test_unsupported_reset_type_key_off_on(self) -> None:
         """11 02 -> 7F 11 12（keyOffOnReset 未实现）"""
@@ -424,12 +460,19 @@ class TestUnsupportedServices(UdsTestCase):
         self.assertEqual(response[1], SUBFUNCTION_REQUEST_SEED)
         self.assertEqual(len(response), 2 + 4)
 
-    def test_unimplemented_service_0x19_read_dtc_information(self) -> None:
-        response = handle_uds_request(bytes([0x19, 0x02]))
+    def test_read_dtc_information_is_implemented(self) -> None:
+        """
+        0x19 已实现：19 02 FF 应返回 59 02 正响应。
 
-        self.assertNegativeResponse(
-            response, 0x19, NRC_SERVICE_NOT_SUPPORTED
-        )
+        （本用例原为 test_unimplemented_service_0x19_read_dtc_information，
+        断言 7F 19 11；ReadDTCInformation 落地后改写为断言新行为，
+        与 0x2E / 0x27 / 0x3E 的处理方式一致。完整 mask 过滤 /
+        NRC / 状态语义见 test_dtc_unit.py 与 test_dtc_vcan.py。）
+        """
+        response = handle_uds_request(bytes([0x19, 0x02, 0xFF]))
+
+        self.assertPositiveResponse(response, 0x59)
+        self.assertEqual(response[1], 0xFF)  # DTCStatusAvailabilityMask
 
     def test_tester_present_is_implemented(self) -> None:
         """

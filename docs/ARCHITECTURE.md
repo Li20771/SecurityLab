@@ -58,10 +58,11 @@ SecurityLab/
 ```
             离线 unit（无 vcan）                         实时 e2e（独占 vcan0）
   ┌───────────────────────────┐            ┌───────────────────────────────────────┐
-  │ test_ecu_unit 104         │            │  client/isotp_client.py (Tester)       │
+  │ test_ecu_unit 105         │            │  client/isotp_client.py (Tester)       │
   │ test_keygen_unit 34       │            │  client/uds_client.py                  │
-  │ test_services_extra 17    │            │        │  UDS 请求（0x10/11/22/27/2E/3E） │
+  │ test_services_extra 17    │            │        │  UDS 请求（0x10/11/19/22/27/2E/3E）│
   │ test_gateway_unit 13      │            │        ▼  ISO-TP（Normal 11-bit）        │
+  │ test_dtc_unit 30          │            │                                       │
   └───────────────────────────┘            │  SocketCAN vcan0  (TX 0x7E0/RX 0x7E8)  │
                                            │        ▲                                │
   ┌───────────────────────────┐            │  ecu/ecu.py 主循环（帧收发/空响应抑制）  │
@@ -102,7 +103,7 @@ Tester ──物理寻址──► ECU_A 0x7E0 / 应答 0x7E8
               连续失败 3 次 → lockout 10s（UDS_LOCKOUT_SECONDS 可覆盖）；seed 5s 过期
 ```
 
-- 已实现：0x10 SessionControl、0x11 ECUReset、0x22 ReadDataByIdentifier、0x27 SecurityAccess、0x2E WriteDataByIdentifier、0x3E TesterPresent。
+- 已实现：0x10 SessionControl、0x11 ECUReset、0x19 ReadDTCInformation（reportType 01/02/0A，静态 dtc_database + EcuState.dtc_records，hardReset 保留 DTC）、0x22 ReadDataByIdentifier、0x27 SecurityAccess、0x2E WriteDataByIdentifier、0x3E TesterPresent。
 - 响应：正响应 `[sid+0x40, ...]`；否定响应 `7F sid nrc`。NRC：10/11/12/13/22/24/31/33/35/36/37 + 7F（默认会话不支持该服务）。
 - 0x2E 门控顺序：长度→未知 DID(31)→默认会话(7F)→未解锁(33)→只读 DID(22)→长度越界(13)→成功 6E；写 `state.did_overrides`，0x22 读 override 优先，0x11 清空。
 - 0x3E：`3E 00→7E 00`；`3E 80→抑制不发帧`；非法子功能 12；长度错 13。

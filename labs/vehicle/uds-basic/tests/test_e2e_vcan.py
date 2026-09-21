@@ -910,10 +910,23 @@ class TestRawIsotp(VcanTestCase):
         self.assertPositive(response, 0x7E, "3E 00（TesterPresent）")
         self.assertEqual(response, bytes([0x7E, 0x00]))
 
-    def test_unimplemented_service_0x19(self) -> None:
+    def test_implemented_service_0x19(self) -> None:
+        """
+        0x19 已实现：19 02 FF 应返回 59 02 正响应（缺 mask 则 13）。
+
+        （本用例原为 test_unimplemented_service_0x19，断言 7F 19 11；
+        ReadDTCInformation 落地后改写为断言新行为。完整报文/NRC/
+        reset 语义见 test_dtc_vcan.py 与 test_dtc_unit.py。）
+        """
+        response = self.uds_exchange(bytes([0x19, 0x02, 0xFF]))
+
+        self.assertPositive(response, 0x59, "19 02 FF（ReadDTCInformation）")
+
+    def test_implemented_service_0x19_bad_length(self) -> None:
+        """0x19 已实现：缺 mask 的 19 02 返回 13 而非 11（SID 被识别）。"""
         response = self.uds_exchange(bytes([0x19, 0x02]))
 
-        self.assertNrc(response, 0x19, 0x11, "19（ReadDTCInformation 未实现）")
+        self.assertNrc(response, 0x19, 0x13, "19 02 缺 mask")
 
     def test_unimplemented_service_0x99(self) -> None:
         response = self.uds_exchange(bytes([0x99]))
