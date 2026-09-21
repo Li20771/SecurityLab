@@ -1,0 +1,14 @@
+# binfmt-selfheal.timer — periodic safety net for N-01
+# The path unit handles flush storms immediately; this timer guarantees a
+# bounded recovery even if path monitoring is lost across a remount.
+[Unit]
+Description=Periodic binfmt_misc self-heal check (N-01)
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=10s
+AccuracySec=1s
+Unit=binfmt-selfheal-quick.service
+
+[Install]
+WantedBy=timers.target

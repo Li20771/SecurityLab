@@ -46,7 +46,6 @@ UDS Basic —— vcan0 端到端测试
 import atexit
 import os
 import signal
-import socket
 import subprocess
 import sys
 import tempfile
@@ -57,14 +56,11 @@ import unittest
 import can
 import isotp
 import udsoncan
-
 from udsoncan.client import Client
 from udsoncan.connections import IsoTPSocketConnection
 from udsoncan.exceptions import (
-    InvalidResponseException,
     NegativeResponseException,
 )
-
 
 # ----------------------------------------------------------------------
 # 路径与通信参数
@@ -530,7 +526,7 @@ class VcanTestCase(unittest.TestCase):
         """读取 ECU 日志内容（文件或管道）。"""
         if _ECU_LOG_PATH is not None and _ECU_LOG_HANDLE is not None:
             _ECU_LOG_HANDLE.flush()
-            with open(_ECU_LOG_PATH, "r", encoding="utf-8") as handle:
+            with open(_ECU_LOG_PATH, encoding="utf-8") as handle:
                 return handle.read()
 
         # 管道模式：ECU 日志由独立读取线程累积
@@ -888,15 +884,31 @@ class TestRawIsotp(VcanTestCase):
         self.assertEqual(response[1], 0x01)
         self.assertEqual(len(response), 6, "seed 应为 4 字节")
 
-    def test_unimplemented_service_0x2e(self) -> None:
+    def test_2e_default_session_requires_unlock(self) -> None:
+        """
+        0x2E 已实现：默认会话写 DID 不再返回 0x11，而是按门控返回
+        7F 2E 7F serviceNotSupportedInActiveSession（证明 SID 已被识别）。
+
+        （本用例原为 test_unimplemented_service_0x2e，断言 7F 2E 11；
+        WriteDataByIdentifier 落地后改写为断言新行为，与 0x27 一致。
+        完整解锁写入 / 读回 / 复位恢复路径见 test_write_did_vcan.py。）
+        """
         response = self.uds_exchange(bytes([0x2E, 0xF1, 0x90, 0x00]))
 
-        self.assertNrc(response, 0x2E, 0x11, "2E（WriteDataByIdentifier 未实现）")
+        self.assertNrc(response, 0x2E, 0x7F, "2E（默认会话写 DID）")
 
-    def test_unimplemented_service_0x3e(self) -> None:
+    def test_3e_tester_present(self) -> None:
+        """
+        0x3E 已实现：3E 00 -> 7E 00。
+
+        （本用例原为 test_unimplemented_service_0x3e，断言 7F 3E 11；
+        TesterPresent 落地后改写为断言新行为，与 0x27 一致。
+        suppress-bit(3E 80) 总线静默见 test_write_did_vcan.py。）
+        """
         response = self.uds_exchange(bytes([0x3E, 0x00]))
 
-        self.assertNrc(response, 0x3E, 0x11, "3E（TesterPresent 未实现）")
+        self.assertPositive(response, 0x7E, "3E 00（TesterPresent）")
+        self.assertEqual(response, bytes([0x7E, 0x00]))
 
     def test_unimplemented_service_0x19(self) -> None:
         response = self.uds_exchange(bytes([0x19, 0x02]))

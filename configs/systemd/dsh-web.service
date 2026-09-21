@@ -1,0 +1,19 @@
+[Unit]
+Description=DeepSeek Harness (dsh) Web UI
+# SecurityLab 实验环境：DSH(@deepseek-ai/dsh) Web GUI，用户级服务。
+# 仅绑定回环 127.0.0.1，不对外暴露；Windows 宿主经 WSL localhost 转发访问。
+Documentation=file:///mnt/d/SecurityLab/docs/FINAL_ENVIRONMENT_AUDIT_2026-09-20.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# wrapper：~/.local/bin/dsh -> npx 缓存中的 @deepseek-ai/dsh（node 在 /usr/bin）
+ExecStart=%h/.local/bin/dsh web --no-open --host 127.0.0.1 --port 8731
+Environment=DSH_HOME=%h/.dsh
+Restart=on-failure
+RestartSec=5
+# 崩溃/重启时的日志统一进 journal：journalctl --user -u dsh-web -f
+
+[Install]
+WantedBy=default.target

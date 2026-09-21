@@ -1,0 +1,9 @@
+# binfmt-selfheal.service — N-01 mitigation (see configs/binfmt/binfmt-selfheal.sh)
+# Oneshot, additive-only re-registration of this distro's binfmt.d entries.
+[Unit]
+Description=Re-register missing binfmt_misc entries (N-01 self-heal)
+ConditionPathExists=/proc/sys/fs/binfmt_misc/status
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/binfmt-selfheal.sh

@@ -1,0 +1,28 @@
+# Firmware sample manifest - copy to MANIFEST.local.yml and fill in per sample.
+# MANIFEST.local.yml is intended to stay local (do not commit sensitive data).
+sample:
+  file: images/<vendor>-<device>-<version>.bin
+  sha256: "<sha256sum output>"
+  size_bytes: 0
+  acquired_on: "YYYY-MM-DD"
+
+provenance:
+  vendor: ""
+  device_model: ""
+  firmware_version: ""
+  download_url: ""
+  # How you are authorized to possess/analyze this image:
+  authorization: "vendor EULA research clause | CTF/practice | own device | explicit license"
+
+triage:
+  container_format: ""        # raw, uImage, vendor update, ...
+  filesystems: []             # squashfs, jffs2, ubifs, ...
+  cpu_architectures: []       # aarch64, arm (hf), mips, ...
+  endianness: ""              # little | big | mixed
+  compression: []             # gzip, lzma, xz, lzo, ...
+  web_interfaces: []
+  init_system: ""             # sysvinit, busybox init, systemd, custom
+  hardcoded_secrets_found: false
+  suid_binaries: []
+
+notes: ""

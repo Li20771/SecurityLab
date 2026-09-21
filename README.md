@@ -23,15 +23,31 @@ SecurityLab 用于长期积累网络安全、二进制逆向、固件分析和�
 ## 当前目录结构
 
 SecurityLab/
-├── AGENTS.md
+├── AGENTS.md                    # Agent 工作规范（安全边界）
 ├── configs/
-│   └── systemd/
-│       └── vcan0.service
+│   ├── binfmt/                  # binfmt additive 注册器 + selfheal v2.3（fail-closed）
+│   ├── environment/             # Python requirements（钉版本）
+│   ├── network/                 # 代理探测 / ssh-proxy
+│   └── systemd/                 # vcan0 / binfmt-selfheal / dsh-web 单元
 ├── labs/
-│   ├── reverse/
-│   ├── firmware/
+│   ├── reverse/                 # 逆向基础（ARM64 / GDB / QEMU / Pwntools）
+│   ├── firmware/                # binwalk-basic、synthetic-ecu、samples
+│   ├── fuzzing/                 # AFL++ 通用 fuzz 靶场
+│   ├── yara-basic/              # YARA 规则 + 样本 + scan.sh
 │   └── vehicle/
-└── .gitignore
+│       ├── can-basic/           # CAN 基础练习
+│       ├── can-tools/           # 收发 / 捕获 / fuzz / replay
+│       └── uds-basic/           # UDS 虚拟 ECU / 客户端 / 网关 + 测试
+├── scripts/
+│   ├── healthcheck.sh           # 统一环境健康检查（[--extended]）
+│   ├── qa_fast.sh / qa_extended.sh   # 工程级质量门禁
+│   ├── nettools_check.sh
+│   ├── repro/                   # 关键验证的可复现入口（ARM/QEMU-GDB/Ghidra/fuzz smoke）
+│   └── tests/                   # shell 级回归测试
+├── docs/                        # 审计报告、测试矩阵、状态看板、架构
+├── pyproject.toml / conftest.py # ruff / mypy / pytest 配置
+└── .github/workflows/ci.yml     # fast 自动 / extended 手动
+（历史/用户目录：ctf data notes pcaps projects reports reverse tools artifacts —— 非本任务创建，保持原样）
 
 ## labs/reverse
 
@@ -49,22 +65,24 @@ SecurityLab/
 
 ## labs/firmware
 
-固件分析实验。
+固件分析实验（合成固件，可复现）。
 
 当前包含：
 
-- SquashFS
-- Binwalk
-- 固件文件系统提取
+- SquashFS：build + identify + extract + analyze（完整链）
+- JFFS2：build + identify（当前环境无完整 extraction chain）
+- UBIFS/UBI：build + identify（当前环境无完整 extraction chain）
+- Binwalk 签名扫描与提取
 - rootfs 基础分析
 - ELF 搜索与识别
 - 动态库依赖分析
+- firmware diff（`labs/firmware/synthetic-ecu/firmware_diff.sh`）
 
 基础分析链：
 
 固件
-→ 文件系统识别
-→ 提取
+→ 文件系统识别（binwalk / fs_formats）
+→ 提取（SquashFS 完整；JFFS2/UBIFS 待第二轮补 extraction chain）
 → rootfs
 → ELF
 → 架构识别
@@ -78,14 +96,15 @@ SecurityLab/
 
 当前已经验证：
 
-- Linux SocketCAN
-- vcan0
-- can-utils
-- python-can
-- cantools
-- DBC
-- can-isotp
-- udsoncan
+- Linux SocketCAN / vcan0（systemd 自启）
+- can-utils（candump / cansend / canplayer / isotpsend ...）
+- python-can / cantools / DBC
+- can-isotp（内核模块 + Python 2.0.7）
+- udsoncan 1.26.1
+- UDS 虚拟 ECU：0x10 / 0x11 / 0x22 / 0x27 / 0x2E / 0x3E（服务注册表 + dispatcher）
+- 多 ECU / Gateway（`ecu/gateway.py`：物理寻址三 ECU + 功能寻址广播）
+- CAN / ISO-TP 状态机 fuzz + 精确 replay（`can-tools/fuzz/`，kernel oracle 三态）
+- CAN capture 三格式（CAN log / BLF / PCAP）
 
 基础链路：
 
@@ -104,14 +123,14 @@ CAN
 
 当前包含：
 
-configs/systemd/vcan0.service
-
-该服务用于：
-
-- 加载 CAN 内核模块
-- 加载 ISO-TP 内核模块
-- 自动创建 vcan0
-- 自动将 vcan0 设置为 UP
+- `configs/systemd/`：vcan0.service（加载 CAN/can_isotp 内核模块、
+  自动创建 vcan0 并置 UP）、binfmt-selfheal（path + timer + quick）、
+  dsh-web.service
+- `configs/binfmt/`：binfmt-register-additive.py（additive 注册器，
+  绝不 flush）与 binfmt-selfheal.sh v2.3（helper 缺失时 fail-closed，
+  不回落 systemd-binfmt）
+- `configs/environment/`：python-network / python-dev requirements（钉版本）
+- `configs/network/`：proxy.env（动态探测网关代理）、ssh-proxy.sh
 
 ## Git
 
@@ -174,41 +193,46 @@ SecurityLab 主工作区：
 
 ## 当前阶段
 
-当前已经完成：
+当前已经完成（第一轮建设 + 2026-09-21 工程收口）：
 
 1. SecurityLab Git 仓库初始化
-2. 逆向基础实验
-3. 固件 Binwalk 基础实验
-4. SocketCAN / vcan0
-5. CAN 工具链
-6. DBC 基础环境
-7. ISO-TP 环境
-8. UDS Python 环境
-9. vcan0 systemd 自动启动
-10. DSH + SecurityLab Workspace
-11. AGENTS.md Agent 工作规范
-12. UDS Basic 虚拟 ECU（0x10 / 0x11 / 0x22 + NRC）
-13. UDS Basic 自动化测试（离线单元 + vcan0 端到端）
-14. UDS SecurityAccess（0x27）：seed/key、失败计数、锁定、防重放
-15. 教学用 seed/key 算法模块（`ecu/keygen.py`，无 CAN 依赖）
-16. 受保护 DID 的 Session × Security 权限模型
-17. 测试规模：离线单元 104 + 34 例，vcan0 端到端 65 例（共 203）
+2. 逆向基础实验（ARM64 ELF / GDB / GDB-Multiarch / QEMU / Pwntools）
+3. 固件合成实验（SquashFS 完整链；JFFS2/UBIFS build+identify）
+4. SocketCAN / vcan0（systemd 自动启动）
+5. CAN 工具链 + DBC 基础环境
+6. ISO-TP 环境（内核 can_isotp + can-isotp 2.0.7）
+7. UDS Python 环境（udsoncan 1.26.1）
+8. UDS Basic 虚拟 ECU：0x10 / 0x11 / 0x22 / 0x27 / 0x2E / 0x3E
+   （服务注册表 + dispatcher，非 if/elif）
+9. UDS SecurityAccess（0x27）：seed/key、失败计数、锁定、防重放
+10. 受保护/可写 DID 的 Session × Security 权限模型
+11. 多 ECU / Gateway（物理寻址 + 功能寻址广播）
+12. CAN / ISO-TP 状态机 fuzz + 精确 replay（kernel oracle 三态）
+13. CAN capture 三格式（CAN log / BLF / PCAP）
+14. 自动化测试：离线单元 168 + vcan0 端到端 91（UDS）+ can-tools
+    离线 183 + malformed 47（2026-09-21 实测）
+15. 质量门禁（qa_fast / qa_extended / healthcheck）+ CI workflow
+16. binfmt selfheal v2.3（additive-only，fail-closed，双端部署）
+17. 关键验证可复现入口（`scripts/repro/`：ARM / QEMU-GDB / Ghidra /
+    fuzz smoke）
 
 UDS Basic 实验位于 `labs/vehicle/uds-basic/`，详见该目录 README。
+能力看板见 `docs/SECURITY_LAB_STATUS.md`，测试矩阵见 `docs/TEST_MATRIX.md`。
 
 运行测试：
 
 ```bash
-bash labs/vehicle/uds-basic/tests/run_tests.sh
+bash scripts/healthcheck.sh                 # 环境体检（秒级）
+bash scripts/qa_fast.sh                     # 离线质量门禁（ruff/mypy/unit）
+bash labs/vehicle/uds-basic/tests/run_tests.sh all    # UDS 全量（unit + e2e）
 ```
 
-后续方向：
+后续方向（第二轮能力建设，见 `docs/SECURITY_LAB_STATUS.md` 路线图）：
 
-- UDS 扩展服务（0x2E 写入 / 0x19 DTC / 0x31 例程 / 0x3E TesterPresent）
-- 服务注册表重构（当前 4 个服务为 if/elif 分发）
-- UDS / SecurityAccess Fuzzing
-- ARM / Embedded Linux 固件分析
-- QEMU 固件仿真
-- GDB 动态调试
-- 自动化安全测试
-- 车联网安全漏洞研究
+- UDS 扩展服务（0x19 DTC / 0x31 例程 / 0x34-0x37 刷写流程）
+- 0x7DF 功能寻址的用户态实时网关守护进程
+- JFFS2 / UBIFS 完整 extraction chain
+- Docker Security Lab / Obsidian 知识系统
+- 大型 fuzz campaign 与真实 CAN 接口实验（需明确授权范围）
+- ARM / Embedded Linux 固件分析、QEMU 固件仿真、GDB 动态调试
+- 自动化安全测试、车联网安全漏洞研究

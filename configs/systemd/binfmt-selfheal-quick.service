@@ -1,0 +1,10 @@
+# binfmt-selfheal-quick.service — timer safety net for N-01
+# Single idempotent check; covers cases where binfmt-selfheal.path silently
+# stops firing across a binfmt_misc remount (observed with protectBinfmt=false).
+[Unit]
+Description=Quick binfmt_misc self-heal check (N-01 timer safety net)
+ConditionPathExists=/proc/sys/fs/binfmt_misc/status
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/binfmt-selfheal.sh --quick

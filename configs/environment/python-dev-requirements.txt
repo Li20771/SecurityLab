@@ -1,0 +1,15 @@
+# SecurityLab —— Python 开发 / 质量门禁工具（与运行时依赖分开）
+#
+# 运行时依赖见 python-network-requirements.txt（含 transitive lock：
+# python-network-requirements.lock）。
+# 本文件只包含 lint / 类型检查 / 测试运行器 / lock 再生成工具，
+# 供 scripts/qa_fast.sh 与 CI 使用。
+# 版本为 2026-09-20/21 在 WSL Ubuntu 24.04 venv(~/.venvs/network) 实测通过的版本。
+#
+# 安装：pip install -r python-network-requirements.txt -r python-dev-requirements.txt
+# lock 再生成：pip-compile --output-file python-network-requirements.lock \
+#                  python-network-requirements.txt
+pytest==9.1.1
+ruff==0.16.8
+mypy==2.3.1
+pip-tools==7.6.1

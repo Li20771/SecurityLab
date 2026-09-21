@@ -1,0 +1,84 @@
+name: SecurityLab CI
+
+# 快速门禁（fast）：lint + 类型检查 + 纯离线单元测试。
+#   不需要 vcan0 / root / CAN 硬件，在普通 GitHub runner 上即可运行，
+#   对应本地脚本 scripts/qa_fast.sh。
+#
+# 扩展安全测试（extended）：需要 vcan0 与 can-utils/tshark/yara，
+#   对应 scripts/qa_extended.sh。GitHub runner 内核通常带 vcan 模块，
+#   但可用性取决于托管环境，故仅在手动 workflow_dispatch 时运行
+#   （日常本地 WSL Ubuntu 是权威的扩展测试环境）。
+#
+# 长时间 CAN fuzz（30/100/500/1000）不放进 CI：
+#   本地用 scripts/qa_extended.sh --fuzz 或 fuzz/isotp_fuzz.py 单独执行。
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_extended:
+        description: "运行需要 vcan0 的扩展安全测试"
+        type: boolean
+        default: true
+
+jobs:
+  fast:
+    name: Fast QA (ruff + mypy + offline tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install \
+            -r configs/environment/python-network-requirements.txt \
+            -r configs/environment/python-dev-requirements.txt
+
+      - name: Fast quality gate
+        run: bash scripts/qa_fast.sh
+
+  extended:
+    name: Extended security tests (vcan0, manual)
+    runs-on: ubuntu-latest
+    needs: fast
+    if: github.event_name == 'workflow_dispatch' && inputs.run_extended
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Bring up vcan0
+        run: |
+          sudo modprobe vcan
+          sudo ip link add dev vcan0 type vcan
+          sudo ip link set vcan0 up
+          ip -details link show vcan0
+
+      - name: Install CAN / capture / YARA tooling
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends can-utils tshark yara
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install \
+            -r configs/environment/python-network-requirements.txt \
+            -r configs/environment/python-dev-requirements.txt
+
+      - name: Extended quality gate
+        run: bash scripts/qa_extended.sh

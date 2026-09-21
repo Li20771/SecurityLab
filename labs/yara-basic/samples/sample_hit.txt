@@ -1,0 +1,5 @@
+ordinary log line
+device boot ok
+SYNMALWARE_C2_BEACON callback=60 user=admin
+contacting http://syn-c2.invalid/beacon?id=42
+end of log

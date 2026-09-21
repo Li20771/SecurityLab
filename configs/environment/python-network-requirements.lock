@@ -1,0 +1,139 @@
+#
+# Transitive lock（python-network）：由 direct pins 全量解析生成。
+#
+# 生成（2026-09-21，WSL Ubuntu 24.04，venv pip-tools 7.6.1 / Python 3.12，
+# 经 configs/network/proxy.env 代理 + TUNA 镜像解析）：
+#
+#    pip-compile --output-file configs/environment/python-network-requirements.lock \
+#        configs/environment/python-network-requirements.txt
+#
+# 验证：全新 venv `pip install -r <本文件>` 后 can 4.6.1 / isotp 2.0.7
+# 等全部可导入（LOCK_FRESH_INSTALL_OK）。
+#
+# 注意：pip-tools 7.6.1 自动生成的 header 会误记 `--no-index`（无此配置，
+# 亦未传此参数），故手工替换为本段说明；包列表内容未改动。
+#
+anyio==4.15.1
+    # via httpx
+argparse-addons==0.12.0
+    # via cantools
+bcrypt==5.0.0
+    # via paramiko
+bitstruct==8.23.0
+    # via cantools
+can-isotp==2.0.7
+    # via -r configs/environment/python-network-requirements.txt
+cantools==44.0.0
+    # via -r configs/environment/python-network-requirements.txt
+capstone==6.0.0a10
+    # via
+    #   pwntools
+    #   ropgadget
+certifi==2026.7.22
+    # via
+    #   httpcore
+    #   httpx
+    #   requests
+cffi==2.1.1
+    # via
+    #   cryptography
+    #   pynacl
+charset-normalizer==3.5.1
+    # via requests
+colored-traceback==0.4.2
+    # via pwntools
+crccheck==1.3.1
+    # via cantools
+cryptography==50.0.1
+    # via paramiko
+h11==0.16.0
+    # via httpcore
+httpcore==1.0.9
+    # via httpx
+httpx==0.28.1
+    # via -r configs/environment/python-network-requirements.txt
+idna==3.20
+    # via
+    #   anyio
+    #   httpx
+    #   requests
+intervaltree==3.2.1
+    # via pwntools
+invoke==3.0.3
+    # via paramiko
+mako==1.4.1
+    # via pwntools
+markupsafe==3.0.3
+    # via mako
+packaging==26.3
+    # via
+    #   pwntools
+    #   python-can
+paramiko==5.0.0
+    # via pwntools
+plumbum==2.0.2
+    # via rpyc
+psutil==7.2.2
+    # via pwntools
+pwntools==4.15.0
+    # via -r configs/environment/python-network-requirements.txt
+pycparser==3.0
+    # via cffi
+pyelftools==0.33
+    # via pwntools
+pygments==2.21.0
+    # via
+    #   colored-traceback
+    #   pwntools
+pynacl==1.6.2
+    # via paramiko
+pyserial==3.5
+    # via pwntools
+pysocks==1.7.1
+    # via pwntools
+python-can==4.6.1
+    # via
+    #   -r configs/environment/python-network-requirements.txt
+    #   cantools
+python-dateutil==2.9.0.post0
+    # via pwntools
+requests==2.34.2
+    # via
+    #   -r configs/environment/python-network-requirements.txt
+    #   pwntools
+ropgadget==7.7
+    # via pwntools
+rpyc==6.0.2
+    # via pwntools
+scapy==2.7.0
+    # via -r configs/environment/python-network-requirements.txt
+six==1.17.0
+    # via
+    #   pwntools
+    #   python-dateutil
+sortedcontainers==2.4.0
+    # via
+    #   intervaltree
+    #   pwntools
+textparser==0.26.2
+    # via cantools
+typing-extensions==4.16.0
+    # via
+    #   anyio
+    #   plumbum
+    #   python-can
+udsoncan==1.26.1
+    # via -r configs/environment/python-network-requirements.txt
+unicorn==2.1.2
+    # via pwntools
+unix-ar==0.2.1
+    # via pwntools
+urllib3==2.8.0
+    # via requests
+wrapt==1.17.3
+    # via python-can
+zstandard==0.25.0
+    # via pwntools
+
+# The following packages are considered to be unsafe in a requirements file:
+# pip

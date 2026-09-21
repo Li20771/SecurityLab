@@ -110,7 +110,8 @@ def generate_seed(counter: int = 0, level: int = 0x01) -> bytes:
     生成一个 4 字节 seed。
 
     纯函数：给定相同的 (counter, level) 永远返回相同的 seed。
-    seed 的"每次请求变化"由调用方递增 counter 实现（见 ecu.py 的 SEED_COUNTER）。
+    seed 的"每次请求变化"由调用方递增 counter 实现
+    （见 uds_server.EcuState.seed_counter）。
 
     :param counter: seed 序号，每次 RequestSeed 递增
     :param level:   安全等级（本实验只用 0x01）

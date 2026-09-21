@@ -90,53 +90,62 @@ CF (连续帧): 21 ...  22 ...
 
 ## 3. ECU 模拟器
 
-### 3.1 文件
+### 3.1 主要文件
 
 | 文件 | 说明 |
 |---|---|
-| `ecu/ecu.py` | 虚拟 ECU 主程序：ISO-TP 收发 + UDS 服务分发 + 安全状态 |
+| `ecu/ecu.py` | **入口层**：SocketCAN / ISO-TP、运行时依赖、兼容 facade（不含 UDS 业务逻辑） |
+| `ecu/uds_server.py` | **UDS 协议层**：`EcuState`、服务 handler、registry、dispatcher |
+| `ecu/uds_types.py` | 协议常量与响应构造（零依赖） |
 | `ecu/did_database.py` | DID 数据库（DID → 数据字节）与受保护 DID 标记 |
 | `ecu/keygen.py` | 教学用 seed/key 算法（**不依赖 CAN / ISO-TP**） |
 
-`keygen.py` 单独成文件的原因：它没有任何第三方依赖，
-因此诊断客户端与测试可以只 `import keygen` 而无需拖入 ISO-TP 依赖，
-算法也能脱离 CAN 独立测试。
+各文件的完整职责边界与依赖方向见 **第 14 节 架构**。
+
+`keygen.py` 与 `uds_types.py` 都单独成文件的原因相同：它们没有任何第三方依赖，
+因此诊断客户端与测试可以只 `import` 它们而无需拖入 ISO-TP 依赖，
+算法与常量也能脱离 CAN 独立测试。
 
 ### 3.2 服务分发逻辑
 
-`ecu/ecu.py` 的核心是纯函数：
+服务分发（dispatch）不在 `ecu.py`，而在 `ecu/uds_server.py`：
 
 ```python
-def handle_uds_request(request: bytes) -> bytes:
+# ecu/uds_server.py
+def handle_uds_request(request, state, *, services=None) -> bytes:
     ...
 ```
 
-它**不依赖 CAN**，输入请求字节、输出响应字节。
-因此可以直接被单元测试调用（见第 8 节），这是本实验可测试性的关键设计。
+它**不依赖 CAN**：输入请求字节与 ECU 状态，输出响应字节。
+`ecu.py` 提供的是**入口包装**（把 0x27 所需的运行时依赖注入后转交），
+因此单元测试既可以直接调用 `ecu.handle_uds_request(request)`
+（见第 8 节），也可以在需要时绕过入口层直接测试协议层。
+这是本实验可测试性的关键设计。
 
 ### 3.3 会话状态与安全状态
 
-ECU 维护两组状态：
+运行时状态**不再是模块级全局变量**，而是集中在一个显式对象
+`uds_server.EcuState` 中，由单例 `uds_server.STATE` 持有（详见第 14.4 节）：
 
 ```python
-# 会话状态
-DEFAULT_SESSION = 0x01
-CURRENT_SESSION = DEFAULT_SESSION
-
-# 安全访问状态（详见第 6 节）
-CURRENT_SECURITY_LEVEL = SECURITY_LOCKED
-PENDING_SEED = None
-SEED_ISSUED_AT = None
-SEED_CONSUMED = False
-FAILED_ATTEMPTS = 0
-LOCKOUT_UNTIL = None
-SEED_COUNTER = 0
+# ecu/uds_server.py
+@dataclass
+class EcuState:
+    session           = SESSION_DEFAULT
+    security_level    = SECURITY_LOCKED
+    pending_seed      = None
+    seed_issued_at    = None
+    seed_consumed     = False
+    failed_attempts   = 0
+    lockout_until     = None
+    seed_counter      = 0
 ```
 
-- `0x10` 切换会话时更新 `CURRENT_SESSION`，并**清除解锁状态与 seed**
+- `0x10` 切换会话时更新 `STATE.session`，并**清除解锁状态与 seed**
 - `0x11 01`（hardReset）把会话复位回 `defaultSession`，同样清除解锁状态
 - 被拒绝的请求**不会**改变会话状态（已由测试覆盖）
 - **失败计数与锁定在会话切换 / 复位后保留**（本教学 ECU 的设计选择，见 6.4）
+- `ecu.STATE` 只是 `uds_server.STATE` 的 re-export，**不是第二份状态**
 
 ### 3.4 可配置项
 
@@ -168,12 +177,14 @@ UDS_INTERFACE=vcan1 UDS_RX_ID=0x7E1 UDS_TX_ID=0x7E9 \
 | `0x11` | ECUReset | `0x01` hardReset | `0x51` | 已实现 |
 | `0x22` | ReadDataByIdentifier | —（支持多 DID） | `0x62` | 已实现 |
 | `0x27` | SecurityAccess | `0x01` RequestSeed<br>`0x02` SendKey | `0x67` | 已实现 |
+| `0x2E` | WriteDataByIdentifier | —（可写 DID 见 4.3） | `0x6E` | 已实现 |
+| `0x3E` | TesterPresent | `0x00` zeroSubFunction<br>`0x80` 抑制正响应 | `0x7E` / 无响应 | 已实现 |
 
 **尚未实现**（会返回 `NRC 0x11 ServiceNotSupported`）：
 
 `0x14` ClearDiagnosticInformation、`0x19` ReadDTCInformation、
-`0x28` CommunicationControl、`0x2E` WriteDataByIdentifier、
-`0x31` RoutineControl、`0x3E` TesterPresent、`0x85` ControlDTCSetting 等。
+`0x28` CommunicationControl、`0x31` RoutineControl、
+`0x85` ControlDTCSetting 等。
 
 ### 4.1 响应格式
 
@@ -219,13 +230,34 @@ SendKey:     27 02 <key:4>
 响应:        67 02
 ```
 
+**0x2E WriteDataByIdentifier**
+
+```
+请求: 2E <DID:2> <data...>
+响应: 6E <DID:2>
+```
+
+写入值进入 `state.did_overrides`，随后 `0x22` 读到新值；
+`0x11` hardReset 清空覆盖、恢复出厂默认值。门控顺序见 4.3 与 5.1。
+
+**0x3E TesterPresent**
+
+```
+请求: 3E 00 → 响应: 7E 00
+请求: 3E 80 → 无响应（suppressPosRspMsgIndicationBit，ecu.py 抑制空帧）
+```
+
+TesterPresent 在任意会话可用、不改变任何状态（本实验 ECU 不实现
+S3* 自动退会话，故无副作用）。
+
 ### 4.2 DID 数据库
 
 | DID | 含义 | 数据 | 长度 | 权限 |
 |---|---|---|---|---|
-| `0xF190` | VIN / 车辆识别号（本实验用测试值） | `TESTECU0000000001` | 17 | 公开 |
-| `0xF180` | Boot Software Identification | `BOOT-SW-1.0.0` | 13 | 公开 |
-| `0xF187` | Spare Part Number | `SPARE-PART-0001` | 15 | **受保护** |
+| `0xF190` | VIN / 车辆识别号（本实验用测试值） | `TESTECU0000000001` | 17 | 公开（只读） |
+| `0xF180` | Boot Software Identification | `BOOT-SW-1.0.0` | 13 | 公开（只读） |
+| `0xF187` | Spare Part Number | `SPARE-PART-0001` | 15 | **受保护**（只读） |
+| `0xF102` | 车辆配置名（厂商自定义教学 DID） | `DEFAULT_CONFIG` | 1–16 | **可写**（`0x2E`） |
 
 > 真实车辆中 `0xF190` 是 VIN（17 位 ASCII），`0xF180` 是 Boot SW 版本，
 > `0xF187` 是备件号。本实验使用固定测试值，便于断言。
@@ -233,6 +265,25 @@ SendKey:     27 02 <key:4>
 > `0xF187` 是本实验的**受保护 DID**：只有在
 > `extendedDiagnosticSession` 且通过 SecurityAccess 解锁后才能读取，
 > 否则返回 `NRC 0x33 SecurityAccessDenied`。详见第 6 节。
+>
+> `0xF102` 刻意选在厂商自定义区间（避开 UDS 标准保留的 0xF18x/0xF19x），
+> 是本实验唯一的**可写 DID**（`WRITABLE_DIDS`），写入见 4.3。
+
+### 4.3 0x2E 写入权限与门控
+
+`0x2E WriteDataByIdentifier` 只允许写 `0xF102`（长度 1–16 字节）。
+门控顺序（刻意把"只读 DID"放在会话/安全检查之后，语义最清晰）：
+
+1. 长度不足（< 4 字节）→ `NRC 0x13`
+2. DID 未知 → `NRC 0x31`
+3. defaultSession → `NRC 0x7F`（serviceNotSupportedInActiveSession）
+4. 未解锁 → `NRC 0x33`（securityAccessDenied）
+5. 已知但只读的 DID（如 VIN `0xF190`）→ `NRC 0x22`
+6. 数据长度越界（非 1–16）→ `NRC 0x13`
+7. 写入 `state.did_overrides`，返回 `6E F1 02`
+
+写入后 `0x22` 读到新值（override 优先于出厂默认值）；`0x11` hardReset
+清空全部 override 恢复出厂。
 
 ---
 
@@ -250,6 +301,7 @@ SendKey:     27 02 <key:4>
 | `0x35` | InvalidKey | `0x27`：key 错误（未达失败上限） |
 | `0x36` | ExceedNumberOfAttempts | `0x27`：错误 key 使失败次数达到上限，同时进入锁定 |
 | `0x37` | RequiredTimeDelayNotExpired | `0x27`：处于锁定期间，任何子功能都被拒绝 |
+| `0x7F` | ServiceNotSupportedInActiveSession | `0x2E`：defaultSession 下写入（先切会话再解锁） |
 
 否定响应固定格式：
 
@@ -282,6 +334,17 @@ SendKey:     27 02 <key:4>
 | `27 02 <错误 key>` ×1–2 | `7F 27 35` | key 错误 |
 | `27 02 <错误 key>` ×3 | `7F 27 36` | 达到失败上限，进入锁定 |
 | 锁定期间任意 `27 xx` | `7F 27 37` | 锁定未解除 |
+| `2E`（长度 < 4） | `7F 2E 13` | 缺少 DID 或数据 |
+| `2E FF FF xx` | `7F 2E 31` | DID 未知 |
+| `2E F1 02 xx`（默认会话） | `7F 2E 7F` | 默认会话不支持写入 |
+| `2E F1 02 xx`（未解锁） | `7F 2E 33` | 未通过 SecurityAccess |
+| `2E F1 90 xx`（只读 DID） | `7F 2E 22` | 已知但只读的 DID |
+| `2E F1 02` + 数据长度越界 | `7F 2E 13` | 数据不在 1–16 字节 |
+| `2E F1 02 <data:1-16>`（满足门控） | `6E F1 02` | 写入成功（0x22 可见新值） |
+| `3E`（长度错） | `7F 3E 13` | TesterPresent 必须恰好 2 字节 |
+| `3E 01` / `3E FF` | `7F 3E 12` | 子功能不支持（bit7 剥离后非 0） |
+| `3E 00` | `7E 00` | 肯定响应 |
+| `3E 80` | （无响应） | 抑制正响应，ecu.py 不发帧 |
 | 空请求 | `7F 00 13` | 无法解析 |
 
 **重要设计原则**：
@@ -421,7 +484,8 @@ Security Level（0x27 解锁，会话切换/复位即失效）
 Service Permission（本实验当前作用于 DID 级）
 ```
 
-**当前实现的权限点**是 DID 级（因为 `0x22` 是当前唯一的读取服务）：
+**当前实现的权限点**是 DID 级（读取走 `0x22`、写入走 `0x2E`，
+两者共用同一 Session × Security 门控）：
 
 | DID | Default + Locked | Extended + Locked | Extended + Level 1 |
 |---|---|---|---|
@@ -437,7 +501,8 @@ Service Permission（本实验当前作用于 DID 级）
 以隐藏 DID 的存在性（防枚举探测）——两种都有真实 ECU 采用，
 本实验刻意选择 `0x33`。
 
-**后续扩展**（`0x2E` / `0x31` 等写操作）将沿用同一模型：
+**`0x2E` 已沿用同一模型**（见 4.3：会话门控 `0x7F` + 安全门控 `0x33` +
+只读 DID `0x22`）；后续新增写类服务（如 `0x31`）继续沿用：
 服务级检查"会话是否允许 + 安全等级是否足够"，权限不足返回 `0x33`，
 会话不允许则返回 `0x7F ServiceNotSupportedInActiveSession`。
 
@@ -513,14 +578,19 @@ bash tests/run_tests.sh unit   # 只跑离线单元测试
 bash tests/run_tests.sh e2e    # 只跑 vcan0 端到端测试
 ```
 
-当前测试规模：
+当前测试规模（2026-09-21 实测）：
 
 | 测试 | 数量 | 需要 vcan0 |
 |---|---|---|
 | `tests/test_ecu_unit.py` | 104 | 否 |
 | `tests/test_keygen_unit.py` | 34 | 否 |
+| `tests/test_services_extra_unit.py` | 17 | 否 |
+| `tests/test_gateway_unit.py` | 13 | 否 |
 | `tests/test_e2e_vcan.py` | 65 | 是 |
-| **合计** | **203** | — |
+| `tests/test_isotp_options_vcan.py` | 14 | 是 |
+| `tests/test_write_did_vcan.py` | 8 | 是 |
+| `tests/test_multi_ecu_vcan.py` | 4 | 是 |
+| **合计** | **259**（unit 168 + e2e 91） | — |
 
 ### 8.2 离线单元测试（不需要 CAN）
 
@@ -534,7 +604,9 @@ bash tests/run_tests.sh e2e    # 只跑 vcan0 端到端测试
 - `0x11` 正常复位、复位后会话回归、不支持 resetType、长度错误
 - `0x22` 单 DID、多 DID、顺序保持、未知 DID、奇数长度
 - `0x27` RequestSeed / SendKey 全部路径（见下）
-- 未实现服务（`0x19`/`0x2E`/`0x31`/`0x3E`/未知 SID）
+- `0x2E` / `0x3E` 已实现：默认会话写 DID 走门控返回 `0x7F`、
+  `3E 00` 返回 `7E 00`（更多细节在 `test_services_extra_unit.py`）
+- 未实现服务（`0x19`/`0x31`/未知 SID）统一返回 NRC 0x11
 - 受保护 DID 的四象限权限矩阵与整体拒绝
 - 否定响应结构恒为 3 字节
 - DID 数据库约束
@@ -695,16 +767,40 @@ RX UDS: 7f 22 31
   → 否定响应：请求 SID 0x22，NRC 0x31
 ```
 
-### 9.5 未实现服务
+### 9.5 0x2E / 0x3E（已实现）
 
 ```bash
-$ python client/isotp_client.py 2E F1 90 00
-TX UDS: 2e f1 90 00
-RX UDS: 7f 2e 11
-  → 否定响应：请求 SID 0x2E，NRC 0x11
+# 0x2E 写入需要：非默认会话 + 已解锁 + 可写 DID
+$ python client/isotp_client.py 10 03          # extendedDiagnosticSession
+$ python client/isotp_client.py 27 01          # 取 seed，再用 keygen 派生 key
+$ python client/isotp_client.py 27 02 <key>
+$ python client/isotp_client.py 2E F1 02 43 4F 4E 46 49 47
+TX UDS: 2e f1 02 43 4f 4e 46 49 47
+RX UDS: 6e f1 02
+  → WriteDataByIdentifier 肯定响应；随后 22 F1 02 读回新值
+
+# 默认会话下写入 → 门控拒绝
+$ python client/isotp_client.py 2E F1 02 00
+RX UDS: 7f 2e 7f
+  → 否定响应：NRC 0x7F（默认会话不支持该服务）
+
+# 0x3E TesterPresent
+$ python client/isotp_client.py 3E 00
+TX UDS: 3e 00
+RX UDS: 7e 00
+  → 肯定响应；3E 80 抑制正响应（总线上无应答帧）
 ```
 
-### 9.6 0x27 SecurityAccess
+### 9.6 未实现服务
+
+```bash
+$ python client/isotp_client.py 19 01 08
+TX UDS: 19 01 08
+RX UDS: 7f 19 11
+  → 否定响应：请求 SID 0x19（ReadDTCInformation），NRC 0x11
+```
+
+### 9.7 0x27 SecurityAccess
 
 请求 seed：
 
@@ -868,15 +964,26 @@ uds-basic/
 ├── configs/
 │   └── uds.yaml             # 通信参数记录
 ├── ecu/
-│   ├── ecu.py               # 虚拟 ECU（ISO-TP 收发 + UDS 分发 + 安全状态）
-│   ├── did_database.py      # DID 数据库（含受保护 DID 标记）
+│   ├── ecu.py               # 入口层：transport / runtime 依赖 / 兼容 facade
+│   ├── uds_server.py        # 协议层：EcuState / handlers / registry / dispatcher
+│   ├── uds_types.py         # 协议常量 + 响应构造（零依赖）
+│   ├── did_database.py      # DID 数据库（受保护/可写 DID 标记）
+│   ├── gateway.py           # 多 ECU 路由（VirtualEcu / DiagnosticGateway）
 │   └── keygen.py            # 教学用 seed/key 算法（无 CAN 依赖）
 └── tests/
-    ├── run_tests.sh         # 测试入口（unit / e2e / all）
-    ├── test_ecu_unit.py     # 离线单元测试（104 用例，无需 CAN）
-    ├── test_keygen_unit.py  # keygen 算法测试（34 用例，无需 CAN）
-    └── test_e2e_vcan.py     # vcan0 端到端测试（65 用例）
+    ├── run_tests.sh             # 测试入口（unit / e2e / all）
+    ├── test_ecu_unit.py         # 离线单元测试（104 用例，无需 CAN）
+    ├── test_keygen_unit.py      # keygen 算法测试（34 用例，无需 CAN）
+    ├── test_services_extra_unit.py  # 0x2E/0x3E 单元测试（17 用例，无需 CAN）
+    ├── test_gateway_unit.py     # 多 ECU 路由测试（13 用例，无需 CAN）
+    ├── test_e2e_vcan.py         # vcan0 端到端测试（65 用例）
+    ├── test_isotp_options_vcan.py   # ISO-TP 传输参数矩阵（14 用例，需 vcan0）
+    ├── test_write_did_vcan.py   # 0x2E/0x3E 真实解锁写入（8 用例，需 vcan0）
+    └── test_multi_ecu_vcan.py   # 三 ECU 物理寻址（4 用例，需 vcan0）
 ```
+
+> 注意：`ecu.py` 不是 UDS 业务实现层。协议实现位于 `uds_server.py`，
+> 二者边界见第 14 节。
 
 ---
 
@@ -890,7 +997,9 @@ uds-basic/
 - [x] `0x11` ECUReset（01 + NRC 12/13）
 - [x] `0x22` ReadDataByIdentifier（单 DID、多 DID + NRC 31/13）
 - [x] `0x27` SecurityAccess（RequestSeed / SendKey 全路径）
-- [x] `0x7F` 否定响应与 NRC 判定（0x11/0x12/0x13/0x22/0x24/0x31/0x33/0x35/0x36/0x37）
+- [x] `0x2E` WriteDataByIdentifier（门控链：13→31→7F→33→22→13→6E）
+- [x] `0x3E` TesterPresent（`3E 00→7E 00`；`3E 80` 抑制；非法子功能 12；长度错 13）
+- [x] `0x7F` 否定响应与 NRC 判定（0x11/0x12/0x13/0x22/0x24/0x31/0x33/0x35/0x36/0x37/0x7F）
 - [x] 未实现服务统一返回 NRC 0x11
 - [x] 会话状态管理与复位回归
 - [x] 安全状态管理：失败计数、尝试上限锁定、seed 过期、防重放
@@ -898,52 +1007,542 @@ uds-basic/
 - [x] 受保护 DID 的 Session × Security 权限矩阵与整体拒绝
 - [x] 教学用 seed/key 算法（公开常数、可复现、雪崩效应）
 - [x] ISO-TP 单帧 / 多帧分帧验证
-- [x] 离线单元测试 104 PASS（ECU）+ 34 PASS（keygen）
-- [x] vcan0 端到端测试 65 PASS
-- [x] **三轮连续稳定性验证全部通过**
+- [x] 多 ECU 拓扑（`ecu/gateway.py`）：物理寻址三 ECU、功能寻址广播、
+  状态隔离、构造护栏（13 单元 + 4 e2e）
+- [x] 显式 `EcuState`（8 字段）与单一事实源 `STATE`
+- [x] 静态服务 registry + 协议层 dispatcher
+- [x] transport / protocol 分层与单向依赖（`uds_server` 不反向依赖 `ecu`）
+- [x] 离线单元测试 168 PASS（104 ECU + 34 keygen + 17 services-extra + 13 gateway）
+- [x] vcan0 端到端测试 91 PASS（65 e2e + 14 isotp-matrix + 8 write-did + 4 multi-ecu）
+- [x] **三轮连续稳定性验证全部通过**（见第 14.7 节）
 
 ---
 
-## 14. 后续扩展方向
+## 14. 架构（Architecture）
 
-### 14.1 协议能力
+> 本节描述 Phase 3 重构后的**实际**分层与依赖边界，与当前代码一一对应。
 
-- `0x2E` WriteDataByIdentifier：DID 写入与权限校验（复用第 6 节权限模型）
+### 14.1 分层职责
+
+| 层 | 文件 | 职责 | 不负责 |
+|---|---|---|---|
+| Entry / Transport | `ecu.py` | CAN / ISO-TP 收发、进程入口、运行时依赖持有、兼容 facade | UDS service business logic |
+| Protocol | `uds_server.py` | 状态、service handlers、registry、dispatcher | CAN / ISO-TP transport |
+| Protocol Types | `uds_types.py` | session / security / NRC 常量、response builders | runtime state |
+| DID Data | `did_database.py` | DID 数据与受保护 DID 标记 | transport、协议逻辑 |
+| Security Algorithm | `keygen.py` | seed / key 计算 | UDS dispatch、状态管理 |
+
+### 14.2 依赖方向
+
+```text
+ecu.py  ──>  uds_server.py  ──>  uds_types.py
+   │              │           ├─> did_database.py
+   │              │           └─> keygen.py
+   │              └──> keygen.py / uds_types.py / did_database.py
+   └──> uds_types.py / did_database.py / isotp / os / time
+
+uds_types.py / did_database.py / keygen.py  ──> （零依赖叶子模块）
+```
+
+关键约束（已由静态检查验证）：
+
+- `uds_server.py` **不 import `ecu.py`**（无反向依赖、无循环）
+- `uds_server.py` 单独 import 时不会拉入 `ecu` / `isotp` / `can`
+- `uds_server.py` **不含任何 transport 代码**：无 `import socket/can/isotp`、
+  无 `RX_ID` / `TX_ID` / `INTERFACE` / `os.environ`
+
+### 14.3 `ecu.py`：入口层（不是 UDS 业务实现层）
+
+`ecu.py` 当前承担四类职责：
+
+**① transport / entry**
+
+```text
+INTERFACE / RX_ID / TX_ID / _env_int()
+main()                          —— ISO-TP socket 绑定与收发生命周期
+```
+
+**② runtime dependency ownership**
+
+```text
+_now()                          —— 时钟（唯一 patch 目标）
+SECURITY_CONFIG                 —— 安全访问参数（含 UDS_LOCKOUT_SECONDS 派生）
+```
+
+这两项的职责是**持有并在进入协议层时转交**；它们不参与任何 UDS service 判定。
+`SECURITY_CONFIG` 以**原对象引用**传入协议层，不作 `dict()` / `.copy()` 快照。
+
+**③ 0x27 request-time dependency injection**
+
+```text
+_security_services()            —— 每次请求现场构造 SecurityAccess handler
+```
+
+`service_security_access()` 是纯函数，需要 `now` 与 `security_config` 两项运行时依赖。
+`_security_services()` 在**每次请求时**求值 `_now()` 并绑定进 handler，从而：
+
+- 保持测试中 `mock.patch.object(ecu, "_now", ...)` 的时钟注入语义仍然生效；
+- 避免 `uds_server.py` 反向依赖 `ecu.py`；
+- `uds_server._make_security_access_handler()` 只是**依赖绑定工厂**
+  （接收已求值的 `now` 与配置本体），**不是通用 transport 组件**。
+
+**④ compatibility facade**（见 14.5）
+
+> ⚠️ 注意：`ecu.py` 中**没有** service handler、没有 registry、
+> 没有 dispatch 分支、没有 NRC / response 组装。
+> 全部 UDS 业务逻辑位于 `uds_server.py`。
+
+### 14.4 `uds_server.py`：UDS 协议层
+
+| 组成 | 说明 |
+|---|---|
+| `EcuState` | 运行时状态对象，**恰好 8 个字段** |
+| `STATE` | 默认单例，**唯一事实源** |
+| `reset_security_state(state)` | 清除解锁与 seed 生命周期，保留失败计数与锁定 |
+| `required_security_level(did)` | DID → 所需安全等级 |
+| `service_diagnostic_session_control` | 0x10 handler |
+| `service_ecu_reset` | 0x11 handler |
+| `service_read_data_by_identifier` | 0x22 handler（含 DID 级权限与 all-or-nothing） |
+| `service_security_access` | 0x27 handler（纯函数，依赖以 keyword-only 传入） |
+| `_make_security_access_handler(now, security_config)` | 0x27 依赖绑定工厂 |
+| `service_write_data_by_identifier` | 0x2E handler（门控链见 4.3，写入 `did_overrides`） |
+| `service_tester_present` | 0x3E handler（`3E 80` 返回空字节由入口层抑制发帧） |
+| `SERVICES` | **静态** registry（0x10 / 0x11 / 0x22 / 0x2E / 0x3E） |
+| `handle_uds_request(request, state, *, services=None)` | 协议层 dispatcher |
+
+**`EcuState` 的 8 个字段**（当前实现，不多不少）：
+
+```text
+session          当前诊断会话
+security_level   当前安全等级
+pending_seed     已下发未使用的 seed
+seed_issued_at   seed 下发时刻
+seed_consumed    seed 是否已被成功消费（防重放）
+failed_attempts  连续失败次数
+lockout_until    锁定解除时刻
+seed_counter     seed 序号
+```
+
+> 当前**不包含** S3 定时器、`last_request_sid`、`unlocked_at`、
+> DTC 存储、请求上下文、clock 或 config —— 这些不是 Phase 3 的状态字段。
+
+**`STATE` 是唯一事实源**：不存在第二份模块级状态变量，
+也没有为了同步状态而建立的 module proxy / PEP 562 机制。
+
+### 14.5 `ecu.py` 兼容 facade
+
+为保持既有调用方与测试兼容，以下符号保留在 `ecu.py`。
+它们**不是**协议业务逻辑，也不是第二份实现：
+
+| 符号 | 性质 |
+|---|---|
+| `handle_uds_request(request)` | 入口包装：注入 0x27 依赖后转交 `uds_server.handle_uds_request` |
+| `STATE` | `uds_server.STATE` 的 **re-export / alias**（同一对象，非第二份状态） |
+| `reset_all_security_state()` | 测试专用 helper（清全部安全状态） |
+| `handle_uds_request_protocol` | 指向协议层 dispatcher 的显式别名 |
+| `DEFAULT_SESSION` | `uds_types.SESSION_DEFAULT` 的 **alias**（非重复定义） |
+| `SECURITY_LOCKED` | `uds_types.SECURITY_LOCKED` 的 **alias** |
+| `SECURITY_LEVEL1` | `uds_types.SECURITY_LEVEL1` 的 **alias** |
+
+### 14.6 Service registry 与 dispatcher
+
+静态 registry 定义在 `uds_server.py`，**含五个服务**
+（0x2E / 0x3E 为 Phase 4X 新增）：
+
+```python
+SERVICES = {
+    0x10: service_diagnostic_session_control,
+    0x11: service_ecu_reset,
+    0x22: service_read_data_by_identifier,
+    0x2E: service_write_data_by_identifier,
+    0x3E: service_tester_present,
+}
+```
+
+**`0x27` 不在静态 registry 中**。原因是它需要请求时依赖
+（`now` + `SECURITY_CONFIG`）：由 `ecu.py` 在每次请求时注入，
+与静态表合并后交给 dispatcher：
+
+```python
+services = {**uds_server.SERVICES, **ecu._security_services()}
+uds_server.handle_uds_request(request, STATE, services=services)
+```
+
+dispatcher 的判定顺序（与实现一致）：
+
+```text
+request
+  ↓
+空请求守卫（必须早于 request[0] 与查表）
+  ↓  b"" → 7F 00 13
+service = request[0]
+  ↓
+table = SERVICES if services is None else services
+  ↓
+handler = table.get(service)
+  ↓  miss → 7F <service> 11（回显请求 SID，不做长度检查）
+  ↓  hit  → handler(request, state)
+```
+
+### 14.7 验证基线（实测）
+
+Phase 3 收尾基线：
+
+```text
+UDS Unit       104 PASS
+Keygen Unit     34 PASS
+E2E             65 PASS
+Healthcheck     31 PASS / 0 WARN / 0 FAIL
+```
+
+Phase 4-P2 之后（新增 ISO-TP 传输参数测试，既有基线**全部保持通过**）：
+
+```text
+UDS Unit                 104 PASS
+Keygen Unit               34 PASS
+E2E                       65 PASS
+ISO-TP 参数（在网）        14 PASS   tests/test_isotp_options_vcan.py
+can-tools 纯逻辑           34 PASS   can-tools/tests/test_parsers.py
+can-tools ISO-TP 参数      50 PASS   can-tools/tests/test_isotp_send_options.py
+```
+
+Phase 4-P3 / P3R / P3R2 之后（畸形分帧实验与 transport containment）：
+
+```text
+畸形 ISO-TP（在网）        47 PASS   can-tools/tests/test_isotp_malformed_vcan.py
+    其中 containment 回归：EILSEQ（跳号/重复）、ECOMM（FC 超时）、
+                          EMSGSIZE（FC OVERFLOW）
+    0 expectedFailure（P3R 修复后已全部转为普通断言）
+```
+
+P9 阶段**连续执行 3 轮完整回归**，三轮结果逐项完全一致
+（104 / 34 / 65，healthcheck 31/0/0，退出码均为 0），
+并完成 transport / protocol 边界、依赖方向、`EcuState` 字段数、
+`STATE` 单一事实源与 rollback point 的静态验证。
+
+工程收口 2026-09-21 基线（Phase 4X 全量，实测）：
+
+```text
+UDS Unit       168 PASS   （104 + 34 + 17 services-extra + 13 gateway）
+E2E（在网）     91 PASS   （65 + 14 isotp-matrix + 8 write-did + 4 multi-ecu）
+can-tools 离线 183 PASS   （34 parsers + 50 isotp-options + 99 fuzz-harness，
+                          含 kernel oracle 三态 10 例）
+fuzz kernel oracle 三态 AVAILABLE/UNAVAILABLE/ERROR 如实上报
+```
+
+运行方式：
+
+```bash
+bash labs/vehicle/uds-basic/tests/run_tests.sh all   # 168 + 91
+bash scripts/healthcheck.sh                          # 环境 + 离线测试
+```
+
+### 14.8 ISO-TP 传输参数（Phase 4-P2）
+
+在 Phase 4-P2 之前，ECU 的 ISO-TP 行为**完全隐式依赖内核默认值**：
+`main()` 里既不调用 `set_opts()` 也不调用 `set_fc_opts()`，
+所以 padding / stmin / blocksize / timeout 都无法做对照实验。
+
+现在这些参数全部显式化，并且**默认行为逐字节不变**。
+
+#### 实测：默认帧（vcan0）
+
+单帧交换 `10 01`：
+
+```text
+T->ECU  DLC=3  02 10 01
+ECU->T  DLC=7  06 50 01 00 32 00 64
+```
+
+多帧交换 `22 F1 90 F1 80`（35 字节响应）：
+
+```text
+T->ECU  DLC=6  05 22 f1 90 f1 80
+ECU->T  DLC=8  10 23 62 f1 90 54 45 53      ← SF/FF 的 PCI 字节
+T->ECU  DLC=3  30 00 00                     ← Tester 的 FC：BS=0, STmin=0
+ECU->T  DLC=8  21 54 45 43 55 30 30 30
+ECU->T  DLC=8  22 30 30 30 30 30 30 31
+ECU->T  DLC=8  23 f1 80 42 4f 4f 54 2d
+ECU->T  DLC=8  24 53 57 2d 31 2e 30 2e
+ECU->T  DLC=2  25 30                        ← 最后一个 CF 只有 2 字节
+```
+
+> 方向提醒：**本 ECU 只作为响应发送方，永远不发 FC**。
+> 多帧交换中的 FC 只可能由 Tester 发出——所以 `UDS_ISOTP_FC_*`
+> 控制的是"ECU 要求对端怎么发"，不是"ECU 自己怎么发"。
+
+#### 环境变量
+
+| 环境变量 | 取值 | 默认（未设置） | 作用 |
+|---|---|---|---|
+| `UDS_ISOTP_TX_PAD` | `0x00`–`0xFF` | 不填充 | ECU 发出的 CAN 帧补到 8 字节 |
+| `UDS_ISOTP_RX_PAD` | `0x00`–`0xFF` | 不启用 | ECU 接收时对填充值的要求 |
+| `UDS_ISOTP_FC_STMIN` | `0x00`–`0xFF` | `0x00` | ECU **发出的 FC** 里的 STmin 字节 |
+| `UDS_ISOTP_FC_BLOCKSIZE` | `0x00`–`0xFF` | `0`（无限块） | ECU **发出的 FC** 里的 BS |
+| `UDS_ISOTP_TX_STMIN` | `500` / `100us` / `2ms` / `1s` | 不强制 | ECU **自己发 CF** 的间隔（纳秒） |
+| `UDS_ISOTP_TIMEOUT` | 秒（`0` = 非阻塞） | 阻塞等待 | ECU 的 `recv()` 超时 |
+
+```bash
+UDS_ISOTP_TX_PAD=0xAA python3 ecu/ecu.py
+UDS_ISOTP_FC_STMIN=0x14 UDS_ISOTP_FC_BLOCKSIZE=1 python3 ecu/ecu.py
+UDS_ISOTP_TX_STMIN=2ms python3 ecu/ecu.py
+UDS_ISOTP_TIMEOUT=0.3 python3 ecu/ecu.py
+```
+
+#### 设计要点（每条都对应一个已踩过的坑）
+
+1. **默认不变**：全部未设置时 `main()` 不调用 `set_opts()`/`set_fc_opts()`，
+   内核默认行为与改造前逐字节一致（单帧仍是 `03 10 03`，FC 仍是 `30 00 00`）。
+2. **`None` ≠ `0`**：未设置 = `None` = "不改动该选项"；
+   `0` 是合法取值（例如 STmin=0 表示无间隔要求），两者必须严格区分。
+3. **两个方向的 STmin 不能合并**：
+   `UDS_ISOTP_FC_STMIN` 是写进自己 FC 帧的 ISO-TP 字节
+   （`0x00–0x7F` = 0–127 ms，`0xF1–0xF9` = 100–900 us）；
+   `UDS_ISOTP_TX_STMIN` 走内核 `CAN_ISOTP_TX_STMIN`（`FORCE_TXSTMIN`），
+   单位是**纳秒**，且会**覆盖**收到的 FC 里的 STmin。
+4. **必须早于 `bind()`**：python-isotp 在 `bind()` 之后调用
+   `set_opts()`/`set_fc_opts()` 会直接抛 `RuntimeError`。
+5. **非法取值立即失败**：环境变量只接受整数或带单位后缀的时长，
+   写错会在**启动时**抛 `ValueError` 并退出，不会静默回退到默认值。
+6. **recv 超时是异常**：设置了 `UDS_ISOTP_TIMEOUT` 后，
+   python-isotp 的 `recv()` 超时会**抛 `TimeoutError`**（不是返回 `None`），
+   所以 `main()` 必须接住它，否则 ECU 空闲一个周期就会退出。
+7. **transport error 必须被 containment**（Phase 4-P3R / P3R2）：内核 CAN_ISOTP
+   在传输损坏时通过 socket 抛 `OSError`，若不管就会杀死 ECU 进程。
+   已实测三条并接住：
+
+   | errno | 名称 | 触发场景 |
+   |---|---|---|
+   | 84 | `EILSEQ` | 接收侧 CF 序号不匹配（跳号 / 重复 / 回退） |
+   | 70 | `ECOMM` | 发送侧 FC 接收超时（`N_Bs` 超时，约 1.2s 后上报） |
+   | 90 | `EMSGSIZE` | 发送侧 FC 溢出（收到 `FC OVERFLOW` = `32 00 00`） |
+
+   处理原则（详见第 14.9 节）：
+
+   ```python
+   except TimeoutError:      # 必须排在 OSError 之前（它是 OSError 的子类）
+       continue
+   except OSError as exc:
+       if _is_recoverable_isotp_error(exc):
+           print(f"ISO-TP RX error: ... — 丢弃当前传输，继续运行")
+           continue
+       raise                 # 其余 OSError 仍暴露，不被静默吞掉
+   ```
+
+   注意 **不能**把 transport error 转换成 `7F xx NRC`：错误发生在
+   payload transport 层，不是 UDS service handler 层，
+   因此"没有 UDS 响应"才是正确结果。
+
+#### 实测：填充只改 DLC，不改 payload
+
+| 配置 | ECU 应答帧 | `recv()` 重组结果 |
+|---|---|---|
+| 默认 | `DLC=7  06 50 01 00 32 00 64` | 6 字节 |
+| `UDS_ISOTP_TX_PAD=0xAA` | `DLC=8  06 50 01 00 32 00 64 AA` | 6 字节（不变） |
+
+补充实测：多帧响应的**最后一个 CF 也会被填充**（`25 30` → `25 30 aa aa aa aa aa aa`），
+但 ISO-TP 按 FF 声明的长度截断，重组结果仍是 35 字节。
+另外，带填充的对端**不需要**接收方开启 `RX_PAD` 也能正常重组。
+
+#### 实测：STmin 的两个方向
+
+ECU 返回 35 字节响应时，测量其连续帧（CF）之间的间隔：
+
+| 配置 | ECU 实测 CF 间隔 |
+|---|---|
+| 默认（FC = `30 00 00`） | 0.06 / 0.12 / 0.08 / 0.07 ms |
+| Tester `fc_stmin=0x0A`（FC = `30 00 0a`） | 10.21 / 10.20 / 10.18 / 10.23 ms |
+| Tester `fc_stmin=0x14`（FC = `30 00 14`） | 20.06 / 20.39 / 20.20 / 20.23 ms |
+| ECU `UDS_ISOTP_TX_STMIN=2ms` + Tester FC 要求 20 ms | **2.19 / 2.20 / 2.38 / 2.25 ms** |
+
+最后一行就是 `FORCE_TXSTMIN` **覆盖**对端 FC 要求的直接证据。
+
+#### 对应测试
+
+```bash
+# 在网实验矩阵（14 个用例，需要 vcan0）
+/home/lilike/.venvs/network/bin/python tests/test_isotp_options_vcan.py
+```
+
+覆盖：默认帧不变（单帧 DLC=3 / FC `30 00 00`）、TX 填充 DLC=8、
+RX 填充容错、FC 的 BS 生效、FC 的 STmin 生效（时间量级断言）、
+`FORCE_TXSTMIN` 覆盖、以及 `UDS_ISOTP_TIMEOUT` 下"空闲不发帧 + 仍能应答"。
+
+### 14.9 ISO-TP transport error containment（Phase 4-P3R）
+
+**背景**：Phase 4-P3 的畸形分帧实验发现两类确定性输入会让 ECU 进程
+直接退出（returncode 1）。这不是 UDS 逻辑问题，而是内核 CAN_ISOTP
+在传输损坏时向用户态抛 `OSError`，而 `main()` 当时只捕获 `TimeoutError`。
+
+| 方向 | errno | 名称 | 触发场景 |
+|---|---|---|---|
+| RX | 84 | `EILSEQ` | CF 序号不匹配（跳号 / 重复 / 回退 / 大跳） |
+| TX→RX | 70 | `ECOMM` | FC 接收超时（`N_Bs` 超时，实测约 1.2s 后上报） |
+| TX→RX | 90 | `EMSGSIZE` | FC 溢出（收到 `FC OVERFLOW` = `32 00 00`）｜P3R2 补充 |
+
+> 实测细节：`ECOMM` **不是在 `send()` 当场抛出的**，而是在内核
+> `N_Bs` 超时后由**后续 socket 操作**（`recv()`）上报。
+> `send()` 侧仍保留同等处置，避免内核行为变化时又变成未处理异常。
+>
+> `EMSGSIZE` 同理：内核在 `isotp_rcv_fc()` 中设置该错误，但实测是在
+> **后续 `recv()`** 上被取走（stdout 时序显示 `TX UDS:` 已打印、
+> `send()` 正常返回）。**不要**依据"错误来源方向"或"崩溃发生在哪个时段"
+> 推断取得者——`sk_err` 是共享 socket 状态，**谁先调用谁取走**（P3K 结论）。
+
+**修复**（只改 `ecu.py`，内核与 `uds_server.py` 均未动）：
+
+```python
+def _is_recoverable_isotp_error(exc: OSError) -> bool:
+    """当前 transaction 可丢弃的 ISO-TP 传输错误。"""
+    return exc.errno in (errno.EILSEQ, errno.ECOMM)
+```
+
+```python
+try:
+    data = sock.recv()
+except TimeoutError:                    # 顺序：TimeoutError 是 OSError 子类
+    continue
+except OSError as exc:
+    if _is_recoverable_isotp_error(exc):
+        print(f"ISO-TP RX error: {_isotp_error_detail(exc)} — 丢弃当前传输，继续运行")
+        continue
+    raise                               # 非预期错误仍然暴露
+```
+
+```python
+try:
+    sock.send(response)
+except OSError as exc:
+    if _is_recoverable_isotp_error(exc):
+        print(f"ISO-TP TX error: {_isotp_error_detail(exc)} — 丢弃本次响应发送，继续运行")
+        continue
+    raise
+```
+
+**设计取舍**：
+
+1. **不吞掉所有 `OSError`**：接口被删、socket 真损坏等必须暴露，
+   否则会掩盖真实故障。只接住**实测确认**的 errno（当前 84 / 70 / 90）。
+2. **不伪造 NRC**：错误发生在 payload transport 层，不是 service handler 层，
+   因此"只记录、不回 `7F xx`"是正确行为。
+3. **不重建 socket**（第一版）：实测 `catch + continue` 之后 socket 仍然可用
+   （后续 `10 01` / `22 F1 80` 均正常），因此不引入 close/recreate 的复杂度。
+4. **只按实测扩大 errno 集合**：`EMSGSIZE`(90) 在 P3R2 中被实测触发并纳入；
+   `ETIMEDOUT` / `EBADMSG` 仍未实际观测到，因此**没有**加入——避免把真实
+   socket / 接口故障误判为"可丢弃传输错误"。
+
+**修复后实测**：
+
+```text
+EILSEQ（SN 跳号 / 重复）
+  ISO-TP RX error: errno=84 (EILSEQ) ... — 丢弃当前传输，继续运行
+  ECU alive = True
+  recovery: 10 01 -> 50 01 00 32 00 64
+
+ECOMM（FC 超时最小复现：只回一个 30 01 80）
+  ISO-TP RX error: errno=70 (ECOMM) ... — 丢弃当前传输，继续运行
+  ECU alive = True
+  recovery: 10 01 -> 50 01 00 32 00 64
+  （总线上会看到半截 FF 62 f1 90 54 45 53 —— 那是传输被丢弃的表现，
+    不是伪造的 UDS 响应）
+
+EMSGSIZE（P3R2：ECU 发送中注入 FC OVERFLOW 32 00 00）
+  ISO-TP RX error: errno=90 (EMSGSIZE) ... — 丢弃当前传输，继续运行
+  ECU alive = True
+  recovery: 10 01 -> 50 01 00 32 00 64
+  （3/3 确定性复现）
+```
+
+**修复后正常功能验证**（transport 异常处理位于 runtime loop，
+不能只验证 malformed 路径）：`10 01` / `10 02` / `10 03` / `22 F1 80` /
+`22 F1 90`（多帧）/ `27 01` 全部正常。
+
+**范围声明**：这些修复**只是进程级 containment**，不代表"ISO-TP 已完全加固"。
+覆盖范围仅限已**实测**的 Linux CAN_ISOTP transport errors（当前 84 / 70 / 90），
+并不意味着所有可能的 ISO-TP errno 都已覆盖。内核仍会如常产生这些传输错误，
+只是 ECU 不再因此退出。内核侧为何产生它们（CAN_ISOTP 状态机行为）不在
+本阶段范围，属后续 `Phase 4-P3K`（已完成的只读定位）。
+
+**对应测试**（`labs/vehicle/can-tools/tests/test_isotp_malformed_vcan.py`）：
+
+```text
+test_wrong_cf_sn_does_not_kill_ecu      # EILSEQ 路径 A-1（跳号）
+test_repeated_cf_sn_does_not_kill_ecu   # EILSEQ 路径 A-2（重复）
+test_fc_timeout_does_not_kill_ecu       # ECOMM 路径 B
+test_fc_overflow_does_not_kill_ecu      # EMSGSIZE 路径（P3R2）
+```
+
+三条用例都断言：ECU 存活 + 出现对应 errno 的 containment 日志 + 后续正常
+UDS 请求可恢复。P3 阶段的 `@unittest.expectedFailure` 已全部移除。
+
+### 14.10 Phase 3 架构重构说明
+
+Phase 3 完成的是一次**结构性重构**（行为保持不变）：
+
+```text
+- protocol constants centralized（uds_types.py）
+- response / NRC handling centralized
+- explicit EcuState introduced（替代 8 个模块级全局变量）
+- service handlers extracted into uds_server.py
+- service registry introduced
+- dispatcher moved into uds_server.py
+- ECU compatibility facade retained（ecu.py）
+- transport / protocol boundary verified
+```
+
+详细提交历史见 Git log（P1–P8 为独立可回滚提交），本文档不重复记录。
+
+---
+
+## 15. 后续扩展方向
+
+### 15.1 协议能力
+
+- ✅ 已完成：`0x2E` WriteDataByIdentifier（见 4.3）
+- ✅ 已完成：`0x3E` TesterPresent（见 4.1）
 - `0x19` ReadDTCInformation：DTC 数据库与状态掩码
 - `0x31` RoutineControl：例程控制
-- `0x3E` TesterPresent：会话保持与 S3 超时
 - `0x28` CommunicationControl、`0x85` ControlDTCSetting
 - `0x78` ResponsePending 与 P2* 超时处理
 - `0x27` 多安全等级（Level 2：`0x03`/`0x04`，需位掩码式安全等级）
-- 功能寻址（`0x7DF`）与多 ECU 响应
-- 会话相关的服务权限（如非默认会话才允许 `0x2E`）
+- 功能寻址（`0x7DF`）的**用户态实时网关守护进程**
+  （协议层路由与三 ECU 物理寻址实时已通过，见 `ecu/gateway.py`）
 
-### 14.2 状态机与架构
+### 15.2 状态机与架构
 
-- 把 `if/elif` 分发重构为**服务注册表 + 会话状态机**
-  （目前 4 个服务仍是 `if/elif` 链，加到第 5–6 个服务时应重构）
-- 把安全状态集中到 `EcuState` 对象，消除模块级全局变量
+- ✅ 已完成（Phase 3）：`if/elif` 分发 → **服务注册表 + dispatcher**
+  （见第 14.6 节）
+- ✅ 已完成（Phase 3）：安全状态集中到 `EcuState`，消除模块级全局变量
+  （见第 14.4 节）
+- ✅ 已完成（Phase 4X）：0x2E/0x3E 入静态注册表；会话级权限前置检查
+  在 0x2E 门控链中生效（`0x7F`/`0x33`）
+- ✅ 已完成（Phase 4X）：多 ECU 拓扑（多对 CAN ID、`ecu/gateway.py`
+  协议层网关，13 单元 + 4 e2e）
+- 服务 handler 增加**通用会话级权限前置检查**（0x2E 已内联实现，
+  尚未抽象为 registry 级装饰器）
 - DID 数据库支持数据类型（ASCII / 数值 / 位域）与缩放
-- 多 ECU 拓扑（多对 CAN ID、网关模拟）
 
-### 14.3 安全测试
+### 15.3 安全测试
 
+- ✅ 已完成（Phase 4X）：ISO-TP 层 Fuzzing（异常分帧、流控滥用、
+  序号错乱；`labs/vehicle/can-tools/fuzz/`，含 replay 与 kernel oracle）
+- ✅ 已完成：基于本测试套件建立的**回归基线**（run_tests /
+  qa_fast / qa_extended / healthcheck）
 - UDS Fuzzing：随机 SID / 长度 / DID 组合，监控异常与崩溃
 - **SecurityAccess 专项 Fuzzing**：随机 key、越界子功能、超长/超短 key、
   乱序 SendKey，验证 ECU 不会崩溃或意外解锁
-- ISO-TP 层 Fuzzing：异常分帧、流控滥用、序号错乱
 - CAN Fuzzing（配合 `labs/vehicle/can-basic`）
-- 基于本测试套件建立**回归基线**，确保 Fuzzing 前后行为一致
 
-### 14.4 工程化
+### 15.4 工程化
 
-- 建立 CI（本地 runner）自动跑离线测试（104 + 34 个用例，2 ms 完成）
+- ✅ 已完成：CI workflow（`.github/workflows/ci.yml`，fast 自动 +
+  extended 手动）；**尚未在真实 GitHub runner 触发**（无 push 授权）
 - 用 `cantools` + DBC 描述诊断报文，与 `can-basic` 实验打通
 - 输出 UDS 测试报告到 `reports/`
 
 ---
 
-## 15. 参考
+## 17. 参考
 
 - ISO 14229-1：UDS 应用层协议
 - ISO 15765-2：ISO-TP 传输层协议
