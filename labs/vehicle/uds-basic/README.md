@@ -177,12 +177,14 @@ UDS_INTERFACE=vcan1 UDS_RX_ID=0x7E1 UDS_TX_ID=0x7E9 \
 | `0x11` | ECUReset | `0x01` hardReset | `0x51` | 已实现 |
 | `0x22` | ReadDataByIdentifier | —（支持多 DID） | `0x62` | 已实现 |
 | `0x27` | SecurityAccess | `0x01` RequestSeed<br>`0x02` SendKey | `0x67` | 已实现 |
+| `0x2E` | WriteDataByIdentifier | —（可写 DID 见 4.3） | `0x6E` | 已实现 |
+| `0x3E` | TesterPresent | `0x00` zeroSubFunction<br>`0x80` 抑制正响应 | `0x7E` / 无响应 | 已实现 |
 
 **尚未实现**（会返回 `NRC 0x11 ServiceNotSupported`）：
 
 `0x14` ClearDiagnosticInformation、`0x19` ReadDTCInformation、
-`0x28` CommunicationControl、`0x2E` WriteDataByIdentifier、
-`0x31` RoutineControl、`0x3E` TesterPresent、`0x85` ControlDTCSetting 等。
+`0x28` CommunicationControl、`0x31` RoutineControl、
+`0x85` ControlDTCSetting 等。
 
 ### 4.1 响应格式
 
@@ -228,13 +230,34 @@ SendKey:     27 02 <key:4>
 响应:        67 02
 ```
 
+**0x2E WriteDataByIdentifier**
+
+```
+请求: 2E <DID:2> <data...>
+响应: 6E <DID:2>
+```
+
+写入值进入 `state.did_overrides`，随后 `0x22` 读到新值；
+`0x11` hardReset 清空覆盖、恢复出厂默认值。门控顺序见 4.3 与 5.1。
+
+**0x3E TesterPresent**
+
+```
+请求: 3E 00 → 响应: 7E 00
+请求: 3E 80 → 无响应（suppressPosRspMsgIndicationBit，ecu.py 抑制空帧）
+```
+
+TesterPresent 在任意会话可用、不改变任何状态（本实验 ECU 不实现
+S3* 自动退会话，故无副作用）。
+
 ### 4.2 DID 数据库
 
 | DID | 含义 | 数据 | 长度 | 权限 |
 |---|---|---|---|---|
-| `0xF190` | VIN / 车辆识别号（本实验用测试值） | `TESTECU0000000001` | 17 | 公开 |
-| `0xF180` | Boot Software Identification | `BOOT-SW-1.0.0` | 13 | 公开 |
-| `0xF187` | Spare Part Number | `SPARE-PART-0001` | 15 | **受保护** |
+| `0xF190` | VIN / 车辆识别号（本实验用测试值） | `TESTECU0000000001` | 17 | 公开（只读） |
+| `0xF180` | Boot Software Identification | `BOOT-SW-1.0.0` | 13 | 公开（只读） |
+| `0xF187` | Spare Part Number | `SPARE-PART-0001` | 15 | **受保护**（只读） |
+| `0xF102` | 车辆配置名（厂商自定义教学 DID） | `DEFAULT_CONFIG` | 1–16 | **可写**（`0x2E`） |
 
 > 真实车辆中 `0xF190` 是 VIN（17 位 ASCII），`0xF180` 是 Boot SW 版本，
 > `0xF187` 是备件号。本实验使用固定测试值，便于断言。
@@ -242,6 +265,25 @@ SendKey:     27 02 <key:4>
 > `0xF187` 是本实验的**受保护 DID**：只有在
 > `extendedDiagnosticSession` 且通过 SecurityAccess 解锁后才能读取，
 > 否则返回 `NRC 0x33 SecurityAccessDenied`。详见第 6 节。
+>
+> `0xF102` 刻意选在厂商自定义区间（避开 UDS 标准保留的 0xF18x/0xF19x），
+> 是本实验唯一的**可写 DID**（`WRITABLE_DIDS`），写入见 4.3。
+
+### 4.3 0x2E 写入权限与门控
+
+`0x2E WriteDataByIdentifier` 只允许写 `0xF102`（长度 1–16 字节）。
+门控顺序（刻意把"只读 DID"放在会话/安全检查之后，语义最清晰）：
+
+1. 长度不足（< 4 字节）→ `NRC 0x13`
+2. DID 未知 → `NRC 0x31`
+3. defaultSession → `NRC 0x7F`（serviceNotSupportedInActiveSession）
+4. 未解锁 → `NRC 0x33`（securityAccessDenied）
+5. 已知但只读的 DID（如 VIN `0xF190`）→ `NRC 0x22`
+6. 数据长度越界（非 1–16）→ `NRC 0x13`
+7. 写入 `state.did_overrides`，返回 `6E F1 02`
+
+写入后 `0x22` 读到新值（override 优先于出厂默认值）；`0x11` hardReset
+清空全部 override 恢复出厂。
 
 ---
 
@@ -259,6 +301,7 @@ SendKey:     27 02 <key:4>
 | `0x35` | InvalidKey | `0x27`：key 错误（未达失败上限） |
 | `0x36` | ExceedNumberOfAttempts | `0x27`：错误 key 使失败次数达到上限，同时进入锁定 |
 | `0x37` | RequiredTimeDelayNotExpired | `0x27`：处于锁定期间，任何子功能都被拒绝 |
+| `0x7F` | ServiceNotSupportedInActiveSession | `0x2E`：defaultSession 下写入（先切会话再解锁） |
 
 否定响应固定格式：
 
@@ -291,6 +334,17 @@ SendKey:     27 02 <key:4>
 | `27 02 <错误 key>` ×1–2 | `7F 27 35` | key 错误 |
 | `27 02 <错误 key>` ×3 | `7F 27 36` | 达到失败上限，进入锁定 |
 | 锁定期间任意 `27 xx` | `7F 27 37` | 锁定未解除 |
+| `2E`（长度 < 4） | `7F 2E 13` | 缺少 DID 或数据 |
+| `2E FF FF xx` | `7F 2E 31` | DID 未知 |
+| `2E F1 02 xx`（默认会话） | `7F 2E 7F` | 默认会话不支持写入 |
+| `2E F1 02 xx`（未解锁） | `7F 2E 33` | 未通过 SecurityAccess |
+| `2E F1 90 xx`（只读 DID） | `7F 2E 22` | 已知但只读的 DID |
+| `2E F1 02` + 数据长度越界 | `7F 2E 13` | 数据不在 1–16 字节 |
+| `2E F1 02 <data:1-16>`（满足门控） | `6E F1 02` | 写入成功（0x22 可见新值） |
+| `3E`（长度错） | `7F 3E 13` | TesterPresent 必须恰好 2 字节 |
+| `3E 01` / `3E FF` | `7F 3E 12` | 子功能不支持（bit7 剥离后非 0） |
+| `3E 00` | `7E 00` | 肯定响应 |
+| `3E 80` | （无响应） | 抑制正响应，ecu.py 不发帧 |
 | 空请求 | `7F 00 13` | 无法解析 |
 
 **重要设计原则**：
@@ -430,7 +484,8 @@ Security Level（0x27 解锁，会话切换/复位即失效）
 Service Permission（本实验当前作用于 DID 级）
 ```
 
-**当前实现的权限点**是 DID 级（因为 `0x22` 是当前唯一的读取服务）：
+**当前实现的权限点**是 DID 级（读取走 `0x22`、写入走 `0x2E`，
+两者共用同一 Session × Security 门控）：
 
 | DID | Default + Locked | Extended + Locked | Extended + Level 1 |
 |---|---|---|---|
@@ -446,7 +501,8 @@ Service Permission（本实验当前作用于 DID 级）
 以隐藏 DID 的存在性（防枚举探测）——两种都有真实 ECU 采用，
 本实验刻意选择 `0x33`。
 
-**后续扩展**（`0x2E` / `0x31` 等写操作）将沿用同一模型：
+**`0x2E` 已沿用同一模型**（见 4.3：会话门控 `0x7F` + 安全门控 `0x33` +
+只读 DID `0x22`）；后续新增写类服务（如 `0x31`）继续沿用：
 服务级检查"会话是否允许 + 安全等级是否足够"，权限不足返回 `0x33`，
 会话不允许则返回 `0x7F ServiceNotSupportedInActiveSession`。
 
@@ -522,14 +578,19 @@ bash tests/run_tests.sh unit   # 只跑离线单元测试
 bash tests/run_tests.sh e2e    # 只跑 vcan0 端到端测试
 ```
 
-当前测试规模：
+当前测试规模（2026-09-21 实测）：
 
 | 测试 | 数量 | 需要 vcan0 |
 |---|---|---|
 | `tests/test_ecu_unit.py` | 104 | 否 |
 | `tests/test_keygen_unit.py` | 34 | 否 |
+| `tests/test_services_extra_unit.py` | 17 | 否 |
+| `tests/test_gateway_unit.py` | 13 | 否 |
 | `tests/test_e2e_vcan.py` | 65 | 是 |
-| **合计** | **203** | — |
+| `tests/test_isotp_options_vcan.py` | 14 | 是 |
+| `tests/test_write_did_vcan.py` | 8 | 是 |
+| `tests/test_multi_ecu_vcan.py` | 4 | 是 |
+| **合计** | **259**（unit 168 + e2e 91） | — |
 
 ### 8.2 离线单元测试（不需要 CAN）
 
@@ -543,7 +604,9 @@ bash tests/run_tests.sh e2e    # 只跑 vcan0 端到端测试
 - `0x11` 正常复位、复位后会话回归、不支持 resetType、长度错误
 - `0x22` 单 DID、多 DID、顺序保持、未知 DID、奇数长度
 - `0x27` RequestSeed / SendKey 全部路径（见下）
-- 未实现服务（`0x19`/`0x2E`/`0x31`/`0x3E`/未知 SID）
+- `0x2E` / `0x3E` 已实现：默认会话写 DID 走门控返回 `0x7F`、
+  `3E 00` 返回 `7E 00`（更多细节在 `test_services_extra_unit.py`）
+- 未实现服务（`0x19`/`0x31`/未知 SID）统一返回 NRC 0x11
 - 受保护 DID 的四象限权限矩阵与整体拒绝
 - 否定响应结构恒为 3 字节
 - DID 数据库约束
@@ -704,16 +767,40 @@ RX UDS: 7f 22 31
   → 否定响应：请求 SID 0x22，NRC 0x31
 ```
 
-### 9.5 未实现服务
+### 9.5 0x2E / 0x3E（已实现）
 
 ```bash
-$ python client/isotp_client.py 2E F1 90 00
-TX UDS: 2e f1 90 00
-RX UDS: 7f 2e 11
-  → 否定响应：请求 SID 0x2E，NRC 0x11
+# 0x2E 写入需要：非默认会话 + 已解锁 + 可写 DID
+$ python client/isotp_client.py 10 03          # extendedDiagnosticSession
+$ python client/isotp_client.py 27 01          # 取 seed，再用 keygen 派生 key
+$ python client/isotp_client.py 27 02 <key>
+$ python client/isotp_client.py 2E F1 02 43 4F 4E 46 49 47
+TX UDS: 2e f1 02 43 4f 4e 46 49 47
+RX UDS: 6e f1 02
+  → WriteDataByIdentifier 肯定响应；随后 22 F1 02 读回新值
+
+# 默认会话下写入 → 门控拒绝
+$ python client/isotp_client.py 2E F1 02 00
+RX UDS: 7f 2e 7f
+  → 否定响应：NRC 0x7F（默认会话不支持该服务）
+
+# 0x3E TesterPresent
+$ python client/isotp_client.py 3E 00
+TX UDS: 3e 00
+RX UDS: 7e 00
+  → 肯定响应；3E 80 抑制正响应（总线上无应答帧）
 ```
 
-### 9.6 0x27 SecurityAccess
+### 9.6 未实现服务
+
+```bash
+$ python client/isotp_client.py 19 01 08
+TX UDS: 19 01 08
+RX UDS: 7f 19 11
+  → 否定响应：请求 SID 0x19（ReadDTCInformation），NRC 0x11
+```
+
+### 9.7 0x27 SecurityAccess
 
 请求 seed：
 
@@ -880,13 +967,19 @@ uds-basic/
 │   ├── ecu.py               # 入口层：transport / runtime 依赖 / 兼容 facade
 │   ├── uds_server.py        # 协议层：EcuState / handlers / registry / dispatcher
 │   ├── uds_types.py         # 协议常量 + 响应构造（零依赖）
-│   ├── did_database.py      # DID 数据库（含受保护 DID 标记）
+│   ├── did_database.py      # DID 数据库（受保护/可写 DID 标记）
+│   ├── gateway.py           # 多 ECU 路由（VirtualEcu / DiagnosticGateway）
 │   └── keygen.py            # 教学用 seed/key 算法（无 CAN 依赖）
 └── tests/
-    ├── run_tests.sh         # 测试入口（unit / e2e / all）
-    ├── test_ecu_unit.py     # 离线单元测试（104 用例，无需 CAN）
-    ├── test_keygen_unit.py  # keygen 算法测试（34 用例，无需 CAN）
-    └── test_e2e_vcan.py     # vcan0 端到端测试（65 用例）
+    ├── run_tests.sh             # 测试入口（unit / e2e / all）
+    ├── test_ecu_unit.py         # 离线单元测试（104 用例，无需 CAN）
+    ├── test_keygen_unit.py      # keygen 算法测试（34 用例，无需 CAN）
+    ├── test_services_extra_unit.py  # 0x2E/0x3E 单元测试（17 用例，无需 CAN）
+    ├── test_gateway_unit.py     # 多 ECU 路由测试（13 用例，无需 CAN）
+    ├── test_e2e_vcan.py         # vcan0 端到端测试（65 用例）
+    ├── test_isotp_options_vcan.py   # ISO-TP 传输参数矩阵（14 用例，需 vcan0）
+    ├── test_write_did_vcan.py   # 0x2E/0x3E 真实解锁写入（8 用例，需 vcan0）
+    └── test_multi_ecu_vcan.py   # 三 ECU 物理寻址（4 用例，需 vcan0）
 ```
 
 > 注意：`ecu.py` 不是 UDS 业务实现层。协议实现位于 `uds_server.py`，
@@ -904,7 +997,9 @@ uds-basic/
 - [x] `0x11` ECUReset（01 + NRC 12/13）
 - [x] `0x22` ReadDataByIdentifier（单 DID、多 DID + NRC 31/13）
 - [x] `0x27` SecurityAccess（RequestSeed / SendKey 全路径）
-- [x] `0x7F` 否定响应与 NRC 判定（0x11/0x12/0x13/0x22/0x24/0x31/0x33/0x35/0x36/0x37）
+- [x] `0x2E` WriteDataByIdentifier（门控链：13→31→7F→33→22→13→6E）
+- [x] `0x3E` TesterPresent（`3E 00→7E 00`；`3E 80` 抑制；非法子功能 12；长度错 13）
+- [x] `0x7F` 否定响应与 NRC 判定（0x11/0x12/0x13/0x22/0x24/0x31/0x33/0x35/0x36/0x37/0x7F）
 - [x] 未实现服务统一返回 NRC 0x11
 - [x] 会话状态管理与复位回归
 - [x] 安全状态管理：失败计数、尝试上限锁定、seed 过期、防重放
@@ -912,11 +1007,13 @@ uds-basic/
 - [x] 受保护 DID 的 Session × Security 权限矩阵与整体拒绝
 - [x] 教学用 seed/key 算法（公开常数、可复现、雪崩效应）
 - [x] ISO-TP 单帧 / 多帧分帧验证
+- [x] 多 ECU 拓扑（`ecu/gateway.py`）：物理寻址三 ECU、功能寻址广播、
+  状态隔离、构造护栏（13 单元 + 4 e2e）
 - [x] 显式 `EcuState`（8 字段）与单一事实源 `STATE`
 - [x] 静态服务 registry + 协议层 dispatcher
 - [x] transport / protocol 分层与单向依赖（`uds_server` 不反向依赖 `ecu`）
-- [x] 离线单元测试 104 PASS（ECU）+ 34 PASS（keygen）
-- [x] vcan0 端到端测试 65 PASS
+- [x] 离线单元测试 168 PASS（104 ECU + 34 keygen + 17 services-extra + 13 gateway）
+- [x] vcan0 端到端测试 91 PASS（65 e2e + 14 isotp-matrix + 8 write-did + 4 multi-ecu）
 - [x] **三轮连续稳定性验证全部通过**（见第 14.7 节）
 
 ---
@@ -1008,7 +1105,9 @@ _security_services()            —— 每次请求现场构造 SecurityAccess h
 | `service_read_data_by_identifier` | 0x22 handler（含 DID 级权限与 all-or-nothing） |
 | `service_security_access` | 0x27 handler（纯函数，依赖以 keyword-only 传入） |
 | `_make_security_access_handler(now, security_config)` | 0x27 依赖绑定工厂 |
-| `SERVICES` | **静态** registry（仅 0x10 / 0x11 / 0x22） |
+| `service_write_data_by_identifier` | 0x2E handler（门控链见 4.3，写入 `did_overrides`） |
+| `service_tester_present` | 0x3E handler（`3E 80` 返回空字节由入口层抑制发帧） |
+| `SERVICES` | **静态** registry（0x10 / 0x11 / 0x22 / 0x2E / 0x3E） |
 | `handle_uds_request(request, state, *, services=None)` | 协议层 dispatcher |
 
 **`EcuState` 的 8 个字段**（当前实现，不多不少）：
@@ -1047,13 +1146,16 @@ seed_counter     seed 序号
 
 ### 14.6 Service registry 与 dispatcher
 
-静态 registry 定义在 `uds_server.py`，**只含三个服务**：
+静态 registry 定义在 `uds_server.py`，**含五个服务**
+（0x2E / 0x3E 为 Phase 4X 新增）：
 
 ```python
 SERVICES = {
     0x10: service_diagnostic_session_control,
     0x11: service_ecu_reset,
     0x22: service_read_data_by_identifier,
+    0x2E: service_write_data_by_identifier,
+    0x3E: service_tester_present,
 }
 ```
 
@@ -1118,10 +1220,20 @@ P9 阶段**连续执行 3 轮完整回归**，三轮结果逐项完全一致
 并完成 transport / protocol 边界、依赖方向、`EcuState` 字段数、
 `STATE` 单一事实源与 rollback point 的静态验证。
 
+工程收口 2026-09-21 基线（Phase 4X 全量，实测）：
+
+```text
+UDS Unit       168 PASS   （104 + 34 + 17 services-extra + 13 gateway）
+E2E（在网）     91 PASS   （65 + 14 isotp-matrix + 8 write-did + 4 multi-ecu）
+can-tools 离线 183 PASS   （34 parsers + 50 isotp-options + 99 fuzz-harness，
+                          含 kernel oracle 三态 10 例）
+fuzz kernel oracle 三态 AVAILABLE/UNAVAILABLE/ERROR 如实上报
+```
+
 运行方式：
 
 ```bash
-bash labs/vehicle/uds-basic/tests/run_tests.sh all   # 104 + 34 + 65
+bash labs/vehicle/uds-basic/tests/run_tests.sh all   # 168 + 91
 bash scripts/healthcheck.sh                          # 环境 + 离线测试
 ```
 
@@ -1386,15 +1498,15 @@ Phase 3 完成的是一次**结构性重构**（行为保持不变）：
 
 ### 15.1 协议能力
 
-- `0x2E` WriteDataByIdentifier：DID 写入与权限校验（复用第 6 节权限模型）
+- ✅ 已完成：`0x2E` WriteDataByIdentifier（见 4.3）
+- ✅ 已完成：`0x3E` TesterPresent（见 4.1）
 - `0x19` ReadDTCInformation：DTC 数据库与状态掩码
 - `0x31` RoutineControl：例程控制
-- `0x3E` TesterPresent：会话保持与 S3 超时
 - `0x28` CommunicationControl、`0x85` ControlDTCSetting
 - `0x78` ResponsePending 与 P2* 超时处理
 - `0x27` 多安全等级（Level 2：`0x03`/`0x04`，需位掩码式安全等级）
-- 功能寻址（`0x7DF`）与多 ECU 响应
-- 会话相关的服务权限（如非默认会话才允许 `0x2E`）
+- 功能寻址（`0x7DF`）的**用户态实时网关守护进程**
+  （协议层路由与三 ECU 物理寻址实时已通过，见 `ecu/gateway.py`）
 
 ### 15.2 状态机与架构
 
@@ -1402,22 +1514,29 @@ Phase 3 完成的是一次**结构性重构**（行为保持不变）：
   （见第 14.6 节）
 - ✅ 已完成（Phase 3）：安全状态集中到 `EcuState`，消除模块级全局变量
   （见第 14.4 节）
-- 服务 handler 增加**会话级权限前置检查**（当前权限检查仍逐服务内联）
+- ✅ 已完成（Phase 4X）：0x2E/0x3E 入静态注册表；会话级权限前置检查
+  在 0x2E 门控链中生效（`0x7F`/`0x33`）
+- ✅ 已完成（Phase 4X）：多 ECU 拓扑（多对 CAN ID、`ecu/gateway.py`
+  协议层网关，13 单元 + 4 e2e）
+- 服务 handler 增加**通用会话级权限前置检查**（0x2E 已内联实现，
+  尚未抽象为 registry 级装饰器）
 - DID 数据库支持数据类型（ASCII / 数值 / 位域）与缩放
-- 多 ECU 拓扑（多对 CAN ID、网关模拟）
 
 ### 15.3 安全测试
 
+- ✅ 已完成（Phase 4X）：ISO-TP 层 Fuzzing（异常分帧、流控滥用、
+  序号错乱；`labs/vehicle/can-tools/fuzz/`，含 replay 与 kernel oracle）
+- ✅ 已完成：基于本测试套件建立的**回归基线**（run_tests /
+  qa_fast / qa_extended / healthcheck）
 - UDS Fuzzing：随机 SID / 长度 / DID 组合，监控异常与崩溃
 - **SecurityAccess 专项 Fuzzing**：随机 key、越界子功能、超长/超短 key、
   乱序 SendKey，验证 ECU 不会崩溃或意外解锁
-- ISO-TP 层 Fuzzing：异常分帧、流控滥用、序号错乱
 - CAN Fuzzing（配合 `labs/vehicle/can-basic`）
-- 基于本测试套件建立**回归基线**，确保 Fuzzing 前后行为一致
 
 ### 15.4 工程化
 
-- 建立 CI（本地 runner）自动跑离线测试（104 + 34 个用例，2 ms 完成）
+- ✅ 已完成：CI workflow（`.github/workflows/ci.yml`，fast 自动 +
+  extended 手动）；**尚未在真实 GitHub runner 触发**（无 push 授权）
 - 用 `cantools` + DBC 描述诊断报文，与 `can-basic` 实验打通
 - 输出 UDS 测试报告到 `reports/`
 

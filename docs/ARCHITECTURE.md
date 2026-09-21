@@ -38,11 +38,14 @@ SecurityLab/
 │   ├── fuzzing/afl-demo/        # AFL++ 通用 fuzz 靶场
 │   └── yara-basic/              # YARA 规则 + 样本 + scan.sh
 ├── configs/                     # 可复现环境配置
-│   ├── binfmt/                  # additive 注册器 + selfheal v2.2
+│   ├── binfmt/                  # additive 注册器 + selfheal v2.3（fail-closed）
 │   ├── environment/             # python-network / python-dev requirements（钉版本）
 │   ├── network/                 # proxy.env（动态探测）、ssh-proxy.sh
 │   └── systemd/                 # vcan0、binfmt-selfheal、dsh-web 等单元
 ├── scripts/                     # healthcheck / qa_fast / qa_extended / nettools_check
+│   ├── repro/                   # 关键验证可复现入口（verify_arm / verify_qemu_gdb /
+│   │                            #   verify_ghidra / verify_fuzz_smoke）
+│   └── tests/                   # shell 级回归（healthcheck fallback、binfmt fail-closed）
 ├── docs/                        # 审计报告、测试矩阵、状态看板、架构、断点文件
 ├── pyproject.toml conftest.py   # ruff/mypy/pytest 配置；vcan marker 自动打标
 ├── .github/workflows/ci.yml     # fast 自动 / extended 手动
@@ -120,7 +123,11 @@ can_capture.py / can_capture_blf.py / capture/capture_lab.sh：
 ```
 
 - fuzz 分类：NORMAL / UDS（诊断正/负响应）/ TE（transport/transport-error）/ DISCARD（被丢弃）。
-- 每例强制健康检查：ECU process_alive、recovery、new_errno、kernel_events、cleanup；`--seed 12345` 确定性。
+- 每例强制健康检查：ECU process_alive、recovery、new_errno、kernel、cleanup；`--seed 12345` 确定性。
+- kernel oracle 为**三态**（AVAILABLE / UNAVAILABLE / ERROR，记录于
+  `result.kernel_oracle`）：只有 AVAILABLE 时 `kernel_events` 才有意义；
+  oracle 不可用时 `kernel_events`/`kernel_delta_lines` 记为 `None`（不可判定），
+  **绝不伪装成 0 kernel event**。smoke summary 汇总三态计数。
 
 ## 4. 逆向 / 固件 / 通用 Fuzz / IOC
 
@@ -130,8 +137,10 @@ can_capture.py / can_capture_blf.py / capture/capture_lab.sh：
                                                 ├─ Ghidra 12 headless（analyzeHeadless + postScript）
                                                 ├─ radare2/rabin2、objdump/readelf/nm/strings/file
                                                 └─ strace/ltrace/qemu -strace（syscall/库调用）
-固件镜像 ──binwalk──► rootfs 提取（SquashFS/JFFS2/UBIFS）──► ELF 架构识别/配置/凭据线索/web 服务
-          labs/firmware/synthetic-ecu：build→analyze→firmware_diff→fs_formats（合成、可复现）
+固件分析链（labs/firmware/synthetic-ecu：build→analyze→firmware_diff→fs_formats，合成、可复现）：
+  SquashFS   build + identify + extract + analyze（完整链）
+  JFFS2      build + identify（当前环境缺少完整 extraction chain，见 STATUS 路线图）
+  UBIFS/UBI  build + identify（当前环境缺少完整 extraction chain，见 STATUS 路线图）
 靶场 vuln.c ──afl-gcc 插桩──► afl-fuzz ──► crash（sig6/134）──► 样本重放复现（labs/fuzzing/afl-demo）
 样本 ──yara（labs/yara-basic/rules）──► TP/TN 判定，并扫描合成固件
 ```
@@ -139,7 +148,15 @@ can_capture.py / can_capture_blf.py / capture/capture_lab.sh：
 ## 5. Python 依赖与质量门禁
 
 - 系统 Python 保持干净；研究依赖在 venv `~/.venvs/network`（Python 3.12.3）。
-- `configs/environment/python-network-requirements.txt` 钉运行时 8 包；`python-dev-requirements.txt` 钉 pytest/ruff/mypy。
+- `configs/environment/python-network-requirements.txt` 钉运行时 8 包；
+  `python-dev-requirements.txt` 钉 pytest/ruff/mypy/pip-tools。
+- **依赖可重复性（P2，2026-09-21 已收口）**：
+  `python-network-requirements.lock` 为 pip-compile（pip-tools 7.6.1）
+  从 direct pins 解析出的 **transitive lock**（direct → transitive →
+  固定版本）。已在全新 venv 只装 lock 验证可导入
+  （LOCK_FRESH_INSTALL_OK，can 4.6.1 / isotp 2.0.7）。lock 再生成命令
+  见 `python-dev-requirements.txt` 注释；生成需经
+  `configs/network/proxy.env` 代理 + TUNA 镜像。
 - `pyproject.toml`：ruff 选 E/F/I/UP/B（忽略 E501）、mypy py312、pytest 注册 `vcan` marker；`conftest.py` 按文件名含 `_vcan` 自动打标。
 - 门禁：
 
@@ -148,20 +165,40 @@ qa_fast.sh（离线，独立进程）          qa_extended.sh（独占 vcan，�
  ├─ ruff check uds-basic              ├─ 确保 vcan0（root/免密 sudo 自建，否则报错退出）
  ├─ mypy ecu 包                       ├─ uds run_tests all
  ├─ uds run_tests unit (168)          ├─ can-tools run_tests all
- └─ can-tools run_tests offline(173)  ├─ capture_lab（三格式）
+ └─ can-tools run_tests offline(183)  ├─ capture_lab（三格式）
                                       └─ yara scan；[--fuzz] 追加 CAN fuzz smoke
 healthcheck.sh [--extended]：环境/工具/服务/链路总检（PASS/WARN/FAIL，FAIL→exit 1）
 CI .github/workflows/ci.yml：fast 自动（push/PR）、extended 仅 workflow_dispatch；fuzz 不进 CI
+scripts/repro/：ARM/QEMU-GDB/Ghidra/fuzz smoke 最小可复现验证（换机可重跑）
 ```
 
-- 注意：两个"模块导入纯净度"用例要求独立解释器进程，故权威离线门走 `qa_fast.sh`/`run_tests.sh`，不在单会话 `pytest` 收集里断言。
+### 5.1 三层测试机制的职责边界（不要把所有实验塞进 pytest）
+
+| 机制 | 定位 | 典型场景 |
+|------|------|----------|
+| `pytest`（根 pyproject） | 开发期局部测试、快速调试 | 单文件单模块；`-m "not vcan"` 快速筛选 |
+| `labs/*/tests/run_tests.sh` | **实验级验证**（权威离线门） | 每个测试文件**独立解释器进程**；vcan / 真实实验流程（ECU 子进程、ISO-TP 链路） |
+| `scripts/qa_fast.sh` / `qa_extended.sh` | **环境门禁**（工程级质量检查） | ruff+mypy+全量离线；extended 串行独占 vcan 的真实闭环 |
+
+**为什么不全部塞进 pytest 单会话收集**：
+
+1. 两个"模块导入纯净度"用例断言 `sys.modules` 不含 `can`/`isotp`——单会话
+   pytest 收集会跨模块污染 `sys.modules`，这类用例**天然要求独立解释器进程**；
+2. vcan e2e 需要**独占总线**且每例起/停 ECU 子进程，必须串行、有清理保证，
+   适合 run_tests.sh / qa_extended 的编排而不是 pytest 并行收集；
+3. 测试入口的 Python 解释器（venv）选择、总线预检（vcan0 存在且 UP）、
+   环境提示与退出码语义由 run_tests.sh 统一表达，pytest 只管用例本身。
+
+因此：pytest 可跑（如 `pytest -m "not vcan"`），但**权威离线门**是
+`qa_fast.sh` / `run_tests.sh`；vcan 类验证的权威入口是
+`qa_extended.sh` / `run_tests.sh all`。
 
 ## 6. 服务与自启
 
 | 单元 | 级别 | 作用 | 自启 |
 |------|------|------|------|
 | vcan0.service | system | 开机建立 vcan0（MTU 2060）+ 加载 can/can_raw/vcan/can-isotp | enabled |
-| binfmt-selfheal.path/.timer(+service/quick) | system | binfmt additive 自愈（path 触发 + 10s 兜底） | enabled，双端 |
+| binfmt-selfheal.path/.timer(+service/quick) | system | binfmt additive 自愈（path 触发 + 10s 兜底；v2.3 fail-closed，helper 缺失不回落 systemd-binfmt） | enabled，双端 |
 | ssh-agent.service | user | SSH_AUTH_SOCK（密钥仍需用户 ssh-add 解 passphrase） | active |
 | dsh-web.service | user | DSH Web GUI 于 127.0.0.1:8731（Restart=on-failure） | enabled + linger |
 

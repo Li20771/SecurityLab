@@ -1,5 +1,10 @@
 # SecurityLab 最终环境审计报告（FINAL ENVIRONMENT AUDIT）
 
+> **本文档是 2026-09-20/21 审计窗口的历史快照，内容不再随后续修改更新。**
+> 其中的历史性建议（如"建议把 `fuzz-out/` 加入 `.gitignore`"）在后续
+> 工程收口中已落地；当前权威状态见 `SECURITY_LAB_STATUS.md`、
+> `TEST_MATRIX.md` 与 `ENGINEERING_CLOSE_2026-09-21.md`。
+
 - 审计窗口：2026-09-20 22:1x → 2026-09-21 04:2x（Asia/Shanghai，跨午夜）
 - 主环境：Windows 11 + WSL2 Ubuntu 24.04（主） + Kali Rolling（辅） + Docker Desktop
 - 项目根：`D:\SecurityLab`（WSL：`/mnt/d/SecurityLab`）

@@ -4,6 +4,38 @@
 >
 > 规则：只记录经实际命令验证的事实；状态取值 VERIFIED / PARTIAL / BLOCKED / NOT_APPLICABLE。
 
+## 2026-09-21 工程收口（Engineering Close Phase 1，Claude Code）
+
+**CURRENT_PHASE**: 第一轮建设工程收口（分支 `chore/engineering-close-20260921`，
+base `audit/environment-20260921`；禁止修改 main）
+
+**COMPLETED（本分支，全部本地验证）**:
+
+- P1 fuzz kernel oracle 三态（AVAILABLE/UNAVAILABLE/ERROR；不可用 ≠ 0 events）；
+  离线测试 99 例（含新增 10 例）PASS。
+- P1 binfmt selfheal v2.3 fail-closed（helper 缺失/失败绝不回落 systemd-binfmt）；
+  回归 `configs/binfmt/tests/selfheal_failclosed_test.sh` 11/11 PASS。
+  系统侧 `/usr/local/sbin/binfmt-selfheal.sh` 部署更新留待用户授权后执行
+  （repo 内 `configs/binfmt/` 为源真）。
+- P1 healthcheck QEMU fallback `&&` 短路修复；回归
+  `scripts/tests/healthcheck_qemu_fallback_test.sh` 3/3 PASS；
+  真实 healthcheck 75 PASS / 2 WARN / 0 FAIL。
+- scripts/repro/：verify_arm 6/6、verify_qemu_gdb 4/4、verify_ghidra 6/6、
+  verify_fuzz_smoke 8/8（全部本机实测 PASS）。
+- 文档同步：README、uds-basic/README、SECURITY_LAB_STATUS、TEST_MATRIX、
+  ARCHITECTURE、本断点文件；审计报告加"历史快照"标注。
+- P2 依赖 transitive lock：已完成（`configs/environment/python-network-requirements.lock`，
+  pip-compile 生成 + 全新 venv 安装验证；pip-tools 7.6.1 入 dev requirements）。
+
+**NEXT_STEP (after user authorization)**:
+
+- 授权 push / PR 合入 main；GitHub CI 首次真跑（fast job）。
+- 部署 selfheal v2.3 到 `/usr/local/sbin/`（双端）并重跑冷启动观察。
+- 第二轮能力建设（0x19/0x31/0x34-37、实时 0x7DF 网关、JFFS2/UBIFS extraction、
+  Docker Lab、Obsidian）——本分支**不做**。
+
+**KNOWN_ISSUES**: 同上文（ssh-add、0 字节文件、vhdx 压缩、CI runner 未实测）。
+
 ## 2026-09-20 (current session, Doubao)
 
 **CURRENT_PHASE**: Phase 6 — Ubuntu/Kali 工具 apt 补齐（systemd-run 托管安装中）；Phase 2/3/4/5 已完成
