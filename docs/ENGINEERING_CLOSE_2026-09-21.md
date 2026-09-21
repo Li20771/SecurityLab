@@ -14,8 +14,10 @@
 branch:       chore/engineering-close-20260921
 base:         audit/environment-20260921 (snapshot commit 14ddb75bcfad5105d8b91455ed4d4cfe2fae8c6a)
 main:         e215b1d（本分支未触碰）
-final commit: 07be67ad47aab7f061751a0a17aee5bd5a628c69
-              （docs: correct close report final diffstat and commit count）
+final commit: fe1ad76fccba745bfd7fa6f3b24fa6e4aeaa5881
+              （fix(repro): align Ghidra verification with round-1 AArch64
+               target and correct report evidence —— 快照数值冻结点；
+               随后的 docs-only 终稿提交见 git log 首条）
 ```
 
 ## 2. 修改文件
@@ -219,9 +221,10 @@ On branch chore/engineering-close-20260921
 nothing to commit, working tree clean
 
 $ git rev-parse HEAD
-07be67ad47aab7f061751a0a17aee5bd5a628c69
+fe1ad76fccba745bfd7fa6f3b24fa6e4aeaa5881
 
-$ git log --oneline audit/environment-20260921..HEAD   # 9 个 commit
+$ git log --oneline audit/environment-20260921..HEAD   # 10 个 commit
+fe1ad76 fix(repro): align Ghidra verification with round-1 AArch64 target and correct report evidence
 07be67a docs: correct close report final diffstat and commit count
 a772423 docs: finalize engineering close report with git evidence
 45c72ca docs: add engineering close report
@@ -236,16 +239,17 @@ $ git diff --check
 （无输出，通过）
 
 $ git diff audit/environment-20260921...HEAD --stat | tail -1
- 24 files changed, 2072 insertions(+), 198 deletions(-)
+ 24 files changed, 2138 insertions(+), 198 deletions(-)
 
 $ git diff main...HEAD --stat | tail -1
- 112 files changed, 21901 insertions(+), 651 deletions(-)
-（含自 main 基线以来整个审计分支的累积改动 + 本分支 9 个 commit）
+ 112 files changed, 21993 insertions(+), 651 deletions(-)
+（含自 main 基线以来整个审计分支的累积改动 + 本分支 10 个 commit）
 ```
 
-- 提交纪律：9 个 commit，每个单一工程目的——fix(fuzz) / fix(binfmt) /
+- 提交纪律：10 个 commit，每个单一工程目的——fix(fuzz) / fix(binfmt) /
   fix(healthcheck) / chore(repro) / chore(deps) / docs(sync) /
-  docs(close-report) / docs(finalize-report) / docs(correct-report)。
+  docs(close-report) / docs(finalize-report) / docs(correct-report) /
+  fix(repro-ghidra-evidence)。
 - main 未改动；`audit/environment-20260921` 快照未改动（以其为 base 新建分支）。
 - 本分支**不合并 main**、零 push，等待用户授权。
 
@@ -257,13 +261,21 @@ $ git diff main...HEAD --stat | tail -1
 
 ## Final Evidence Snapshot（2026-09-21 证据修正后全量重跑）
 
+> 快照数值全部由 git 命令生成，冻结点为 fe1ad76（fix(repro) evidence
+> correction）；本快照随其后一条 **docs-only 终稿提交**落盘（即分支
+> HEAD，见 `git log --oneline audit/environment-20260921..HEAD` 首条）。
+> 终稿提交只含本小节与 §7 数值终稿，不改变任何被测对象；提交后以
+> `git rev-parse HEAD` / `git log` 的输出为唯一真值（快照不自我引用）。
+
 ```text
 branch:        chore/engineering-close-20260921
 base:          audit/environment-20260921 (14ddb75bcfad5105d8b91455ed4d4cfe2fae8c6a)
-HEAD:          07be67ad47aab7f061751a0a17aee5bd5a628c69
+HEAD:          fe1ad76fccba745bfd7fa6f3b24fa6e4aeaa5881（快照数值冻结点；
+               终稿提交 = git log 首条 = 交付时的 git rev-parse HEAD）
 working_tree:  clean（Windows 侧 git status --short 为空；
                WSL 侧 .p1x-probe/n01-acceptance2-OUTPUT.txt 行尾 artifact 见 §4 WARN）
-commit_count:  9（git log --oneline audit/environment-20260921..HEAD）
+commit_count:  10（git log --oneline audit/environment-20260921..HEAD，
+               不含快照自身的 docs-only 终稿提交——该提交使计数 +1）
 
 git_diff_check:       PASS（无输出）
 repro_arm:            6/6 PASS（AArch64 compile+exec、armhf compile、qemu-arm exec）
