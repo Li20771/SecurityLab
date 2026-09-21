@@ -124,6 +124,14 @@ run_unit() {
     fi
 
     echo
+
+    if "$PYTHON_BIN" "$TESTS_DIR/test_routine_unit.py"; then
+        ok "0x31 RoutineControl unit tests passed"
+    else
+        fail "RoutineControl unit tests failed"
+    fi
+
+    echo
 }
 
 # ----------------------------------------------------------------------
@@ -192,6 +200,16 @@ run_e2e() {
             ok "0x19 ReadDTCInformation e2e tests passed"
         else
             fail "ReadDTCInformation e2e tests failed"
+        fi
+
+        echo
+    fi
+
+    if [ -f "$TESTS_DIR/test_routine_vcan.py" ]; then
+        if "$PYTHON_BIN" "$TESTS_DIR/test_routine_vcan.py"; then
+            ok "0x31 RoutineControl e2e tests passed"
+        else
+            fail "RoutineControl e2e tests failed"
         fi
 
         echo

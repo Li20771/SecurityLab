@@ -105,6 +105,10 @@ class UdsTestCase(unittest.TestCase):
         # 临时注入污染；hardReset 也刻意不清除 DTC，见 TestEcuReset）。
         ecu.STATE.dtc_records.clear()
         ecu.STATE.dtc_records.update(dict(DTC_DATABASE))
+        # routine 运行时状态是易失瞬态，测试间必须清零（hardReset 清空，
+        # 见 test_routine_unit.py 的成对语义验证）。
+        ecu.STATE.active_routines.clear()
+        ecu.STATE.routine_start_counts.clear()
 
     # ---- 断言辅助 ----
 
@@ -487,11 +491,26 @@ class TestUnsupportedServices(UdsTestCase):
 
         self.assertEqual(response, bytes([0x7E, 0x00]))
 
-    def test_unimplemented_service_0x31_routine_control(self) -> None:
+    def test_routine_control_is_implemented(self) -> None:
+        """
+        0x31 已实现：31 01 20 01 应返回 71 01 20 01 正响应
+        （长度错则 13，证明 SID 已被识别）。
+
+        （本用例原为 test_unimplemented_service_0x31_routine_control，
+        断言 7F 31 11；RoutineControl 落地后改写为断言新行为，
+        与 0x19 / 0x2E / 0x27 / 0x3E 的处理方式一致。完整状态机 /
+        NRC / reset 语义见 test_routine_unit.py 与 test_routine_vcan.py。）
+        """
+        response = handle_uds_request(bytes([0x31, 0x01, 0x20, 0x01]))
+
+        self.assertEqual(response, bytes([0x71, 0x01, 0x20, 0x01]))
+
+    def test_routine_control_is_implemented_bad_length(self) -> None:
+        """0x31 已实现：缺 RID 的 31 01 返回 13 而非 11。"""
         response = handle_uds_request(bytes([0x31, 0x01]))
 
         self.assertNegativeResponse(
-            response, 0x31, NRC_SERVICE_NOT_SUPPORTED
+            response, 0x31, NRC_INCORRECT_MESSAGE_LENGTH
         )
 
     def test_negative_response_echoes_requested_sid(self) -> None:
