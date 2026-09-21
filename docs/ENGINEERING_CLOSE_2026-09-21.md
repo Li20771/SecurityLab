@@ -14,7 +14,7 @@
 branch:       chore/engineering-close-20260921
 base:         audit/environment-20260921 (snapshot commit 14ddb75bcfad5105d8b91455ed4d4cfe2fae8c6a)
 main:         e215b1d（本分支未触碰）
-final commit: 45c72ca（docs: add engineering close report）
+final commit: a772423（docs: finalize engineering close report with git evidence）
 ```
 
 ## 2. 修改文件
@@ -226,19 +226,15 @@ $ git diff main...HEAD --stat | tail -8
  ...（112 files changed, 21901 insertions(+), 651 deletions(-)；
       包含自 main 基线以来整个审计分支的累积改动 + 本分支 7 个 commit）...
 
-本分支自身 7 个 commit 的净改动：
+本分支自身 8 个 commit 的净改动：
 
-$ git diff audit/environment-20260921...HEAD --stat | tail -6
- scripts/repro/verify_arm.sh                        |  110 +
- scripts/repro/verify_fuzz_smoke.sh                 |  160 ++
- scripts/repro/verify_ghidra.sh                     |  131 ++
- scripts/repro/verify_qemu_gdb.sh                   |  103 +
- scripts/tests/healthcheck_qemu_fallback_test.sh    |  113 +
- 20 files changed, 1711 insertions(+), 137 deletions(-)
+$ git diff audit/environment-20260921...HEAD --stat | tail -1
+ 24 files changed, 2076 insertions(+), 198 deletions(-)
 ```
 
-- 提交纪律：7 个 commit，每个单一工程目的——fix(fuzz) / fix(binfmt) /
-  fix(healthcheck) / chore(repro) / chore(deps) / docs(sync) / docs(close-report)。
+- 提交纪律：8 个 commit，每个单一工程目的——fix(fuzz) / fix(binfmt) /
+  fix(healthcheck) / chore(repro) / chore(deps) / docs(sync) /
+  docs(close-report) / docs(finalize-report)。
 - main 未改动；`audit/environment-20260921` 快照未改动（以其为 base 新建分支）。
 - 本分支**不合并 main**、零 push，等待用户授权。
 
