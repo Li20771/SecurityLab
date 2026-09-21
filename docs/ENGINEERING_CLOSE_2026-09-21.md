@@ -13,16 +13,17 @@
 本文件主体记录工程收口阶段的历史状态。
 以下为该收口分支进入 GitHub 正式 review 后的最终集成状态：
 
-- branch: `chore/engineering-close-20260921`
-- HEAD: `8bfd405bbbbfd215c7077bc208f0bccc64cfe6ec`
-- main: `e215b1d6d77d0edfcfd76d6fdf9a4df3fb22c517`
+- branch: `chore/engineering-close-20260921`（已合并，历史分支）
+- branch final HEAD: `845451be588fa70f05444880807a222eb313ffcb`
+- main: `89a12a0cf43c6a23bf9cb5c6d393d1aa0198f87a`（PR #1 merge commit）
 - GitHub Actions Fast QA: **PASS**
-- workflow run: `35576358620`
+  - branch 上 run `35576358620`（历史证据）
+  - post-merge main 上 run `35582069002` = success（当前证据）
 - PR: `#1`
-- PR state: **OPEN / DRAFT**
-- main merge: **NOT MERGED**
-- main：未修改（仍为上述 commit）
-- 第二轮能力建设：**冻结**（第一轮 baseline merge 前不启动）
+- PR state: **MERGED / CLOSED**
+- main merge: **MERGED**（第一轮正式结束）
+- 第二轮能力建设：进入 **Phase 4 — Second-Round Planning**
+  （小功能 → feature branch → 小 PR → 可验证 → 合入）
 - `.p1x-probe/*-OUTPUT.txt`: 已从版本库移除
 - 历史 0 字节异常文件 `; else echo MISS`: 已删除
 

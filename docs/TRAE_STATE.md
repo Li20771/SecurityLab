@@ -5,30 +5,30 @@
 # Current State — 2026-09-21
 
 **CURRENT_PHASE**:
-Phase 3 — Formal Integration Review
+Phase 4 — Second-Round Planning
 
 **CURRENT_TASK**:
-PR #1 最终审查，第一轮基线准备正式合入 main
+完成第一轮合入后的基线封存，盘点第二轮缺口并确定第一项实施任务
 
 **CURRENT_BRANCH**:
-`chore/engineering-close-20260921`
-
-**HEAD**:
-`8bfd405bbbbfd215c7077bc208f0bccc64cfe6ec`
+`chore/engineering-close-20260921`（已合并，历史分支；
+第二轮能力一律新建 feature branch）
 
 **PR**:
-#1 — OPEN / DRAFT
-
-**GitHub CI**:
-Fast QA — PASS
-Run `35576358620`
+#1 — MERGED / CLOSED
+merge commit `89a12a0cf43c6a23bf9cb5c6d393d1aa0198f87a`
 
 **MAIN**:
-当前仍为 `e215b1d6d77d0edfcfd76d6fdf9a4df3fb22c517`
+`89a12a0cf43c6a23bf9cb5c6d393d1aa0198f87a`（= 第一轮正式基线）
+
+**GitHub CI**:
+post-merge Fast QA — PASS
+Run `35582069002`（event=push，branch=main）
 
 **NEXT ACTION**:
-完成最终 review；确认无阻塞项后决定是否 merge。
-第二轮功能建设在第一轮 baseline merge 前保持冻结。
+完成第二轮能力盘点与优先级设计；
+确定第一项能力后，再创建独立 feature branch 开发。
+第二轮采用"小功能 → 小 PR → 可验证 → 合入"节奏。
 
 ---
 
