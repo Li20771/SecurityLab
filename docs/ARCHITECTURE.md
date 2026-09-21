@@ -60,10 +60,11 @@ SecurityLab/
   ┌───────────────────────────┐            ┌───────────────────────────────────────┐
   │ test_ecu_unit 105         │            │  client/isotp_client.py (Tester)       │
   │ test_keygen_unit 34       │            │  client/uds_client.py                  │
-  │ test_services_extra 17    │            │        │  UDS 请求（0x10/11/19/22/27/2E/31/3E）│
+  │ test_services_extra 17    │            │        │  UDS 请求（0x10/11/19/22/27/2E/31/34/36/37/3E）│
   │ test_gateway_unit 13      │            │        ▼  ISO-TP（Normal 11-bit）        │
   │ test_dtc_unit 30          │            │                                       │
   │ test_routine_unit 25      │            │                                       │
+  │ test_transfer_unit 39     │            │                                       │
   └───────────────────────────┘            │  SocketCAN vcan0  (TX 0x7E0/RX 0x7E8)  │
                                            │        ▲                                │
   ┌───────────────────────────┐            │  ecu/ecu.py 主循环（帧收发/空响应抑制）  │
@@ -104,11 +105,11 @@ Tester ──物理寻址──► ECU_A 0x7E0 / 应答 0x7E8
               连续失败 3 次 → lockout 10s（UDS_LOCKOUT_SECONDS 可覆盖）；seed 5s 过期
 ```
 
-- 已实现：0x10 SessionControl、0x11 ECUReset、0x19 ReadDTCInformation（reportType 01/02/0A，静态 dtc_database + EcuState.dtc_records，hardReset 保留 DTC）、0x22 ReadDataByIdentifier、0x27 SecurityAccess、0x2E WriteDataByIdentifier、0x31 RoutineControl（Start/Stop/Results，0x2001/0x2002 synthetic routines，hardReset 清 routine 状态、session 切换保留）、0x3E TesterPresent。
-- 响应：正响应 `[sid+0x40, ...]`；否定响应 `7F sid nrc`。NRC：10/11/12/13/22/24/31/33/35/36/37 + 7F（默认会话不支持该服务）。
+- 已实现：0x10 SessionControl、0x11 ECUReset、0x19 ReadDTCInformation（reportType 01/02/0A，静态 dtc_database + EcuState.dtc_records，hardReset 保留 DTC）、0x22 ReadDataByIdentifier、0x27 SecurityAccess、0x2E WriteDataByIdentifier、0x31 RoutineControl（Start/Stop/Results，0x2001/0x2002 synthetic routines，hardReset 清 routine 状态、session 切换保留）、0x34/0x36/0x37 Download Transfer（synthetic in-memory 目标、DFI=00/ALFID=23、BSC 块序+幂等重传+回绕、size accounting、0x37 完整性检查后清理状态、hardReset 中止下载）、0x3E TesterPresent。
+- 响应：正响应 `[sid+0x40, ...]`；否定响应 `7F sid nrc`。NRC：10/11/12/13/22/24/31/33/35/36/37/73 + 7F（默认会话不支持该服务）。
 - 0x2E 门控顺序：长度→未知 DID(31)→默认会话(7F)→未解锁(33)→只读 DID(22)→长度越界(13)→成功 6E；写 `state.did_overrides`，0x22 读 override 优先，0x11 清空。
 - 0x3E：`3E 00→7E 00`；`3E 80→抑制不发帧`；非法子功能 12；长度错 13。
-- 未实现（路线图，禁空壳）：0x34/0x35/0x36/0x37（以及 0x19 其余 reportType、0x31 的 option/status record 与权限/会话门控），每个须 request/positive/NRC/state/unit/e2e 齐备。
+- 未实现（路线图，禁空壳）：0x35 RequestUpload（以及 0x19 其余 reportType、0x31 的 option/status record、真实 Flash 与签名校验、Permission/session framework），每个须 request/positive/NRC/state/unit/e2e 齐备。
 
 ### 3.3 Fuzz / Replay / Capture 数据流
 
@@ -166,7 +167,7 @@ can_capture.py / can_capture_blf.py / capture/capture_lab.sh：
 qa_fast.sh（离线，独立进程）          qa_extended.sh（独占 vcan，串行）
  ├─ ruff check uds-basic              ├─ 确保 vcan0（root/免密 sudo 自建，否则报错退出）
  ├─ mypy ecu 包                       ├─ uds run_tests all
- ├─ uds run_tests unit (225)          ├─ can-tools run_tests all
+ ├─ uds run_tests unit (264)          ├─ can-tools run_tests all
  └─ can-tools run_tests offline(183)  ├─ capture_lab（三格式）
                                       └─ yara scan；[--fuzz] 追加 CAN fuzz smoke
 healthcheck.sh [--extended]：环境/工具/服务/链路总检（PASS/WARN/FAIL，FAIL→exit 1）
