@@ -625,21 +625,17 @@ class TestUploadPrecedence(UploadTestCase):
 class TestUploadLifecycle(UploadTestCase):
 
     def test_hard_reset_clears_upload_five_fields(self) -> None:
+        """hardReset 清 upload 5 字段；routine 清、DTC 保留成对断言。
+
+        download 方向的清空不在本测试：download 与 upload 互斥，无法
+        同时 active，其复位语义由 test_transfer_unit 成对覆盖。
+        """
         self.start_upload(size=130)
         handle_uds_request(_block_request(0x01), self.state)
-        # 同时制造 download / routine / DTC 状态做五路成对断言
-        handle_uds_request(_download(), self.state)  # upload active → 22，仅占位
-        # 注意：upload active 时 download 被拒；先退出 upload 再开 download
-        handle_uds_request(bytes([SID_REQUEST_TRANSFER_EXIT]), self.state)
-        handle_uds_request(_download(), self.state)
-        handle_uds_request(bytes([0x36, 0x01, 0xAA]), self.state)
+        # 制造 routine / DTC 状态做成对断言
         handle_uds_request(bytes([0x31, 0x01, 0x20, 0x01]), self.state)
         self.state.dtc_records[0x100009] = 0x09
         dtc_before = dict(self.state.dtc_records)
-
-        # 重新建立 upload 再复位（复位对象应是 active upload）
-        self.start_upload(size=130)
-        handle_uds_request(_block_request(0x01), self.state)
 
         handle_uds_request(bytes([0x11, 0x01]), self.state)
 
@@ -649,15 +645,12 @@ class TestUploadLifecycle(UploadTestCase):
         self.assertEqual(self.state.upload_size, 0)
         self.assertEqual(self.state.upload_expected_block, 0)
         self.assertEqual(self.state.upload_sent, 0)
-        # download：清
-        self.assertFalse(self.state.download_active)
-        self.assertEqual(self.state.download_buffer, bytearray())
         # routine：清
         self.assertEqual(self.state.active_routines, set())
         self.assertEqual(self.state.routine_start_counts, {})
         # DTC：保留
         self.assertEqual(self.state.dtc_records, dtc_before)
-        # 复位后 0x36/0x37 回 IDLE
+        # 复位后 0x36 回 IDLE
         self.assertEqual(
             handle_uds_request(_block_request(0x01), self.state),
             bytes([0x7F, SID_TRANSFER_DATA, NRC_REQUEST_SEQUENCE_ERROR]),
