@@ -6,9 +6,10 @@ UDS Basic —— ECU 运行时状态与服务处理
 
 - ``EcuState`` / ``STATE``：ECU 的跨请求运行时状态
 - ``reset_security_state()`` / ``required_security_level()``：状态与权限 helper
-- 十二个服务处理函数：
+- 十四个服务处理函数：
     * ``service_diagnostic_session_control``  (0x10)
     * ``service_ecu_reset``                   (0x11)
+    * ``service_clear_diagnostic_information`` (0x14)
     * ``service_read_data_by_identifier``     (0x22)
     * ``service_security_access``             (0x27)
     * ``service_write_data_by_identifier``    (0x2E)
@@ -102,6 +103,7 @@ __all__ = [
     "required_security_level",
     "service_diagnostic_session_control",
     "service_ecu_reset",
+    "service_clear_diagnostic_information",
     "service_read_data_by_identifier",
     "service_security_access",
     "service_write_data_by_identifier",
@@ -757,6 +759,86 @@ def service_tester_present(request: bytes, state: EcuState) -> bytes:
         return b""
 
     return uds_types.positive_response(0x3E, bytes([0x00]))
+
+
+# ======================================================================
+# 0x14 ClearDiagnosticInformation
+# ======================================================================
+
+#: 0x14 的 groupOfDTC 通配值：清除**全部** DTC 的 status。
+#:
+#: 本实验**不实现 ISO 功能组**（0xFFFF00–0xFFFFFE 之类）：现有模型
+#: ``{DTC: statusOfDTC}`` 不含任何分组元数据，表达功能组需要新增
+#: 映射结构 —— 那是新概念，属本 PR OUT OF SCOPE。因此功能组取值
+#: 自然落入"未支持单值 → 0x31"，无需特判。
+#: **本约定是本项目 profile，不声称是 ISO 功能组语义的完整实现。**
+GROUP_OF_DTC_ALL: int = 0xFFFFFF
+
+
+def service_clear_diagnostic_information(request: bytes, state: EcuState) -> bytes:
+    """
+    处理 0x14 ClearDiagnosticInformation。
+
+    请求：``14 <groupOfDTC:3>``（严格 4 字节；groupOfDTC 为 24-bit
+    big-endian，与 0x19 输出 DTC 的 ``(dtc>>16, dtc>>8, dtc)`` 编码一致）
+    响应：``54``（严格 1 字节，**不回显** groupOfDTC）
+
+    响应为何无参数：ISO 14229-1 对该服务的正响应定义即无参数的 ``0x54``。
+    本项目只在确有需要处声明 profile 偏离（如 0x38 的 LFID），此处无需。
+
+    NRC 判定顺序（严格遵守）::
+
+        1. 长度 ≠ 4                        → 0x13
+        2. groupOfDTC 不在支持集合          → 0x31
+        3. 肯定响应                         → 0x54
+
+    **本服务不设 session / security 门控**（项目 profile 决定）：0x11
+    hardReset 是更彻底的破坏性操作（清 DID override 与 routine 状态）
+    且当前零门控，若给 0x14 加门控而 0x11 不加则语义不自洽；0x19 读
+    DTC 亦零门控。门控抽象属路线图中的 Permission / session framework，
+    不在本 PR 范围。
+
+    **支持集合（本项目 profile）**：``0xFFFFFF``（全部）或
+    ``state.dtc_records`` 中**实际存在**的单个 DTC。其余一律 0x31
+    （含 ISO 功能组取值与 ``0x000000``）。清除一个不存在/未支持的 DTC
+    返回 0x31 而**不是** no-op 成功 —— 与"未知 DID → 0x31""未知 RID →
+    0x31"的项目惯例一致；这是本项目刻意选择的语义。
+
+    **清除语义：status 置 0x00，绝不删除 key。**
+
+    - key 集合即"支持的 DTC"集合，``0x19/0A`` 报告的正是它。删 key 会让
+      已清除的 DTC 从 0x0A 消失，与"supported ≠ 当前故障"矛盾，也会让
+      第二次清除退化为 0x31（破坏幂等）。
+    - 因此 ``0xFFFFFF`` 是"遍历并置零"，**不是** ``dict.clear()``；
+      空库执行 all-clear 仍成功返回 ``54``。
+    - 静态 ``DTC_DATABASE`` 永不被写入，``dtc_records`` 也不重新绑定。
+
+    任何 NRC 分支都在**任何 state 写入之前**返回。
+    """
+    if len(request) != 4:
+        return uds_types.negative_response(
+            0x14, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+        )
+
+    group_of_dtc = (request[1] << 16) | (request[2] << 8) | request[3]
+
+    if group_of_dtc == GROUP_OF_DTC_ALL:
+        # 就地置零：key 集合保持不变，且不重新绑定 dtc_records。
+        # 取 list() 快照以避免"边遍历边写"的歧义读法（值写回既有 key，
+        # dict 大小不变，但显式快照让意图无歧义）。
+        for dtc in list(state.dtc_records):
+            state.dtc_records[dtc] = 0x00
+
+        return uds_types.positive_response(0x14)
+
+    if group_of_dtc not in state.dtc_records:
+        return uds_types.negative_response(
+            0x14, uds_types.NRC_REQUEST_OUT_OF_RANGE
+        )
+
+    state.dtc_records[group_of_dtc] = 0x00
+
+    return uds_types.positive_response(0x14)
 
 
 # ======================================================================
@@ -1750,6 +1832,7 @@ def _make_security_access_handler(
 SERVICES = {
     0x10: service_diagnostic_session_control,
     0x11: service_ecu_reset,
+    0x14: service_clear_diagnostic_information,
     0x19: service_read_dtc_information,
     0x22: service_read_data_by_identifier,
     0x2E: service_write_data_by_identifier,

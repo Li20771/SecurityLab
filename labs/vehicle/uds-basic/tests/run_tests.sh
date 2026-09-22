@@ -125,6 +125,14 @@ run_unit() {
 
     echo
 
+    if "$PYTHON_BIN" "$TESTS_DIR/test_dtc_clear_unit.py"; then
+        ok "0x14 ClearDiagnosticInformation unit tests passed"
+    else
+        fail "ClearDiagnosticInformation unit tests failed"
+    fi
+
+    echo
+
     if "$PYTHON_BIN" "$TESTS_DIR/test_routine_unit.py"; then
         ok "0x31 RoutineControl unit tests passed"
     else
@@ -224,6 +232,16 @@ run_e2e() {
             ok "0x19 ReadDTCInformation e2e tests passed"
         else
             fail "ReadDTCInformation e2e tests failed"
+        fi
+
+        echo
+    fi
+
+    if [ -f "$TESTS_DIR/test_dtc_clear_vcan.py" ]; then
+        if "$PYTHON_BIN" "$TESTS_DIR/test_dtc_clear_vcan.py"; then
+            ok "0x14 ClearDiagnosticInformation e2e tests passed"
+        else
+            fail "ClearDiagnosticInformation e2e tests failed"
         fi
 
         echo
