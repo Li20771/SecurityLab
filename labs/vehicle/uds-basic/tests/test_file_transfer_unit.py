@@ -1914,5 +1914,265 @@ class TestFileTransferLifecycle(FileTransferTestCase):
                 self.assertFalse(hasattr(uds_server, forbidden))
 
 
+# ----------------------------------------------------------------------
+# G1. DeleteFile 在 transfer active 时的行为（步骤 7 对全 mode 生效）
+# ----------------------------------------------------------------------
+
+
+class TestG1DeleteFileWhileTransferActive(FileTransferTestCase):
+    """G1：``38 02`` 在已有 transfer active 时也必须走步骤 7。
+
+    DeleteFile 是 one-shot、不建立 transfer，但它**同样**受步骤 7
+    （transfer slot 忙 → 0x22）约束——该步在任何 mode 之前统一判定，
+    因此它不会"因为不建会话就跳过互斥"。这里逐场景固化：
+
+    - download active：既有 0x34 内存下载 / 0x38 AddFile
+    - upload active：既有 0x35 上传 / 0x38 ReadFile / 0x38 ReadDir
+    """
+
+    #: 目标文件必须真实存在，否则用例会被步骤 8 的 0x31 掩盖。
+    _TARGET = "/data/config.bin"
+
+    def _assert_rejected_and_untouched(self) -> None:
+        files_before = dict(self.state.files)
+        snapshot = self.file_snapshot()
+
+        response = self.send(delete_file(self._TARGET))
+
+        self.assertEqual(
+            response,
+            bytes([0x7F, SID_REQUEST_FILE_TRANSFER, NRC_CONDITIONS_NOT_CORRECT]),
+        )
+        self.assertEqual(self.file_snapshot(), snapshot, "0x22 不得改变任何 transfer 字段")
+        self.assertEqual(self.state.files, files_before, "0x22 不得改变 files")
+        self.assertIn(self._TARGET, self.state.files, "目标文件必须仍然存在")
+
+    def test_g1_delete_during_plain_34_download(self) -> None:
+        self.send(download_request(size=4))
+
+        self._assert_rejected_and_untouched()
+
+    def test_g1_delete_during_38_add_file_download(self) -> None:
+        self.send(add_file("/g1-new.bin", 4))
+
+        self._assert_rejected_and_untouched()
+
+    def test_g1_delete_during_38_replace_file_download(self) -> None:
+        self.send(replace_file(self._TARGET, 4))
+
+        self._assert_rejected_and_untouched()
+
+    def test_g1_delete_during_plain_35_upload(self) -> None:
+        self.send(upload_request(130))
+
+        self._assert_rejected_and_untouched()
+
+    def test_g1_delete_during_38_read_file_upload(self) -> None:
+        self.send(read_file("/logs/last.log"))
+
+        self._assert_rejected_and_untouched()
+
+    def test_g1_delete_during_38_read_dir_upload(self) -> None:
+        self.send(read_dir("/"))
+
+        self._assert_rejected_and_untouched()
+
+    def test_g1_delete_after_transfer_completes_is_idle(self) -> None:
+        """对照组：transfer 收尾后同一个 DeleteFile 必须成功。"""
+        self.send(read_dir("/data/"))
+        self.send(transfer_data(0x01))
+        self.assertEqual(self.send(transfer_exit()), bytes([0x77]))
+
+        self.assertEqual(self.send(delete_file(self._TARGET)), bytes([0x78, 0x02]))
+        self.assertNotIn(self._TARGET, self.state.files)
+
+
+# ----------------------------------------------------------------------
+# G2. dirInfoLength == 256 的精确边界
+# ----------------------------------------------------------------------
+
+
+def _store_with_dir_info_length(target: int) -> dict[str, bytes]:
+    """
+    构造 dirInfo 恰好 ``target`` 字节的 files。
+
+    每个条目贡献 ``6 + len(name)`` 字节（nameLen:2 + name + size:4），
+    外加开头 2 字节 count。实现先用 4 字符名铺底，最后一条用长名吸收余量，
+    使**所有路径 ≤ 64 字节**——即该状态确实可经 0x38 AddFile 达到，
+    而不是一个只能手工构造、协议不可达的假边界。
+    """
+    remaining = target - 2
+    files: dict[str, bytes] = {}
+    index = 0
+
+    # 4 字符名 → 每条 10 字节；留够最后一条（≥ 6 + 1）才退出
+    while remaining - 10 >= 6 + 1:
+        files[f"/{index:04d}"] = b"x"
+        remaining -= 10
+        index += 1
+
+    # 最后一条吸收全部余量：name 长度 = remaining - 6，退出时 remaining ∈ [7, 16]
+    files["/" + "z" * (remaining - 6)] = b"x"
+
+    return files
+
+
+class TestG2DirInfoExactBoundary(FileTransferTestCase):
+    """G2：dirInfoLength 恰好 256 的精确边界。
+
+    与既有的"255 接受""263 拒绝"合起来构成**连续**边界覆盖：
+    254 / 255 接受，256 / 257 拒绝，中间不留缝隙。
+    """
+
+    def test_g2_256_rejected(self) -> None:
+        self.state.files = _store_with_dir_info_length(256)
+        self.assertEqual(len(_build_dir_info(self.state.files, "/")), 256)
+
+        files_before = dict(self.state.files)
+
+        response = self.send(read_dir("/"))
+
+        self.assertEqual(
+            response,
+            bytes([0x7F, SID_REQUEST_FILE_TRANSFER, NRC_REQUEST_OUT_OF_RANGE]),
+        )
+        # 不得进入 active transfer
+        self.assertFalse(self.state.upload_active)
+        self.assertFalse(self.state.download_active)
+        self.assertEqual(self.state.file_mode, FILE_MODE_IDLE)
+        self.assertEqual(self.state.file_path, "")
+        self.assertEqual(self.upload_snapshot(), (False, 0, 0, 0, 0))
+        self.assertEqual(self.state.files, files_before)
+
+    def test_g2_boundary_is_contiguous(self) -> None:
+        """254/255 接受、256/257 拒绝——四个相邻取值一次性对齐。"""
+        for target, accepted in ((254, True), (255, True), (256, False), (257, False)):
+            with self.subTest(dir_info_length=target):
+                self.state = EcuState()
+                self.state.files = _store_with_dir_info_length(target)
+                self.assertEqual(len(_build_dir_info(self.state.files, "/")), target)
+
+                response = self.send(read_dir("/"))
+
+                if accepted:
+                    self.assertEqual(
+                        response,
+                        bytes([0x78, 0x05, 0x02, 0x00, 0x80, 0x00, 0x00, 0x02])
+                        + target.to_bytes(2, "big"),
+                    )
+                    self.assertTrue(self.state.upload_active)
+                    self.assertEqual(self.state.upload_size, target)
+                else:
+                    self.assertEqual(
+                        response,
+                        bytes([0x7F, SID_REQUEST_FILE_TRANSFER,
+                               NRC_REQUEST_OUT_OF_RANGE]),
+                    )
+                    self.assertFalse(self.state.upload_active)
+                    self.assertEqual(self.state.file_mode, FILE_MODE_IDLE)
+
+    def test_g2_constructed_stores_are_protocol_reachable(self) -> None:
+        """边界 store 必须协议可达（路径 ≤ 64），否则这条边界没有实际意义。"""
+        for target in (254, 255, 256, 257):
+            with self.subTest(dir_info_length=target):
+                files = _store_with_dir_info_length(target)
+
+                self.assertEqual(len(_build_dir_info(files, "/")), target)
+                self.assertGreater(len(files), 0)
+
+                for path in files:
+                    self.assertLessEqual(len(path), MAX_FILE_PATH_LENGTH)
+
+
+# ----------------------------------------------------------------------
+# G3. ReadFile transfer 中途的中断语义
+# ----------------------------------------------------------------------
+
+
+class TestG3ReadFileInterruption(FileTransferTestCase):
+    """G3：ReadFile（upload 方向）中途的 hardReset 与 session switch。
+
+    与既有 readDir 版本共用同一条 upload 代码路径，但 readFile 的
+    ``upload_size`` 来自**文件长度**而非 dirInfo 长度，因此单独固化。
+    """
+
+    _PATH = "/logs/last.log"
+
+    def _start_mid_transfer(self) -> bytes:
+        content = FILE_DATABASE[self._PATH]
+
+        self.assertEqual(
+            self.send(read_file(self._PATH))[:2],
+            bytes([POS_REQUEST_FILE_TRANSFER, FILE_MODE_READ_FILE]),
+        )
+        self.assertEqual(
+            self.send(transfer_data(0x01)),
+            bytes([POS_TRANSFER_DATA, 0x01]) + content[:_CHUNK],
+        )
+        self.assertEqual(self.state.upload_sent, _CHUNK)
+
+        return content
+
+    def test_g3_hard_reset_mid_read_file_clears_transfer_keeps_files(self) -> None:
+        content = self._start_mid_transfer()
+        files_before = dict(self.state.files)
+
+        self.assertEqual(self.send(bytes([SID_ECU_RESET, 0x01])), bytes([0x51, 0x01]))
+
+        # transfer 被清理（upload 5 + file 2）
+        self.assertFalse(self.state.upload_active)
+        self.assertEqual(self.state.upload_address, 0)
+        self.assertEqual(self.state.upload_size, 0)
+        self.assertEqual(self.state.upload_expected_block, 0)
+        self.assertEqual(self.state.upload_sent, 0)
+        self.assertEqual(self.state.file_mode, FILE_MODE_IDLE)
+        self.assertEqual(self.state.file_path, "")
+
+        # files 不改变
+        self.assertEqual(self.state.files, files_before)
+        self.assertEqual(self.state.files[self._PATH], content)
+
+        # 复位后回到 IDLE
+        self.assertEqual(
+            self.send(transfer_data(0x01)),
+            bytes([0x7F, SID_TRANSFER_DATA, NRC_REQUEST_SEQUENCE_ERROR]),
+        )
+        self.assertEqual(
+            self.send(transfer_exit()),
+            bytes([0x7F, SID_REQUEST_TRANSFER_EXIT, NRC_REQUEST_SEQUENCE_ERROR]),
+        )
+
+    def test_g3_session_switch_mid_read_file_keeps_transfer(self) -> None:
+        content = self._start_mid_transfer()
+        files_before = dict(self.state.files)
+
+        self.assertEqual(
+            self.send(bytes([SID_SESSION_CONTROL, 0x03]))[:2],
+            bytes([0x50, 0x03]),
+        )
+
+        # transfer 保持，且数据源仍是该文件
+        self.assertTrue(self.state.upload_active)
+        self.assertEqual(self.state.file_mode, FILE_MODE_READ_FILE)
+        self.assertEqual(self.state.file_path, self._PATH)
+        self.assertEqual(self.state.upload_size, len(content))
+        self.assertEqual(self.state.upload_sent, _CHUNK)
+
+        # 可以继续传完
+        self.assertEqual(
+            self.send(transfer_data(0x02)),
+            bytes([POS_TRANSFER_DATA, 0x02]) + content[_CHUNK:2 * _CHUNK],
+        )
+        self.assertEqual(
+            self.send(transfer_data(0x03)),
+            bytes([POS_TRANSFER_DATA, 0x03]) + content[2 * _CHUNK:],
+        )
+        self.assertEqual(self.send(transfer_exit()), bytes([POS_REQUEST_TRANSFER_EXIT]))
+
+        # files 全程不变
+        self.assertEqual(self.state.files, files_before)
+        self.assertEqual(self.state.files[self._PATH], content)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
