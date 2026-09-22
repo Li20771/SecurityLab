@@ -6,7 +6,7 @@ UDS Basic —— ECU 运行时状态与服务处理
 
 - ``EcuState`` / ``STATE``：ECU 的跨请求运行时状态
 - ``reset_security_state()`` / ``required_security_level()``：状态与权限 helper
-- 十一个服务处理函数：
+- 十二个服务处理函数：
     * ``service_diagnostic_session_control``  (0x10)
     * ``service_ecu_reset``                   (0x11)
     * ``service_read_data_by_identifier``     (0x22)
@@ -16,6 +16,7 @@ UDS Basic —— ECU 运行时状态与服务处理
     * ``service_read_dtc_information``        (0x19)
     * ``service_routine_control``             (0x31)
     * ``service_request_download``            (0x34)
+    * ``service_request_upload``              (0x35)
     * ``service_transfer_data``               (0x36)
     * ``service_request_transfer_exit``       (0x37)
 - ``SERVICES``：静态服务注册表（**不含 0x27**）
@@ -70,8 +71,10 @@ from transfer_database import (
     MAX_BLOCK_LENGTH_BYTES,
     MAX_DOWNLOAD_SIZE,
     MAX_TRANSFER_REQUEST_LENGTH,
+    MAX_UPLOAD_SIZE,
     REQUEST_DOWNLOAD_ALFID,
     REQUEST_DOWNLOAD_DFI,
+    _upload_chunk,
 )
 
 __all__ = [
@@ -90,6 +93,7 @@ __all__ = [
     "service_read_dtc_information",
     "service_routine_control",
     "service_request_download",
+    "service_request_upload",
     "service_transfer_data",
     "service_request_transfer_exit",
     "handle_uds_request",
@@ -225,6 +229,30 @@ class EcuState:
     #: 全字节相等的重传是幂等操作（不追加、不推进 counter、仍正响应）。
     download_last_block_request: bytes | None = None
 
+    # ---- 0x35 upload transfer 运行时状态 ----
+    #
+    # 与 download 共享同一个"transfer 会话槽"：download_active 与
+    # upload_active 互斥（0x34/0x35 建立会话时互相检查对方）。
+    # 数据源是 synthetic 循环模式（transfer_database.UPLOAD_SOURCE），
+    # 不保存 upload buffer——sent 即已发送字节数，块内容按
+    # 固定块契约（min(126, remaining)）从源即时生成。
+
+    #: 是否有进行中的 upload session（IDLE / ACTIVE 判定源）。
+    upload_active: bool = False
+
+    #: 0x35 解析出的 memoryAddress（仅 metadata，教学保存）。
+    upload_address: int = 0
+
+    #: 0x35 声明的上传总长度（1..MAX_UPLOAD_SIZE=32130）。
+    upload_size: int = 0
+
+    #: 期望的下一个 BSC（0x35 后为 1；成功 +1 并 &0xFF；0 = 无会话）。
+    upload_expected_block: int = 0
+
+    #: 已发送字节数（**唯一发送进度**）：duplicate 判定前置
+    #: （sent==0 表示尚无上一块）、块定位基准、0x37 完成判定依据。
+    upload_sent: int = 0
+
 
 #: 默认状态单例：ECU 进程使用的唯一运行时状态实例。
 #:
@@ -352,6 +380,12 @@ def service_ecu_reset(request: bytes, state: EcuState) -> bytes:
         state.download_expected_block = 0
         state.download_buffer.clear()
         state.download_last_block_request = None
+        # upload transfer 同属瞬态操作：复位中止（5 字段全清）
+        state.upload_active = False
+        state.upload_address = 0
+        state.upload_size = 0
+        state.upload_expected_block = 0
+        state.upload_sent = 0
 
         return uds_types.positive_response(0x11, bytes([reset_type]))
 
@@ -957,7 +991,9 @@ def service_request_download(request: bytes, state: EcuState) -> bytes:
             0x34, uds_types.NRC_REQUEST_OUT_OF_RANGE
         )
 
-    if state.download_active:
+    # 方向互斥：download 与 upload 共享 transfer 会话槽，
+    # 任一方向 active 时新的 0x34 都拒绝（状态不变）。
+    if state.download_active or state.upload_active:
         return uds_types.negative_response(
             0x34, uds_types.NRC_CONDITIONS_NOT_CORRECT
         )
@@ -980,64 +1016,194 @@ def service_request_download(request: bytes, state: EcuState) -> bytes:
     )
 
 
+def _validate_upload_size(size: int) -> bool:
+    """
+    校验上传大小是否在本实验支持范围内。
+
+    与 ``_validate_download_size`` 同一思路：纯函数、独立单测。
+    上限 = MAX_UPLOAD_SIZE（255 块 × 126 字节）——上传方向的 BSC
+    是单字节，超过 255 块会回绕造成 duplicate/新块歧义。
+    """
+    return 0 < size <= MAX_UPLOAD_SIZE
+
+
+def service_request_upload(request: bytes, state: EcuState) -> bytes:
+    """
+    处理 0x35 RequestUpload。
+
+    与 0x34 共享同一 8 字节请求结构（方向相反）::
+
+        35 00 23 <memoryAddress:3> <memorySize:2>
+
+    - DFI=0x00、ALFID=0x23 为唯一支持值（其它 → 7F 35 31）；
+    - size 必须 1..MAX_UPLOAD_SIZE(32130)（0 或超限 → 7F 35 31）；
+    - 任一方向已有 active transfer（download 或 upload）→ 7F 35 22，
+      状态不变；
+    - 长度 ≠ 8 → 7F 35 13。
+
+    成功：建立全新 upload session（expected=1、sent=0——sent==0
+    同时表示"尚不存在上一块"，是 duplicate 判定的前置条件），
+    返回 ``75 20 00 80``（maxNumberOfBlockLength=128 指 ECU 每条
+    TransferData **响应**的最大长度）。
+    """
+    parsed = _parse_request_download(request)  # shared 8-byte format parser
+
+    if parsed is None:
+        return uds_types.negative_response(
+            0x35, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+        )
+
+    if request[1] != REQUEST_DOWNLOAD_DFI:
+        return uds_types.negative_response(
+            0x35, uds_types.NRC_REQUEST_OUT_OF_RANGE
+        )
+
+    if request[2] != REQUEST_DOWNLOAD_ALFID:
+        return uds_types.negative_response(
+            0x35, uds_types.NRC_REQUEST_OUT_OF_RANGE
+        )
+
+    address, size = parsed
+
+    if not _validate_upload_size(size):
+        return uds_types.negative_response(
+            0x35, uds_types.NRC_REQUEST_OUT_OF_RANGE
+        )
+
+    if state.download_active or state.upload_active:
+        return uds_types.negative_response(
+            0x35, uds_types.NRC_CONDITIONS_NOT_CORRECT
+        )
+
+    state.upload_active = True
+    state.upload_address = address
+    state.upload_size = size
+    state.upload_expected_block = 1
+    state.upload_sent = 0
+
+    # lengthFormatIdentifier：高半字节 = maxNumberOfBlockLength 的字节数（2），
+    # 低半字节固定 0 → 0x20（与 0x34 正响应同构）。
+    return uds_types.positive_response(
+        0x35, bytes([
+            MAX_BLOCK_LENGTH_BYTES << 4,
+            (MAX_TRANSFER_REQUEST_LENGTH >> 8) & 0xFF,
+            MAX_TRANSFER_REQUEST_LENGTH & 0xFF,
+        ])
+    )
+
+
 def service_transfer_data(request: bytes, state: EcuState) -> bytes:
     """
     处理 0x36 TransferData。
 
-    请求: ``36 <blockSequenceCounter:1> <transferData...>``
-    （3 ≤ len ≤ MAX_TRANSFER_REQUEST_LENGTH=128；data ≤ 126）。
+    **顶层方向分流先于任何长度检查**（upload 的合法请求
+    ``36 <BSC>`` 是 2 字节，不能先被 download 的 3..128 规则误杀）：
 
-    判定顺序（幂等重传必须早于越界检查——buffer 已满时重发
-    上一条完整请求仍必须是正响应，而不是 0x13）：
+    - upload active → upload 分支（见下）；
+    - download active → 既有 download 分支（逻辑逐字节不变）；
+    - 都 inactive → 任意形态 → 7F 36 24（无方向，长度规则不适用）。
 
-    1. len(request) < 3 或 > 128 → 7F 36 13；
-    2. 无 active download → 7F 36 24（状态不变）；
-    3. 请求 == 上一条被接受的完整请求 → **幂等重传**：76 <BSC>，
-       不追加、不推进、不改 last_block（连续重复亦然，不是 0x73）；
-    4. BSC != expected → 7F 36 73（真正的 sequence error，状态不变）；
-    5. data > 126 或 len(buffer)+len(data) > download_size → 7F 36 13
-       （**绝不 received > requested**，状态不变）；
-    6. 正常新 block → 追加、expected=(expected+1)&0xFF、last_block=
-       本请求，返回 76 <BSC>。
+    Upload 分支（请求严格 ``36 <BSC>``，len != 2 → 7F 36 13）：
+
+    1. ``upload_sent > 0`` 且 BSC == (expected−1)&0xFF → **幂等重发**
+       上一块（固定块契约确定性重建，不保存块数据），76 <BSC> <块>，
+       sent/expected 均不变（连续重复亦然）；
+    2. BSC == expected 且 remaining == 0 → 7F 36 22（无剩余数据，先 0x37）；
+    3. BSC == expected → 76 <BSC> <_upload_chunk(sent, min(126, remaining))>，
+       sent += chunk_len，expected=(expected+1)&0xFF；
+    4. 其它 BSC → 7F 36 73（状态不变）。
     """
-    if len(request) < 3 or len(request) > MAX_TRANSFER_REQUEST_LENGTH:
-        return uds_types.negative_response(
-            0x36, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
-        )
+    if state.upload_active:
+        if len(request) != 2:
+            return uds_types.negative_response(
+                0x36, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+            )
 
-    block_counter = request[1]
-    data = bytes(request[2:])
+        block_counter = request[1]
 
-    if not state.download_active:
-        return uds_types.negative_response(
-            0x36, uds_types.NRC_REQUEST_SEQUENCE_ERROR
-        )
+        if (
+            state.upload_sent > 0
+            and block_counter == (state.upload_expected_block - 1) & 0xFF
+        ):
+            # 幂等重发上一块：按固定块契约确定性重建，不保存块数据。
+            if state.upload_sent < state.upload_size:
+                prev_len = MAX_TRANSFER_REQUEST_LENGTH - 2
+            else:
+                prev_len = state.upload_size % (MAX_TRANSFER_REQUEST_LENGTH - 2) or (
+                    MAX_TRANSFER_REQUEST_LENGTH - 2
+                )
 
-    if request == state.download_last_block_request:
-        # 幂等重传：上一条完整请求的完全重复（含 BSC 相同）。
-        # 刻意放在越界检查**之前**：buffer 已满时重发仍须正响应。
+            prev_start = state.upload_sent - prev_len
+            chunk = _upload_chunk(prev_start, prev_len)
+
+            return uds_types.positive_response(
+                0x36, bytes([block_counter]) + chunk
+            )
+
+        if block_counter != state.upload_expected_block:
+            return uds_types.negative_response(
+                0x36, uds_types.NRC_WRONG_BLOCK_SEQUENCE_COUNTER
+            )
+
+        remaining = state.upload_size - state.upload_sent
+
+        if remaining == 0:
+            return uds_types.negative_response(
+                0x36, uds_types.NRC_CONDITIONS_NOT_CORRECT
+            )
+
+        chunk_len = min(MAX_TRANSFER_REQUEST_LENGTH - 2, remaining)
+        chunk = _upload_chunk(state.upload_sent, chunk_len)
+
+        state.upload_sent += chunk_len
+        state.upload_expected_block = (state.upload_expected_block + 1) & 0xFF
+
+        return uds_types.positive_response(0x36, bytes([block_counter]) + chunk)
+
+    if state.download_active:
+        # ---- 既有 download 分支：逻辑逐字节不变 ----
+        if len(request) < 3 or len(request) > MAX_TRANSFER_REQUEST_LENGTH:
+            return uds_types.negative_response(
+                0x36, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+            )
+
+        block_counter = request[1]
+        data = bytes(request[2:])
+
+        if not state.download_active:
+            return uds_types.negative_response(
+                0x36, uds_types.NRC_REQUEST_SEQUENCE_ERROR
+            )
+
+        if request == state.download_last_block_request:
+            # 幂等重传：上一条完整请求的完全重复（含 BSC 相同）。
+            # 刻意放在越界检查**之前**：buffer 已满时重发仍须正响应。
+            return uds_types.positive_response(0x36, bytes([block_counter]))
+
+        if block_counter != state.download_expected_block:
+            return uds_types.negative_response(
+                0x36, uds_types.NRC_WRONG_BLOCK_SEQUENCE_COUNTER
+            )
+
+        if len(data) > MAX_TRANSFER_REQUEST_LENGTH - 2:
+            return uds_types.negative_response(
+                0x36, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+            )
+
+        if len(state.download_buffer) + len(data) > state.download_size:
+            return uds_types.negative_response(
+                0x36, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+            )
+
+        state.download_buffer.extend(data)
+        state.download_expected_block = (state.download_expected_block + 1) & 0xFF
+        state.download_last_block_request = request
+
         return uds_types.positive_response(0x36, bytes([block_counter]))
 
-    if block_counter != state.download_expected_block:
-        return uds_types.negative_response(
-            0x36, uds_types.NRC_WRONG_BLOCK_SEQUENCE_COUNTER
-        )
-
-    if len(data) > MAX_TRANSFER_REQUEST_LENGTH - 2:
-        return uds_types.negative_response(
-            0x36, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
-        )
-
-    if len(state.download_buffer) + len(data) > state.download_size:
-        return uds_types.negative_response(
-            0x36, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
-        )
-
-    state.download_buffer.extend(data)
-    state.download_expected_block = (state.download_expected_block + 1) & 0xFF
-    state.download_last_block_request = request
-
-    return uds_types.positive_response(0x36, bytes([block_counter]))
+    return uds_types.negative_response(
+        0x36, uds_types.NRC_REQUEST_SEQUENCE_ERROR
+    )
 
 
 def service_request_transfer_exit(request: bytes, state: EcuState) -> bytes:
@@ -1045,37 +1211,55 @@ def service_request_transfer_exit(request: bytes, state: EcuState) -> bytes:
     处理 0x37 RequestTransferExit。
 
     请求严格 1 字节（本 feature 不实现 requestTransferExitRecord）。
+    该长度规则**方向无关**（两方向一致），可安全置于分流之前。
 
-    - 无 active download → 7F 37 24（状态不变）；
-    - received < requested → 7F 37 22（条件不满足；保持 active，
-      Tester 可继续 0x36 或 hardReset）；
-    - received == requested → 77，**立即清理全部 transfer 状态**回
-      IDLE——单次 download 流程，成功后 0x36/0x37 都得到确定性的
-      7F 37/36 24，无悬挂状态。
+    顶层方向分流（upload 分支必须先于 download 检查，
+    避免旧结构 ``if not download_active → 24`` 吞掉 upload 会话）：
+
+    - upload active：sent < size → 7F 37 22（状态不变，可继续 0x36）；
+      sent == size → 77 + 清理全部 5 个 upload 字段 → IDLE。
+    - download active：既有 download 完成分支（逻辑不变）——
+      received < requested → 7F 37 22；complete → 77 + 清理 download
+      字段 → IDLE。
+    - 都 inactive → 7F 37 24。
     """
     if len(request) != 1:
         return uds_types.negative_response(
             0x37, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
         )
 
-    if not state.download_active:
-        return uds_types.negative_response(
-            0x37, uds_types.NRC_REQUEST_SEQUENCE_ERROR
-        )
+    if state.upload_active:
+        if state.upload_sent < state.upload_size:
+            return uds_types.negative_response(
+                0x37, uds_types.NRC_CONDITIONS_NOT_CORRECT
+            )
 
-    if len(state.download_buffer) < state.download_size:
-        return uds_types.negative_response(
-            0x37, uds_types.NRC_CONDITIONS_NOT_CORRECT
-        )
+        state.upload_active = False
+        state.upload_address = 0
+        state.upload_size = 0
+        state.upload_expected_block = 0
+        state.upload_sent = 0
 
-    state.download_active = False
-    state.download_address = 0
-    state.download_size = 0
-    state.download_expected_block = 0
-    state.download_buffer.clear()
-    state.download_last_block_request = None
+        return uds_types.positive_response(0x37)
 
-    return uds_types.positive_response(0x37)
+    if state.download_active:
+        if len(state.download_buffer) < state.download_size:
+            return uds_types.negative_response(
+                0x37, uds_types.NRC_CONDITIONS_NOT_CORRECT
+            )
+
+        state.download_active = False
+        state.download_address = 0
+        state.download_size = 0
+        state.download_expected_block = 0
+        state.download_buffer.clear()
+        state.download_last_block_request = None
+
+        return uds_types.positive_response(0x37)
+
+    return uds_types.negative_response(
+        0x37, uds_types.NRC_REQUEST_SEQUENCE_ERROR
+    )
 
 
 # ======================================================================
@@ -1130,6 +1314,7 @@ SERVICES = {
     0x2E: service_write_data_by_identifier,
     0x31: service_routine_control,
     0x34: service_request_download,
+    0x35: service_request_upload,
     0x36: service_transfer_data,
     0x37: service_request_transfer_exit,
     0x3E: service_tester_present,

@@ -181,6 +181,7 @@ UDS_INTERFACE=vcan1 UDS_RX_ID=0x7E1 UDS_TX_ID=0x7E9 \
 | `0x2E` | WriteDataByIdentifier | —（可写 DID 见 4.3） | `0x6E` | 已实现 |
 | `0x31` | RoutineControl | `0x01` Start<br>`0x02` Stop<br>`0x03` RequestResults | `0x71` | 已实现（见 4.5） |
 | `0x34` | RequestDownload | —（DFI=00，ALFID=23） | `0x74` | 已实现（见 4.6） |
+| `0x35` | RequestUpload | —（DFI=00，ALFID=23，≤32130 字节） | `0x75` | 已实现（见 4.7） |
 | `0x36` | TransferData | —（BSC 块序） | `0x76` | 已实现（见 4.6） |
 | `0x37` | RequestTransferExit | — | `0x77` | 已实现（见 4.6） |
 | `0x3E` | TesterPresent | `0x00` zeroSubFunction<br>`0x80` 抑制正响应 | `0x7E` / 无响应 | 已实现 |
@@ -370,6 +371,31 @@ synthetic in-memory 下载目标（**不是真实 Flash、不接触文件系统�
 - 层次区分：ISO-TP 的 FF/CF/FC 分段是传输层信封，与 UDS 层
   blockSequenceCounter 完全无关。
 
+### 4.7 0x35 RequestUpload（synthetic in-memory source）
+
+与 download 共享同一 8 字节请求结构（方向相反），数据源是
+256 字节循环模式（`transfer_database.UPLOAD_SOURCE`，**不是真实
+Flash / firmware 文件、不做 extraction**）：
+
+```
+35 00 23 <ADDR:3> <SIZE:2>   → 75 20 00 80   RequestUpload
+36 <BSC:1>                   → 76 <BSC> <data≤126>   TransferData（ECU→Tester）
+37                           → 77            RequestTransferExit
+```
+
+- 大小上限：`MAX_UPLOAD_SIZE = 32130 = 255 × 126`——BSC 单字节，
+  单会话 ≤255 块避免回绕后“重复上一条/新块”歧义（教学模型限制）。
+- 固定块契约：每块 `min(126, remaining)`（最后一块截短）；上一块
+  可确定性重建，duplicate 请求（`upload_sent > 0` 且 BSC ==
+  (expected−1)&0xFF）→ 幂等重发同一块，sent/expected 不变。
+- 状态：5 个 `upload_*` 字段（active/address/size/expected_block/
+  sent）；`upload_sent` 是唯一发送进度（duplicate 前置、块定位、
+  0x37 完成判定）。初始 `36 00` → 0x73（sent==0 不判 duplicate）；
+  255 块后 expected=0x00、`36 00` → 0x22（无剩余数据）。
+- 互斥：download 与 upload 共享 transfer 会话槽（0x34/0x35 建立时
+  互查对方 → 0x22）。hardReset 清空 upload 5 字段（五路语义）；
+  session 切换不终止 upload。
+
 ## 5. 支持的 NRC
 
 | NRC | 名称 | 本实验触发条件 |
@@ -455,6 +481,13 @@ synthetic in-memory 下载目标（**不是真实 Flash、不接触文件系统�
 | `36 <BSC> <data≤126>`（正常块） | `76 <BSC>` | 追加数据，counter+1 回绕 |
 | `37`（未传完） | `7F 37 22` | 条件不满足（保持 active） |
 | `37`（传完） | `77` | 成功并清理全部 transfer 状态 |
+| `35`（长度 ≠ 8） | `7F 35 13` | 结构畸形 |
+| `35 01 23 ...` / `35 00 32 ...` | `7F 35 31` | DFI/ALFID 不支持 |
+| `35 00 23 ... 00 00` / `>32130` | `7F 35 31` | size 非法 |
+| `35 00 23 ...`（任一方向已 active） | `7F 35 22` | transfer 互斥 |
+| `35 00 23 <ADDR:3> <SIZE:2>` | `75 20 00 80` | 建立 upload session |
+| `36 <BSC>`（上传正常块） | `76 <BSC> <data≤126>` | ECU 发送块，sent 累计 |
+| `36 <BSC>`（重复上一条） | 同块重发 | 幂等（sent/expected 不变） |
 | 空请求 | `7F 00 13` | 无法解析 |
 
 **重要设计原则**：
@@ -699,6 +732,7 @@ bash tests/run_tests.sh e2e    # 只跑 vcan0 端到端测试
 | `tests/test_dtc_unit.py` | 30 | 否 |
 | `tests/test_routine_unit.py` | 25 | 否 |
 | `tests/test_transfer_unit.py` | 40 | 否 |
+| `tests/test_upload_unit.py` | 47 | 否 |
 | `tests/test_e2e_vcan.py` | 65 | 是 |
 | `tests/test_isotp_options_vcan.py` | 14 | 是 |
 | `tests/test_write_did_vcan.py` | 8 | 是 |
@@ -706,7 +740,8 @@ bash tests/run_tests.sh e2e    # 只跑 vcan0 端到端测试
 | `tests/test_dtc_vcan.py` | 8 | 是 |
 | `tests/test_routine_vcan.py` | 11 | 是 |
 | `tests/test_transfer_vcan.py` | 17 | 是 |
-| **合计** | **392**（unit 265 + e2e 127） | — |
+| `tests/test_upload_vcan.py` | 16 | 是 |
+| **合计** | **455**（unit 312 + e2e 143） | — |
 
 ### 8.2 离线单元测试（不需要 CAN）
 
@@ -1086,7 +1121,7 @@ uds-basic/
 │   ├── did_database.py      # DID 数据库（受保护/可写 DID 标记）
 │   ├── dtc_database.py      # DTC 静态数据库（合成 DTC + mask/format 常量）
 │   ├── routine_database.py   # Routine 静态数据库（0x2001/0x2002 定义）
-│   ├── transfer_database.py   # Download transfer 静态配置（DFI/ALFID/上限）
+│   ├── transfer_database.py   # Download/Upload 静态配置（DFI/ALFID/上限/上传源）
 │   ├── gateway.py           # 多 ECU 路由（VirtualEcu / DiagnosticGateway）
 │   └── keygen.py            # 教学用 seed/key 算法（无 CAN 依赖）
 └── tests/
@@ -1098,13 +1133,15 @@ uds-basic/
     ├── test_dtc_unit.py         # 0x19 单元测试（30 用例，无需 CAN）
     ├── test_routine_unit.py     # 0x31 单元测试（25 用例，无需 CAN）
     ├── test_transfer_unit.py    # 0x34/36/37 单元测试（40 用例，无需 CAN）
+    ├── test_upload_unit.py      # 0x35 单元测试（47 用例，无需 CAN）
     ├── test_e2e_vcan.py         # vcan0 端到端测试（65 用例）
     ├── test_isotp_options_vcan.py   # ISO-TP 传输参数矩阵（14 用例，需 vcan0）
     ├── test_write_did_vcan.py   # 0x2E/0x3E 真实解锁写入（8 用例，需 vcan0）
     ├── test_multi_ecu_vcan.py   # 三 ECU 物理寻址（4 用例，需 vcan0）
     ├── test_dtc_vcan.py         # 0x19 真实链路（8 用例，需 vcan0）
     ├── test_routine_vcan.py     # 0x31 真实链路（11 用例，需 vcan0）
-    └── test_transfer_vcan.py    # 0x34/36/37 真实链路（17 用例，需 vcan0）
+    ├── test_transfer_vcan.py    # 0x34/36/37 真实链路（17 用例，需 vcan0）
+    └── test_upload_vcan.py      # 0x35 真实链路（16 用例，需 vcan0）
 ```
 
 > 注意：`ecu.py` 不是 UDS 业务实现层。协议实现位于 `uds_server.py`，
@@ -1135,6 +1172,11 @@ uds-basic/
   0x37 完整性检查 + 状态清理）
 - [x] transfer 生命周期：hardReset 中止下载、session 切换保持 active、
   四路 reset 语义（transfer/routine/DID 清、DTC 保留）
+- [x] `0x35` RequestUpload（synthetic 256 字节循环源；固定块契约
+  min(126,remaining) + 上一块确定性重建；duplicate 幂等重发；
+  32130 上限消除 BSC 回绕歧义；0x36/0x37 方向分流、download 路径不变）
+- [x] 方向互斥：0x34/0x35 共享 transfer 会话槽（四向 0x22 测试固化）；
+  hardReset 五路语义（upload/download/routine/DID 清、DTC 保留）
 - [x] DTC 模型：静态 `dtc_database.py` + `EcuState.dtc_records` 运行时状态；
   hardReset 保留 DTC（故障记忆语义，unit + e2e 固化）
 - [x] `0x7F` 否定响应与 NRC 判定（0x11/0x12/0x13/0x22/0x24/0x31/0x33/0x35/0x36/0x37/0x7F）
@@ -1150,8 +1192,8 @@ uds-basic/
 - [x] 显式 `EcuState`（10 字段）与单一事实源 `STATE`
 - [x] 静态服务 registry + 协议层 dispatcher
 - [x] transport / protocol 分层与单向依赖（`uds_server` 不反向依赖 `ecu`）
-- [x] 离线单元测试 265 PASS（106 ECU + 34 keygen + 17 services-extra + 13 gateway + 30 dtc + 25 routine + 40 transfer）
-- [x] vcan0 端到端测试 127 PASS（65 e2e + 14 isotp-matrix + 8 write-did + 4 multi-ecu + 8 dtc + 11 routine + 17 transfer）
+- [x] 离线单元测试 312 PASS（106 ECU + 34 keygen + 17 services-extra + 13 gateway + 30 dtc + 25 routine + 40 transfer + 47 upload）
+- [x] vcan0 端到端测试 143 PASS（65 e2e + 14 isotp-matrix + 8 write-did + 4 multi-ecu + 8 dtc + 11 routine + 17 transfer + 16 upload）
 - [x] **三轮连续稳定性验证全部通过**（见第 14.7 节）
 
 ---
@@ -1234,7 +1276,7 @@ _security_services()            —— 每次请求现场构造 SecurityAccess h
 
 | 组成 | 说明 |
 |---|---|
-| `EcuState` | 运行时状态对象，**恰好 18 个字段**（见下） |
+| `EcuState` | 运行时状态对象，**恰好 23 个字段**（见下） |
 | `STATE` | 默认单例，**唯一事实源** |
 | `reset_security_state(state)` | 清除解锁与 seed 生命周期，保留失败计数与锁定 |
 | `required_security_level(did)` | DID → 所需安全等级 |
@@ -1247,13 +1289,14 @@ _security_services()            —— 每次请求现场构造 SecurityAccess h
 | `service_tester_present` | 0x3E handler（`3E 80` 返回空字节由入口层抑制发帧） |
 | `service_read_dtc_information` | 0x19 handler（reportType 01/02/0A，只读 `dtc_records`） |
 | `service_routine_control` | 0x31 handler（Start/Stop/Results 状态机，见 4.5） |
-| `service_request_download` | 0x34 handler（DFI/ALFID 校验 + 建立 download session，见 4.6） |
-| `service_transfer_data` | 0x36 handler（BSC 校验 + 幂等重传 + size 防越界） |
-| `service_request_transfer_exit` | 0x37 handler（完整性检查 + 状态清理） |
-| `SERVICES` | **静态** registry（0x10 / 0x11 / 0x19 / 0x22 / 0x2E / 0x31 / 0x34 / 0x36 / 0x37 / 0x3E） |
+| `service_request_download` | 0x34 handler（DFI/ALFID 校验 + 建立 download session，见 4.6；含 upload 互斥 guard） |
+| `service_request_upload` | 0x35 handler（DFI/ALFID/size 校验 + 建立 upload session，见 4.7） |
+| `service_transfer_data` | 0x36 handler（顶层方向分流：upload 发送块 / download 既有逻辑） |
+| `service_request_transfer_exit` | 0x37 handler（顶层方向分流：upload 以 sent 判定 / download 既有逻辑） |
+| `SERVICES` | **静态** registry（0x10 / 0x11 / 0x19 / 0x22 / 0x2E / 0x31 / 0x34 / 0x35 / 0x36 / 0x37 / 0x3E） |
 | `handle_uds_request(request, state, *, services=None)` | 协议层 dispatcher |
 
-**`EcuState` 的 18 个字段**（当前实现，不多不少）：
+**`EcuState` 的 23 个字段**（当前实现，不多不少）：
 
 ```text
 session          当前诊断会话
@@ -1274,6 +1317,11 @@ download_size    0x34 声明的下载总长（完整性/防越界依据）
 download_expected_block 期望的下一个 BSC（1 起，&0xFF 回绕）
 download_buffer  合成内存缓冲（received = len(buffer) 推导）
 download_last_block_request 上一条被接受的完整 0x36 请求（幂等重传判定）
+upload_active    0x35 upload 会话是否进行中（与 download 互斥）
+upload_address   0x35 memoryAddress metadata
+upload_size      0x35 声明的上传总长（1..32130）
+upload_expected_block 期望的下一个 BSC（1 起，&0xFF）
+upload_sent      已发送字节数（唯一进度：duplicate 前置/块定位/0x37 完成判定）
 ```
 
 > 当前**不包含** S3 定时器、`last_request_sid`、`unlocked_at`、
@@ -1299,8 +1347,8 @@ download_last_block_request 上一条被接受的完整 0x36 请求（幂等重�
 
 ### 14.6 Service registry 与 dispatcher
 
-静态 registry 定义在 `uds_server.py`，**含十个服务**
-（0x2E / 0x3E 为 Phase 4X 新增，0x19 / 0x31 / 0x34 / 0x36 / 0x37 为第二轮新增）：
+静态 registry 定义在 `uds_server.py`，**含十一个服务**
+（0x2E / 0x3E 为 Phase 4X 新增，0x19 / 0x31 / 0x34 / 0x35 / 0x36 / 0x37 为第二轮新增）：
 
 ```python
 SERVICES = {
@@ -1311,6 +1359,7 @@ SERVICES = {
     0x2E: service_write_data_by_identifier,
     0x31: service_routine_control,
     0x34: service_request_download,
+    0x35: service_request_upload,
     0x36: service_transfer_data,
     0x37: service_request_transfer_exit,
     0x3E: service_tester_present,
@@ -1381,8 +1430,8 @@ P9 阶段**连续执行 3 轮完整回归**，三轮结果逐项完全一致
 工程收口 2026-09-21 基线（Phase 4X 全量，实测）：
 
 ```text
-UDS Unit       265 PASS   （106 ECU + 34 keygen + 17 services-extra + 13 gateway + 30 dtc + 25 routine + 40 transfer）
-E2E（在网）     127 PASS  （65 + 14 isotp-matrix + 8 write-did + 4 multi-ecu + 8 dtc + 11 routine + 17 transfer）
+UDS Unit       312 PASS   （106 ECU + 34 keygen + 17 services-extra + 13 gateway + 30 dtc + 25 routine + 40 transfer + 47 upload）
+E2E（在网）     143 PASS  （65 + 14 isotp-matrix + 8 write-did + 4 multi-ecu + 8 dtc + 11 routine + 17 transfer + 16 upload）
 can-tools 离线 183 PASS   （34 parsers + 50 isotp-options + 99 fuzz-harness，
                           含 kernel oracle 三态 10 例）
 fuzz kernel oracle 三态 AVAILABLE/UNAVAILABLE/ERROR 如实上报
@@ -1391,7 +1440,7 @@ fuzz kernel oracle 三态 AVAILABLE/UNAVAILABLE/ERROR 如实上报
 运行方式：
 
 ```bash
-bash labs/vehicle/uds-basic/tests/run_tests.sh all   # 265 + 127
+bash labs/vehicle/uds-basic/tests/run_tests.sh all   # 312 + 143
 bash scripts/healthcheck.sh                          # 环境 + 离线测试
 ```
 
@@ -1663,8 +1712,9 @@ Phase 3 完成的是一次**结构性重构**（行为保持不变）：
 - ✅ 已完成：`0x31` RoutineControl（Start/Stop/RequestResults +
   0x2001/0x2002 synthetic routines；routineControlOptionRecord /
   routineStatusRecord 与权限/会话门控属后续）
-- ✅ 已完成：`0x34/0x36/0x37` Download Transfer（synthetic in-memory
-  目标 + BSC 幂等重传；0x35 与真实 Flash/签名校验属后续）
+- ✅ 已完成：`0x34/0x36/0x37` Download Transfer 与 `0x35` RequestUpload
+  （synthetic 内存模型，BSC 幂等重传/重发；真实 Flash、签名校验、
+  0x38/0x39 属后续）
 - `0x28` CommunicationControl、`0x85` ControlDTCSetting
 - `0x78` ResponsePending 与 P2* 超时处理
 - `0x27` 多安全等级（Level 2：`0x03`/`0x04`，需位掩码式安全等级）
