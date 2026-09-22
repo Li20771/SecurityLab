@@ -19,6 +19,7 @@ UDS Basic —— ECU 运行时状态与服务处理
     * ``service_request_upload``              (0x35)
     * ``service_transfer_data``               (0x36)
     * ``service_request_transfer_exit``       (0x37)
+    * ``service_request_file_transfer``       (0x38)
 - ``SERVICES``：静态服务注册表（**不含 0x27**）
 - ``_make_security_access_handler()``：为 0x27 绑定请求时依赖的工厂
 - ``handle_uds_request()``：协议层 dispatcher
@@ -58,6 +59,21 @@ from dtc_database import (
     DTC_FORMAT_IDENTIFIER,
     DTC_STATUS_AVAILABILITY_MASK,
 )
+from file_database import (
+    FILE_MODE_ADD_FILE,
+    FILE_MODE_DELETE_FILE,
+    FILE_MODE_IDLE,
+    FILE_MODE_READ_DIR,
+    FILE_MODE_READ_FILE,
+    FILE_MODE_REPLACE_FILE,
+    MAX_DIR_INFO_LENGTH,
+    MAX_FILE_SIZE,
+    _ancestor_is_file,
+    _build_dir_info,
+    _default_files,
+    _dir_exists,
+    _path_exists,
+)
 from routine_database import (
     MAGIC_ECHO_RESULT,
     ROUTINE_MAGIC_ECHO,
@@ -96,6 +112,7 @@ __all__ = [
     "service_request_upload",
     "service_transfer_data",
     "service_request_transfer_exit",
+    "service_request_file_transfer",
     "handle_uds_request",
 ]
 
@@ -253,6 +270,35 @@ class EcuState:
     #: （sent==0 表示尚无上一块）、块定位基准、0x37 完成判定依据。
     upload_sent: int = 0
 
+    # ---- 0x38 RequestFileTransfer 运行时状态 ----
+    #
+    # 本 PR **只**新增这三个字段。刻意不引入任何 file 专用 transfer 计数器 /
+    # 缓冲：读文件走既有 upload 5 字段（upload_size/sent/expected_block），
+    # 写文件走既有 download 6 字段（download_size/buffer/last_block_request），
+    # 因此没有 dir_buffer、没有 upload_last_block、没有 DirectoryTransferState、
+    # 也没有通用 Transfer framework。
+
+    #: 当前 file transfer 的 modeOfOperation（0 = IDLE）。
+    #:
+    #: 取值见 ``file_database.FILE_MODE_*``。它是 0x36/0x37 的**分流开关**：
+    #: 4/5 让 upload 分支改用文件 / dirInfo 作数据源，1/3 让 download 分支
+    #: 在 0x37 完成时把 buffer 提交进 ``files``，0 则完全走既有 0x34/0x35 路径。
+    file_mode: int = 0
+
+    #: 当前 file transfer 的目标路径（``file_mode == 0`` 时为 ""）。
+    #:
+    #: 只保存**字符串**：内容从不缓存，ReadDir 甚至不缓存 dirInfo
+    #: （每次都经 ``_build_dir_info`` 确定性重新生成）。
+    file_path: str = ""
+
+    #: synthetic in-memory 文件存储：``路径 → 内容``。
+    #:
+    #: 默认复制 ``file_database.FILE_DATABASE``（见 ``_default_files()``）。
+    #: 运行期读写**只**针对本字段，静态 FILE_DATABASE 永不被修改。
+    #: ECUReset(hardReset) **不清除**本字典——它是"非易失存储"的教学替身，
+    #: 与 download_buffer / upload_sent 等瞬态 transfer 状态语义刻意相反。
+    files: dict[str, bytes] = field(default_factory=_default_files)
+
 
 #: 默认状态单例：ECU 进程使用的唯一运行时状态实例。
 #:
@@ -386,6 +432,14 @@ def service_ecu_reset(request: bytes, state: EcuState) -> bytes:
         state.upload_size = 0
         state.upload_expected_block = 0
         state.upload_sent = 0
+        # 0x38 file transfer 的会话标识同样是瞬态：复位中止进行中的
+        # AddFile / ReplaceFile（**不提交** download_buffer 进 files）、
+        # 中止 ReadFile / ReadDir（本来就只读，不影响 files）。
+        state.file_mode = FILE_MODE_IDLE
+        state.file_path = ""
+        # 刻意**不**清 state.files：它是本实验的"非易失存储"替身，
+        # 复位中止的是**传输**而不是已提交的数据（与 dtc_records 同侧的
+        # 保留语义，与 did_overrides / download_buffer 的恢复出厂语义相反）。
 
         return uds_types.positive_response(0x11, bytes([reset_type]))
 
@@ -1092,6 +1146,35 @@ def service_request_upload(request: bytes, state: EcuState) -> bytes:
     )
 
 
+def _upload_source_chunk(state: EcuState, position: int, length: int) -> bytes:
+    """
+    0x36 upload 分支的**数据源分流**（三路，Design Review v4 冻结）。
+
+    - ``file_mode == FILE_MODE_READ_FILE``：源是 ``state.files[file_path]``
+      的字节切片；
+    - ``file_mode == FILE_MODE_READ_DIR``：源是 ``_build_dir_info()`` 的
+      **即时重算**结果——ReadDir **不缓存** dirInfo，因此 duplicate 重发
+      与首发送必然逐字节一致；
+    - 其它（``file_mode == 0``，即既有 0x35 RequestUpload）：源是
+      ``transfer_database._upload_chunk`` 的 256 字节循环模式，
+      行为与本 PR 之前**逐字节一致**。
+
+    三种源都是 ``(position, length)`` 的纯函数，所以既有 upload BSC
+    状态机（含 duplicate 重发与尾块重建）不需要任何改动即可复用。
+
+    路径索引是安全的：ReadFile/ReadDir 只在文件/目录**存在**时建立会话
+    （否则 0x38 返回 0x31），而传输进行中 DeleteFile 无法执行（0x38 的
+    transfer slot 互斥），hardReset 会先把 ``file_mode`` 清回 IDLE。
+    """
+    if state.file_mode == FILE_MODE_READ_FILE:
+        return state.files[state.file_path][position:position + length]
+
+    if state.file_mode == FILE_MODE_READ_DIR:
+        return _build_dir_info(state.files, state.file_path)[position:position + length]
+
+    return _upload_chunk(position, length)
+
+
 def service_transfer_data(request: bytes, state: EcuState) -> bytes:
     """
     处理 0x36 TransferData。
@@ -1134,7 +1217,7 @@ def service_transfer_data(request: bytes, state: EcuState) -> bytes:
                 )
 
             prev_start = state.upload_sent - prev_len
-            chunk = _upload_chunk(prev_start, prev_len)
+            chunk = _upload_source_chunk(state, prev_start, prev_len)
 
             return uds_types.positive_response(
                 0x36, bytes([block_counter]) + chunk
@@ -1153,7 +1236,7 @@ def service_transfer_data(request: bytes, state: EcuState) -> bytes:
             )
 
         chunk_len = min(MAX_TRANSFER_REQUEST_LENGTH - 2, remaining)
-        chunk = _upload_chunk(state.upload_sent, chunk_len)
+        chunk = _upload_source_chunk(state, state.upload_sent, chunk_len)
 
         state.upload_sent += chunk_len
         state.upload_expected_block = (state.upload_expected_block + 1) & 0xFF
@@ -1217,11 +1300,19 @@ def service_request_transfer_exit(request: bytes, state: EcuState) -> bytes:
     避免旧结构 ``if not download_active → 24`` 吞掉 upload 会话）：
 
     - upload active：sent < size → 7F 37 22（状态不变，可继续 0x36）；
-      sent == size → 77 + 清理全部 5 个 upload 字段 → IDLE。
-    - download active：既有 download 完成分支（逻辑不变）——
+      sent == size → 77 + 清理全部 5 个 upload 字段 + ``file_mode`` /
+      ``file_path`` → IDLE。本分支对 0x35 与 0x38 ReadFile/ReadDir 同构，
+      因为三者共用同一套 upload 字段。
+    - download active：既有 download 完成分支——
       received < requested → 7F 37 22；complete → 77 + 清理 download
-      字段 → IDLE。
+      字段 + ``file_mode`` / ``file_path`` → IDLE。
+      ``file_mode`` 为 AddFile / ReplaceFile 时，**在清理之前**先把
+      ``download_buffer`` 提交进 ``state.files``（见下）。
     - 都 inactive → 7F 37 24。
+
+    Add/Replace 的原子性完全落在这里：``state.files`` 只在"buffer == size
+    且 0x37 正常收尾"这一个时刻被写入。提前 abort、传输不完整、hardReset
+    都到不了该写入点，因此既不会新建也不会覆盖目标路径。
     """
     if len(request) != 1:
         return uds_types.negative_response(
@@ -1239,6 +1330,12 @@ def service_request_transfer_exit(request: bytes, state: EcuState) -> bytes:
         state.upload_size = 0
         state.upload_expected_block = 0
         state.upload_sent = 0
+        # 0x38 ReadFile / ReadDir 的会话标识随之清回 IDLE。对既有 0x35
+        # 而言这两个字段本就是 0 / ""（file_mode 只由 0x38 设置，而 0x38
+        # 要求无 active transfer），因此该清理对 0x35 语义完全无影响。
+        # ReadFile / ReadDir 全程**不修改** files。
+        state.file_mode = FILE_MODE_IDLE
+        state.file_path = ""
 
         return uds_types.positive_response(0x37)
 
@@ -1248,18 +1345,362 @@ def service_request_transfer_exit(request: bytes, state: EcuState) -> bytes:
                 0x37, uds_types.NRC_CONDITIONS_NOT_CORRECT
             )
 
+        # 0x38 AddFile / ReplaceFile 的提交点：**只有**传输完整走完并由
+        # 0x37 正常收尾时才写入 files。中途 abort（0x37 提前 / 0x11 复位）
+        # 永远到不了这里，因此既不会新建也不会覆盖目标路径。
+        # 对既有 0x34 内存下载（file_mode == 0）本分支不提交任何东西。
+        if state.file_mode in (FILE_MODE_ADD_FILE, FILE_MODE_REPLACE_FILE):
+            state.files[state.file_path] = bytes(state.download_buffer)
+
         state.download_active = False
         state.download_address = 0
         state.download_size = 0
         state.download_expected_block = 0
         state.download_buffer.clear()
         state.download_last_block_request = None
+        state.file_mode = FILE_MODE_IDLE
+        state.file_path = ""
 
         return uds_types.positive_response(0x37)
 
     return uds_types.negative_response(
         0x37, uds_types.NRC_REQUEST_SEQUENCE_ERROR
     )
+
+
+# ======================================================================
+# 0x38 RequestFileTransfer（synthetic in-memory 文件模型）
+# ======================================================================
+#
+# 本节实现 Design Review v4 冻结的**实验 profile**，不是 ISO 14229-1 的
+# 一比一实现。三处刻意的 profile 差异（README 4.8 有完整说明）：
+#
+# 1. 正响应里的 lengthFormatIdentifier 固定 **0x02**，表示
+#    maxNumberOfBlockLength 用 2 bytes 编码。这与 0x34/0x35 的
+#    "高半字节 = 该字段的字节数"编码（0x20）**不是**同一套，不要混用。
+# 2. ReadDir 正响应恰好 10 字节：
+#    ``78 05 02 00 80 00 00 02 <dirInfoLength:2>``，
+#    其中 fileSizeOrDirInfoParameterLength = 0x0002 表示紧跟其后的
+#    dirInfoLength 用 2 bytes 编码。响应**绝不携带 dirInfo 本体**——
+#    真正的目录数据只能经 0x36/0x37 送出。
+# 3. ReadFile 正响应恰好 16 字节：
+#    ``78 04 02 00 80 00 00 04 <sizeUncompressed:4> <sizeCompressed:4>``，
+#    其中 fileSizeOrDirInfoParameterLength = 0x0004 表示后面每个 size
+#    字段用 4 bytes 编码。
+#
+# modeOfOperation **不是** UDS 子功能字节：非法 mode 一律 NRC 0x31，
+# 不使用子功能专用的 0x12。
+
+#: 0x38 唯一支持的 dataFormatIdentifier（0x00 = 无压缩 / 无加密）。
+FILE_DFI: int = 0x00
+
+#: 0x38 请求中 fileSizeParameterLength 唯一支持值（每个 size 字段 4 字节）。
+FILE_SIZE_PARAMETER_LENGTH: int = 0x04
+
+#: 0x38 正响应的 lengthFormatIdentifier（本实验 profile，见上）。
+FILE_LENGTH_FORMAT_IDENTIFIER: int = 0x02
+
+#: ReadDir 正响应中 fileSizeOrDirInfoParameterLength 的取值（2 字节编码）。
+DIR_INFO_PARAMETER_LENGTH: int = 0x0002
+
+#: 本 feature 支持的 modeOfOperation 集合。
+#: 0（IDLE）是 ``EcuState.file_mode`` 的内部取值，不是合法请求 mode。
+SUPPORTED_FILE_MODES: frozenset[int] = frozenset({
+    FILE_MODE_ADD_FILE,
+    FILE_MODE_DELETE_FILE,
+    FILE_MODE_REPLACE_FILE,
+    FILE_MODE_READ_FILE,
+    FILE_MODE_READ_DIR,
+})
+
+#: filePathAndName 的字节长度上限（本实验模型约束）。
+MAX_FILE_PATH_LENGTH: int = 64
+
+#: filePathAndName 允许的字节范围：可打印 ASCII（含端点）。
+_PATH_MIN_BYTE: int = 0x20
+_PATH_MAX_BYTE: int = 0x7E
+
+#: 各 mode 的请求总长度与 pathLen 的差值
+#: （SID:1 + mode:1 + pathLen:2 + mode 专属尾部字段）。
+_FILE_REQUEST_OVERHEAD: dict[int, int] = {
+    FILE_MODE_ADD_FILE: 14,      # DFI:1 + fspLen:1 + sizeUncompressed:4 + sizeCompressed:4
+    FILE_MODE_DELETE_FILE: 4,    # 无尾部字段
+    FILE_MODE_REPLACE_FILE: 14,
+    FILE_MODE_READ_FILE: 5,      # DFI:1
+    FILE_MODE_READ_DIR: 4,       # 无尾部字段
+}
+
+
+def _parse_file_path(
+    request: bytes,
+    offset: int,
+    length: int,
+    mode: int,
+) -> str | None:
+    """
+    解析并校验 ``filePathAndName``；非法返回 ``None``（调用方映射 0x31）。
+
+    本实验模型约束（**不**声称都是 ISO 强制限制）：
+
+    - 非空、≤ 64 字节；
+    - 全部为可打印 ASCII（0x20–0x7E）——因此 ``decode("ascii")`` 必然安全；
+    - 以 ``/`` 开头；
+    - 文件路径（mode 1/2/3/4）不得以 ``/`` 结尾；
+    - ReadDir（mode 5）必须为 ``/`` 或以 ``/`` 结尾。
+    """
+    if length == 0 or length > MAX_FILE_PATH_LENGTH:
+        return None
+
+    raw = bytes(request[offset:offset + length])
+
+    if not raw.startswith(b"/"):
+        return None
+
+    if not all(_PATH_MIN_BYTE <= byte <= _PATH_MAX_BYTE for byte in raw):
+        return None
+
+    if mode == FILE_MODE_READ_DIR:
+        if not (raw == b"/" or raw.endswith(b"/")):
+            return None
+    elif raw.endswith(b"/"):
+        return None
+
+    return raw.decode("ascii")
+
+
+def service_request_file_transfer(request: bytes, state: EcuState) -> bytes:
+    """
+    处理 0x38 RequestFileTransfer（synthetic in-memory 文件模型）。
+
+    请求形态由 mode 决定::
+
+        AddFile     38 01 <pathLen:2> <path> <DFI:1> <fspLen:1> <sizeU:4> <sizeC:4>
+        DeleteFile  38 02 <pathLen:2> <path>
+        ReplaceFile 38 03 <pathLen:2> <path> <DFI:1> <fspLen:1> <sizeU:4> <sizeC:4>
+        ReadFile    38 04 <pathLen:2> <path> <DFI:1>
+        ReadDir     38 05 <pathLen:2> <path>
+
+    NRC 判定顺序（严格遵守，Design Review v4 冻结）::
+
+        1. 长度不足 / 取不到 pathLen:2         → 0x13
+        2. mode ∉ {1,2,3,4,5}                  → 0x31（**不是** 0x12）
+        3. pathLen 超过实际 payload            → 0x13
+        4. path 非法                           → 0x31
+        5. mode 专属结构错（字段多 / 缺）       → 0x13
+        6. 不支持的值（DFI / fspLen /
+           size == 0 / size > MAX_FILE_SIZE /
+           compressed != uncompressed）        → 0x31
+        7. transfer slot 忙                    → 0x22
+        8. 文件状态（存在性 / 是否目录 /
+           dirInfo 超长）                      → 0x22 / 0x31
+        9. 肯定响应
+
+    任何 NRC 路径都**不修改任何状态**（判定全部前置于建立会话）。
+
+    建立会话时 mode 1/3 占用既有 download 6 字段、mode 4/5 占用既有
+    upload 5 字段，并同时写入 ``file_mode`` / ``file_path`` 供 0x36/0x37
+    分流。因为复用的是既有 active 标志，0x34/0x35 无需任何改动即获得
+    与 0x38 的完整双向互斥。
+
+    mode 2 DeleteFile 是 **one-shot**：立即删除并返回 ``78 02``，既不建立
+    transfer 也不保留 ``file_mode`` / ``file_path``；因此完成后 0x36/0x37
+    直接是 0x24，而 0x34/0x35 立刻可用。
+    """
+    # ---- 1. 长度不足 / 取不到 pathLen:2 → 0x13 ----
+    if len(request) < 4:
+        return uds_types.negative_response(
+            0x38, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+        )
+
+    mode = request[1]
+
+    # ---- 2. mode 非法 → 0x31 ----
+    if mode not in SUPPORTED_FILE_MODES:
+        return uds_types.negative_response(
+            0x38, uds_types.NRC_REQUEST_OUT_OF_RANGE
+        )
+
+    path_length = (request[2] << 8) | request[3]
+
+    # ---- 3. pathLen 声明的长度超过实际 payload → 0x13 ----
+    if len(request) < 4 + path_length:
+        return uds_types.negative_response(
+            0x38, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+        )
+
+    # ---- 4. path 非法 → 0x31 ----
+    path = _parse_file_path(request, 4, path_length, mode)
+
+    if path is None:
+        return uds_types.negative_response(
+            0x38, uds_types.NRC_REQUEST_OUT_OF_RANGE
+        )
+
+    # ---- 5. mode 专属结构错（合法长度固定为 pathLen + overhead）→ 0x13 ----
+    if len(request) != path_length + _FILE_REQUEST_OVERHEAD[mode]:
+        return uds_types.negative_response(
+            0x38, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+        )
+
+    # ---- 6. 不支持的值 → 0x31 ----
+    file_size = 0
+
+    if mode in (FILE_MODE_ADD_FILE, FILE_MODE_REPLACE_FILE):
+        if request[4 + path_length] != FILE_DFI:
+            return uds_types.negative_response(
+                0x38, uds_types.NRC_REQUEST_OUT_OF_RANGE
+            )
+
+        if request[5 + path_length] != FILE_SIZE_PARAMETER_LENGTH:
+            return uds_types.negative_response(
+                0x38, uds_types.NRC_REQUEST_OUT_OF_RANGE
+            )
+
+        size_uncompressed = int.from_bytes(
+            request[6 + path_length:10 + path_length], "big")
+        size_compressed = int.from_bytes(
+            request[10 + path_length:14 + path_length], "big")
+
+        if size_uncompressed == 0 or size_uncompressed > MAX_FILE_SIZE:
+            return uds_types.negative_response(
+                0x38, uds_types.NRC_REQUEST_OUT_OF_RANGE
+            )
+
+        # 无压缩模型：compressed 必须与 uncompressed 相等，且 0 一律拒绝。
+        if size_compressed == 0 or size_compressed != size_uncompressed:
+            return uds_types.negative_response(
+                0x38, uds_types.NRC_REQUEST_OUT_OF_RANGE
+            )
+
+        file_size = size_uncompressed
+
+    elif mode == FILE_MODE_READ_FILE:
+        if request[4 + path_length] != FILE_DFI:
+            return uds_types.negative_response(
+                0x38, uds_types.NRC_REQUEST_OUT_OF_RANGE
+            )
+
+    # ---- 7. transfer slot 忙（任一方向 active 都拒绝）→ 0x22 ----
+    if state.download_active or state.upload_active:
+        return uds_types.negative_response(
+            0x38, uds_types.NRC_CONDITIONS_NOT_CORRECT
+        )
+
+    # ---- 8. 文件状态 → 0x22 / 0x31 ----
+    #
+    # 文件名与目录名共享同一命名空间（本项目的模型约束，非 ISO 规定），
+    # AddFile 有两类必须拒绝的冲突，任一漏掉都会让目录视图无法唯一编码：
+    #
+    #   1. 目标名字已被占用（已存在的文件 **或** 已存在的隐式目录）；
+    #   2. 目标路径的某个**祖先已是文件**——否则该祖先会同时是文件与
+    #      隐式目录，dirInfo 里一个名字只能有一个 size，两种语义
+    #      无法同时表示（见 file_database._ancestor_is_file）。
+    if mode == FILE_MODE_ADD_FILE:
+        if _path_exists(state.files, path) or _ancestor_is_file(state.files, path):
+            return uds_types.negative_response(
+                0x38, uds_types.NRC_CONDITIONS_NOT_CORRECT
+            )
+
+    elif mode == FILE_MODE_REPLACE_FILE:
+        if path not in state.files:
+            return uds_types.negative_response(
+                0x38, uds_types.NRC_REQUEST_OUT_OF_RANGE
+            )
+
+    elif mode == FILE_MODE_READ_FILE:
+        if path not in state.files:
+            return uds_types.negative_response(
+                0x38, uds_types.NRC_REQUEST_OUT_OF_RANGE
+            )
+
+    elif mode == FILE_MODE_DELETE_FILE:
+        # DeleteFile 只删文件：本 feature 没有 rmdir，目录路径一律 0x31。
+        if path not in state.files:
+            return uds_types.negative_response(
+                0x38, uds_types.NRC_REQUEST_OUT_OF_RANGE
+            )
+
+    elif mode == FILE_MODE_READ_DIR:
+        if not _dir_exists(state.files, path):
+            return uds_types.negative_response(
+                0x38, uds_types.NRC_REQUEST_OUT_OF_RANGE
+            )
+
+    # ---- 9. 肯定响应 ----
+    #
+    # DeleteFile：one-shot，删完即 IDLE —— 不建立 transfer、不动任何
+    # counter、不保留 file_mode / file_path。
+    if mode == FILE_MODE_DELETE_FILE:
+        del state.files[path]
+
+        return uds_types.positive_response(0x38, bytes([FILE_MODE_DELETE_FILE]))
+
+    # ---- AddFile / ReplaceFile：建立 download transfer ----
+    if mode in (FILE_MODE_ADD_FILE, FILE_MODE_REPLACE_FILE):
+        state.file_mode = mode
+        state.file_path = path
+        state.download_active = True
+        state.download_address = 0
+        state.download_size = file_size
+        state.download_expected_block = 1
+        state.download_buffer.clear()
+        state.download_last_block_request = None
+
+        return uds_types.positive_response(0x38, bytes([
+            mode,
+            FILE_LENGTH_FORMAT_IDENTIFIER,
+            (MAX_TRANSFER_REQUEST_LENGTH >> 8) & 0xFF,
+            MAX_TRANSFER_REQUEST_LENGTH & 0xFF,
+            FILE_DFI,
+        ]))
+
+    # ---- ReadFile / ReadDir：建立 upload transfer ----
+    #
+    # 两者共用既有 upload 5 字段；数据源由 0x36 按 file_mode 分流，
+    # 因此这里**不**保存任何数据副本——ReadDir 连 dirInfo 都不缓存，
+    # 只保存它的长度作为 upload_size。
+    if mode == FILE_MODE_READ_FILE:
+        file_size = len(state.files[path])
+        payload = bytes([
+            FILE_MODE_READ_FILE,
+            FILE_LENGTH_FORMAT_IDENTIFIER,
+            (MAX_TRANSFER_REQUEST_LENGTH >> 8) & 0xFF,
+            MAX_TRANSFER_REQUEST_LENGTH & 0xFF,
+            FILE_DFI,
+            (FILE_SIZE_PARAMETER_LENGTH >> 8) & 0xFF,
+            FILE_SIZE_PARAMETER_LENGTH & 0xFF,
+        ]) + file_size.to_bytes(4, "big") + file_size.to_bytes(4, "big")
+
+    else:
+        dir_info_length = len(_build_dir_info(state.files, path))
+
+        if dir_info_length > MAX_DIR_INFO_LENGTH:
+            return uds_types.negative_response(
+                0x38, uds_types.NRC_REQUEST_OUT_OF_RANGE
+            )
+
+        file_size = dir_info_length
+        payload = bytes([
+            FILE_MODE_READ_DIR,
+            FILE_LENGTH_FORMAT_IDENTIFIER,
+            (MAX_TRANSFER_REQUEST_LENGTH >> 8) & 0xFF,
+            MAX_TRANSFER_REQUEST_LENGTH & 0xFF,
+            FILE_DFI,
+            (DIR_INFO_PARAMETER_LENGTH >> 8) & 0xFF,
+            DIR_INFO_PARAMETER_LENGTH & 0xFF,
+            (dir_info_length >> 8) & 0xFF,
+            dir_info_length & 0xFF,
+        ])
+
+    state.file_mode = mode
+    state.file_path = path
+    state.upload_active = True
+    state.upload_address = 0
+    state.upload_size = file_size
+    state.upload_expected_block = 1
+    state.upload_sent = 0
+
+    return uds_types.positive_response(0x38, payload)
 
 
 # ======================================================================
@@ -1317,6 +1758,7 @@ SERVICES = {
     0x35: service_request_upload,
     0x36: service_transfer_data,
     0x37: service_request_transfer_exit,
+    0x38: service_request_file_transfer,
     0x3E: service_tester_present,
 }
 

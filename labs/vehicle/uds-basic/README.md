@@ -184,11 +184,13 @@ UDS_INTERFACE=vcan1 UDS_RX_ID=0x7E1 UDS_TX_ID=0x7E9 \
 | `0x35` | RequestUpload | —（DFI=00，ALFID=23，≤32130 字节） | `0x75` | 已实现（见 4.7） |
 | `0x36` | TransferData | —（BSC 块序） | `0x76` | 已实现（见 4.6） |
 | `0x37` | RequestTransferExit | — | `0x77` | 已实现（见 4.6） |
+| `0x38` | RequestFileTransfer | `0x01` addFile<br>`0x02` deleteFile<br>`0x03` replaceFile<br>`0x04` readFile<br>`0x05` readDir | `0x78` | 已实现（见 4.8） |
 | `0x3E` | TesterPresent | `0x00` zeroSubFunction<br>`0x80` 抑制正响应 | `0x7E` / 无响应 | 已实现 |
 
 **尚未实现**（会返回 `NRC 0x11 ServiceNotSupported`）：
 
-`0x14` ClearDiagnosticInformation、`0x19` 的其余 reportType
+`0x06` ResumeFile、`0x39` RequestFileTransferExit、`0x14`
+ClearDiagnosticInformation、`0x19` 的其余 reportType
 （03/04/05/06/07/08/09/0B…）、`0x28` CommunicationControl、
 `0x85` ControlDTCSetting 等。
 
@@ -396,6 +398,175 @@ Flash / firmware 文件、不做 extraction**）：
   互查对方 → 0x22）。hardReset 清空 upload 5 字段（五路语义）；
   session 切换不终止 upload。
 
+### 4.8 0x38 RequestFileTransfer（synthetic in-memory 文件模型）
+
+> **本节是本实验冻结的 project profile，不是 ISO 14229-1 的一比一实现。**
+> 下面三处刻意与标准写法不同，阅读时不要按 ISO 自行"修正"。
+
+**0x38 不引入新的传输机制**：它只负责**建立/收尾** file transfer，真正的
+数据搬运完全复用既有 0x36/0x37。
+
+| mode | 含义 | 是否建立 transfer | 数据方向 |
+|---|---|---|---|
+| `0x01` | addFile | ✅ download | Tester → ECU |
+| `0x02` | deleteFile | ❌ **one-shot** | — |
+| `0x03` | replaceFile | ✅ download | Tester → ECU |
+| `0x04` | readFile | ✅ upload | ECU → Tester |
+| `0x05` | readDir | ✅ upload | ECU → Tester |
+
+`modeOfOperation` **不是 UDS 子功能字节**：非法 mode（`0x00`/`0x06`/`0xFF`…）
+一律 `NRC 0x31`，**不是** `0x12`。
+
+**请求格式**（总长度 = `pathLen + 固定尾部`）：
+
+```
+addFile/replaceFile  38 01|03 <pathLen:2> <path> <DFI:1> <fspLen:1> <sizeU:4> <sizeC:4>   = pathLen + 14
+deleteFile           38 02    <pathLen:2> <path>                                            = pathLen + 4
+readFile             38 04    <pathLen:2> <path> <DFI:1>                                    = pathLen + 5
+readDir              38 05    <pathLen:2> <path>                                            = pathLen + 4
+```
+
+本实验固定 `DFI = 0x00`、`fspLen = 0x04`；无压缩模型要求
+`sizeCompressed == sizeUncompressed`，且 `sizeCompressed == 0` 一律拒绝。
+
+**路径约束**（本实验模型约束，不声称都是 ISO 强制限制）：ASCII 可打印
+（`0x20`–`0x7E`）、非空、以 `/` 开头、≤ 64 字节；文件路径不得以 `/`
+结尾；readDir 路径必须为 `/` 或以 `/` 结尾。
+
+**肯定响应**：
+
+```
+addFile      78 01 02 00 80 00                          (6 bytes)
+replaceFile  78 03 02 00 80 00                          (6 bytes)
+deleteFile   78 02                                      (2 bytes，只有 mode echo)
+readFile     78 04 02 00 80 00 00 04 <sizeU:4> <sizeC:4>  (16 bytes)
+readDir      78 05 02 00 80 00 00 02 <dirInfoLength:2>    (10 bytes)
+```
+
+⚠️ **三处 profile 说明（务必区分）**：
+
+1. **0x38 的 `lengthFormatIdentifier` 固定 `0x02`**，是本实验 profile 的
+   取值。它**不是** 0x34/0x35 那套"高半字节 = `maxNumberOfBlockLength`
+   字节数"的 ISO 编码（那里是 `0x20`）。两套编码含义不同，不可混用。
+2. **readFile 响应中的 `fileSizeOrDirInfoParameterLength = 0x0004`**
+   表示紧随其后的**每个 size 字段**用 4 bytes 编码（因此响应是
+   8 字节头部 + 4 + 4 = 16 字节）。
+3. **readDir 响应中同一字段 = `0x0002`**，表示紧随其后的
+   **`dirInfoLength`** 用 2 bytes 编码（因此响应是 8 字节头部 + 2 =
+   **10 字节**）。标准写法会给出 9 字节，本实验**刻意**是 10 字节。
+
+**readDir 响应绝不携带 dirInfo 本体**：目录数据只能经 0x36/0x37 送出：
+
+```
+38 05 "/data/"   → 78 05 02 00 80 00 00 02 00 1B     (dirInfoLength = 27)
+36 01            → 76 01 <dirInfo>
+37               → 77
+```
+
+**dirInfo 编码**（`file_database._build_dir_info()`，纯函数、确定性）：
+
+```
+[count:2] ( [nameLen:2] <name> [size:4] )*
+```
+
+- 只含**直接**子项（不递归），`name` 是 basename；
+- `name` 按 **ASCII byte order** 升序；
+- 文件 `size` = uint32 big-endian；**隐式目录**条目 `size` = 0；
+- 空目录合法：`count = 0` → 恰好 2 字节；
+- 目录是隐式的（只作为 `state.files` 的 key 前缀存在）：**目录下文件删净后
+  该隐式目录自动消失**，`/` 永远是目录；
+- `len(dirInfo) ≤ 255` 是本实验约束，超限 → `NRC 0x31`。
+
+**共享命名空间与隐式目录模型**（⚠️ **本项目的模型约束，不要当作
+ISO 14229-1 的规定**）：文件名与目录名**共用同一命名空间**，因此
+addFile 有两类必须拒绝的冲突：
+
+| 冲突 | 例子 | 结果 |
+|---|---|---|
+| 目标名字已被占用（已存在的文件 **或** 已存在的隐式目录） | 已有 `/data/` 时 `38 01 /data` | `0x22` |
+| 目标路径的某个**祖先已是文件** | 已有文件 `/a` 时 `38 01 /a/b` | `0x22` |
+
+第二类必须拒绝的原因：否则 `/a` 会同时是"文件"与"隐式目录"，而 dirInfo
+里一个名字只能带一个 `size`，两种语义无法唯一编码——`/a` 会退化成
+ReadDir 列不出、却能 ReadFile 读到的**矛盾条目**（两个视图互相打架）。
+与之对称：replaceFile / readFile / deleteFile 对目录路径一律 `0x31`，
+readDir 对文件路径一律 `0x31`。删除父文件后，其下路径重新可创建
+（隐式目录随内容变化自动出现/消失）。
+
+**运行时状态**：本 feature 只给 `EcuState` 增加 **3 个字段**
+（`file_mode` / `file_path` / `files`），**不新增任何 file 专用计数器或
+缓冲**——没有 `dir_buffer`、没有 `upload_last_block`、没有
+`DirectoryTransferState`、没有通用 Transfer framework。读文件复用既有
+upload 5 字段，写文件复用既有 download 6 字段：
+
+- `file_mode`：`0` = idle（走既有 0x34/0x35 行为）、`1/3` = download
+  方向、`4/5` = upload 方向——它是 0x36/0x37 的**分流开关**。
+- `file_path`：目标路径（只存字符串；**ReadDir 连 dirInfo 都不缓存**，
+  每次 0x36 都经 `_build_dir_info()` 确定性重新生成，因此 duplicate
+  重发必然逐字节一致）。
+- `files`：synthetic in-memory 存储（`path → bytes`），默认复制静态
+  `file_database.FILE_DATABASE`；**运行期只读写 `state.files`，静态
+  FILE_DATABASE 永不被修改**，且实例之间相互隔离。
+
+**0x36 数据源三分支**（`_upload_source_chunk()`）：
+
+| `file_mode` | 数据源 |
+|---|---|
+| `4` readFile | `state.files[file_path]` 的切片 |
+| `5` readDir | `_build_dir_info(files, file_path)` 的切片 |
+| `0`（既有 0x35） | `transfer_database._upload_chunk()` 循环模式（行为与 4.7 **逐字节一致**） |
+
+**0x37 收尾**：readFile/readDir 要求 `upload_sent == upload_size`（否则
+`0x22`），成功后清 upload 5 字段 + `file_mode` + `file_path`。
+addFile/replaceFile 要求 `len(download_buffer) == download_size`，**在清理
+之前**才把 buffer 提交进 `state.files[file_path]`——即**只有 0x37 完成时
+才提交**：中途 abort、传输不完整、hardReset 都到不了提交点，既不会新建
+也不会覆盖目标路径。
+
+**deleteFile 是 one-shot**：成功即 `del state.files[path]` 并返回 `78 02`，
+不建立 transfer、不改动任何 counter、不保留 `file_mode`/`file_path`；
+因此完成后 0x36/0x37 直接 `0x24`，而 0x34/0x35 立刻可用。
+
+**互斥（8 向）**：0x38 复用既有 `download_active` / `upload_active` 会话槽，
+所以 0x34/0x35 的 handler **零改动**即获得完整互斥：
+
+| 方向 | 结果 |
+|---|---|
+| `0x38` while `0x34` active | `0x22` |
+| `0x38` while `0x35` active | `0x22` |
+| `0x38` while `0x38` active（含 readDir） | `0x22` |
+| `0x34` while `0x38` add / replace / readFile / readDir active | `0x22` |
+| `0x35` while 任一 `0x38` active | `0x22` |
+
+**NRC 判定顺序**（严格遵守）：
+
+```
+1. 长度不足 / 取不到 pathLen:2                    → 0x13
+2. mode ∉ {1,2,3,4,5}                             → 0x31（不是 0x12）
+3. pathLen 超过实际 payload                       → 0x13
+4. path 非法                                      → 0x31
+5. mode 专属结构错（字段多 / 缺）                  → 0x13
+6. 不支持的值（DFI / fspLen / size==0 /
+   size > MAX_FILE_SIZE / compressed!=uncompressed）→ 0x31
+7. transfer slot 忙                               → 0x22
+8. 文件状态（addFile 已存在 → 0x22；
+   replace/readFile/deleteFile 不存在 → 0x31；
+   readDir 不是目录 → 0x31；dirInfo > 255 → 0x31）  → 0x22 / 0x31
+9. 肯定响应
+```
+
+**hardReset**：清 upload 5 字段、download 6 字段、`file_mode`、
+`file_path`、routine 状态、DID overrides；**保留 DTC 与 `files`**——
+复位中止的是**传输**，不是已提交的数据。session 切换**不终止** file
+transfer。
+
+**边界与不做的部分**：`MAX_FILE_SIZE = 32130 = 255 × 126`（与
+`MAX_UPLOAD_SIZE` 同源：单字节 BSC 决定单会话最多 255 块，超过该值的
+文件无法在一次 readFile 会话中读完）。本 feature **不是真实文件系统**：
+不访问磁盘、不做路径解析/符号链接/权限检查，不做真实 Flash、不做
+firmware extraction、不做压缩/加密/签名校验；`0x06` ResumeFile 与
+`0x39` RequestFileTransferExit 不在本 PR 范围。
+
 ## 5. 支持的 NRC
 
 | NRC | 名称 | 本实验触发条件 |
@@ -488,6 +659,33 @@ Flash / firmware 文件、不做 extraction**）：
 | `35 00 23 <ADDR:3> <SIZE:2>` | `75 20 00 80` | 建立 upload session |
 | `36 <BSC>`（上传正常块） | `76 <BSC> <data≤126>` | ECU 发送块，sent 累计 |
 | `36 <BSC>`（重复上一条） | 同块重发 | 幂等（sent/expected 不变） |
+| `38`（长度 < 4） | `7F 38 13` | 取不到 pathLen:2 |
+| `38 00 …` / `38 06 …` / `38 FF …` | `7F 38 31` | mode 非法（**不是** `0x12`） |
+| `38 05 00 05 2F`（声明 5 只有 1） | `7F 38 13` | pathLen 超过实际 payload |
+| `38 05 00 04 data`（无 `/` 开头） | `7F 38 31` | path 非法 |
+| `38 04 <path>/` | `7F 38 31` | 文件路径不得以 `/` 结尾 |
+| `38 05 … /data`（readDir 无尾斜杠） | `7F 38 31` | readDir 路径须为 `/` 或 `/` 结尾 |
+| `38 04 <path> [size 字段]` | `7F 38 13` | readFile 不允许携带 size |
+| `38 01 … <DFI=01> …` | `7F 38 31` | DFI 不支持 |
+| `38 01 … <fspLen≠04>` | `7F 38 31` | fileSizeParameterLength 不支持 |
+| `38 01 … <sizeU=0>` / `<sizeC=0>` | `7F 38 31` | 大小非法 |
+| `38 01 … <sizeC ≠ sizeU>` | `7F 38 31` | 压缩/未压缩不一致 |
+| `38 01 … <sizeU=32131>` | `7F 38 31` | 超过 MAX_FILE_SIZE |
+| `38 …`（任一方向 active） | `7F 38 22` | transfer 互斥（含 0x38 自身） |
+| `38 01 /data/config.bin …` | `7F 38 22` | addFile 路径已存在 |
+| `38 01 /data …` | `7F 38 22` | addFile 命中已存在的隐式目录 |
+| `38 01 /a/b …`（已有文件 `/a`） | `7F 38 22` | addFile 的祖先已是文件（共享命名空间冲突） |
+| `38 03 /nope …` | `7F 38 31` | replaceFile 路径不存在 |
+| `38 04 /nope` | `7F 38 31` | readFile 路径不存在 |
+| `38 04 /data` | `7F 38 31` | 目录不是文件 |
+| `38 02 /nope` | `7F 38 31` | deleteFile 路径不存在 |
+| `38 05 /nope/` | `7F 38 31` | readDir 路径不是目录 |
+| `38 05 /`（dirInfo > 255） | `7F 38 31` | 目录信息超长 |
+| `38 01|03 <path> <DFI> <fsp> <size> <size>` | `78 01|03 02 00 80 00` | 建立 download transfer |
+| `38 04 /data/config.bin 00` | `78 04 02 00 80 00 00 04 <130:4> <130:4>` | 建立 upload transfer（16 字节） |
+| `38 05 /data/` | `78 05 02 00 80 00 00 02 00 1B` | 建立 upload transfer（**10 字节**） |
+| `38 02 /data/sub/a.txt` | `78 02` | one-shot 删除，不建立 transfer |
+| `36 01`（readDir/readFile 会话） | `76 01 <dirInfo / 文件切片>` | 数据源按 `file_mode` 分流 |
 | 空请求 | `7F 00 13` | 无法解析 |
 
 **重要设计原则**：
@@ -721,11 +919,11 @@ bash tests/run_tests.sh unit   # 只跑离线单元测试
 bash tests/run_tests.sh e2e    # 只跑 vcan0 端到端测试
 ```
 
-当前测试规模（2026-09-21 实测）：
+当前测试规模（2026-09-22 实测，`bash tests/run_tests.sh all`）：
 
 | 测试 | 数量 | 需要 vcan0 |
 |---|---|---|
-| `tests/test_ecu_unit.py` | 105 | 否 |
+| `tests/test_ecu_unit.py` | 106 | 否 |
 | `tests/test_keygen_unit.py` | 34 | 否 |
 | `tests/test_services_extra_unit.py` | 17 | 否 |
 | `tests/test_gateway_unit.py` | 13 | 否 |
@@ -733,7 +931,8 @@ bash tests/run_tests.sh e2e    # 只跑 vcan0 端到端测试
 | `tests/test_routine_unit.py` | 25 | 否 |
 | `tests/test_transfer_unit.py` | 40 | 否 |
 | `tests/test_upload_unit.py` | 47 | 否 |
-| `tests/test_e2e_vcan.py` | 65 | 是 |
+| `tests/test_file_transfer_unit.py` | 162 | 否 |
+| `tests/test_e2e_vcan.py` | 66 | 是 |
 | `tests/test_isotp_options_vcan.py` | 14 | 是 |
 | `tests/test_write_did_vcan.py` | 8 | 是 |
 | `tests/test_multi_ecu_vcan.py` | 4 | 是 |
@@ -741,7 +940,8 @@ bash tests/run_tests.sh e2e    # 只跑 vcan0 端到端测试
 | `tests/test_routine_vcan.py` | 11 | 是 |
 | `tests/test_transfer_vcan.py` | 17 | 是 |
 | `tests/test_upload_vcan.py` | 16 | 是 |
-| **合计** | **455**（unit 312 + e2e 143） | — |
+| `tests/test_file_transfer_vcan.py` | 41 | 是 |
+| **合计** | **659**（unit 474 + e2e 185） | — |
 
 ### 8.2 离线单元测试（不需要 CAN）
 
@@ -749,7 +949,7 @@ bash tests/run_tests.sh e2e    # 只跑 vcan0 端到端测试
 /home/lilike/.venvs/network/bin/python tests/test_ecu_unit.py
 ```
 
-直接调用 `handle_uds_request()`，覆盖 **104 个用例**：
+直接调用 `handle_uds_request()`，覆盖 **106 个用例**：
 
 - `0x10` 各会话、异常子功能、长度错误、状态不被破坏、各会话 P2/P2*
 - `0x11` 正常复位、复位后会话回归、不支持 resetType、长度错误
@@ -1122,6 +1322,7 @@ uds-basic/
 │   ├── dtc_database.py      # DTC 静态数据库（合成 DTC + mask/format 常量）
 │   ├── routine_database.py   # Routine 静态数据库（0x2001/0x2002 定义）
 │   ├── transfer_database.py   # Download/Upload 静态配置（DFI/ALFID/上限/上传源）
+│   ├── file_database.py     # 0x38 文件模型（FILE_MODE_*/出厂文件/dirInfo 编码）
 │   ├── gateway.py           # 多 ECU 路由（VirtualEcu / DiagnosticGateway）
 │   └── keygen.py            # 教学用 seed/key 算法（无 CAN 依赖）
 └── tests/
@@ -1134,6 +1335,7 @@ uds-basic/
     ├── test_routine_unit.py     # 0x31 单元测试（25 用例，无需 CAN）
     ├── test_transfer_unit.py    # 0x34/36/37 单元测试（40 用例，无需 CAN）
     ├── test_upload_unit.py      # 0x35 单元测试（47 用例，无需 CAN）
+    ├── test_file_transfer_unit.py   # 0x38 单元测试（162 用例，无需 CAN）
     ├── test_e2e_vcan.py         # vcan0 端到端测试（65 用例）
     ├── test_isotp_options_vcan.py   # ISO-TP 传输参数矩阵（14 用例，需 vcan0）
     ├── test_write_did_vcan.py   # 0x2E/0x3E 真实解锁写入（8 用例，需 vcan0）
@@ -1141,7 +1343,8 @@ uds-basic/
     ├── test_dtc_vcan.py         # 0x19 真实链路（8 用例，需 vcan0）
     ├── test_routine_vcan.py     # 0x31 真实链路（11 用例，需 vcan0）
     ├── test_transfer_vcan.py    # 0x34/36/37 真实链路（17 用例，需 vcan0）
-    └── test_upload_vcan.py      # 0x35 真实链路（16 用例，需 vcan0）
+    ├── test_upload_vcan.py      # 0x35 真实链路（16 用例，需 vcan0）
+    └── test_file_transfer_vcan.py   # 0x38 真实链路（41 用例，需 vcan0）
 ```
 
 > 注意：`ecu.py` 不是 UDS 业务实现层。协议实现位于 `uds_server.py`，
@@ -1177,6 +1380,17 @@ uds-basic/
   32130 上限消除 BSC 回绕歧义；0x36/0x37 方向分流、download 路径不变）
 - [x] 方向互斥：0x34/0x35 共享 transfer 会话槽（四向 0x22 测试固化）；
   hardReset 五路语义（upload/download/routine/DID 清、DTC 保留）
+- [x] `0x38` RequestFileTransfer（mode 1–5：addFile/deleteFile/replaceFile/
+  readFile/readDir；synthetic in-memory 文件模型，**不是真实文件系统**；
+  只新增 `file_mode`/`file_path`/`files` 三个状态字段，**无任何 file 专用
+  计数器或缓冲**；readDir 不缓存 dirInfo，每次经 `_build_dir_info()`
+  确定性重算）
+- [x] 0x38 复用既有 transfer 槽：0x36 数据源三分支（文件 / dirInfo /
+  既有 `_upload_chunk`）、0x37 收尾按 `file_mode` 分流；addFile/replaceFile
+  **只在 0x37 完成时提交** `files`（abort/incomplete/hardReset 不污染）
+- [x] 8 向互斥矩阵（0x38 ↔ 0x34/0x35/0x38；readDir 计为 active），
+  0x34/0x35 handler 零改动；hardReset 清 transfer + file 会话标识
+  但**保留 files**（与保留 DTC 同侧）
 - [x] DTC 模型：静态 `dtc_database.py` + `EcuState.dtc_records` 运行时状态；
   hardReset 保留 DTC（故障记忆语义，unit + e2e 固化）
 - [x] `0x7F` 否定响应与 NRC 判定（0x11/0x12/0x13/0x22/0x24/0x31/0x33/0x35/0x36/0x37/0x7F）
@@ -1292,11 +1506,13 @@ _security_services()            —— 每次请求现场构造 SecurityAccess h
 | `service_request_download` | 0x34 handler（DFI/ALFID 校验 + 建立 download session，见 4.6；含 upload 互斥 guard） |
 | `service_request_upload` | 0x35 handler（DFI/ALFID/size 校验 + 建立 upload session，见 4.7） |
 | `service_transfer_data` | 0x36 handler（顶层方向分流：upload 发送块 / download 既有逻辑） |
-| `service_request_transfer_exit` | 0x37 handler（顶层方向分流：upload 以 sent 判定 / download 既有逻辑） |
-| `SERVICES` | **静态** registry（0x10 / 0x11 / 0x19 / 0x22 / 0x2E / 0x31 / 0x34 / 0x35 / 0x36 / 0x37 / 0x3E） |
+| `service_request_transfer_exit` | 0x37 handler（顶层方向分流：upload 以 sent 判定 / download 既有逻辑；按 `file_mode` 决定是否提交 `files`） |
+| `service_request_file_transfer` | 0x38 handler（mode 1–5；九步 NRC 优先级；建立/收尾 file transfer，见 4.8） |
+| `_upload_source_chunk(state, position, length)` | 0x36 upload 分支的数据源三分支（文件 / dirInfo / 既有循环模式） |
+| `SERVICES` | **静态** registry（0x10 / 0x11 / 0x19 / 0x22 / 0x2E / 0x31 / 0x34 / 0x35 / 0x36 / 0x37 / **0x38** / 0x3E） |
 | `handle_uds_request(request, state, *, services=None)` | 协议层 dispatcher |
 
-**`EcuState` 的 23 个字段**（当前实现，不多不少）：
+**`EcuState` 的 26 个字段**（当前实现，不多不少）：
 
 ```text
 session          当前诊断会话
@@ -1322,6 +1538,9 @@ upload_address   0x35 memoryAddress metadata
 upload_size      0x35 声明的上传总长（1..32130）
 upload_expected_block 期望的下一个 BSC（1 起，&0xFF）
 upload_sent      已发送字节数（唯一进度：duplicate 前置/块定位/0x37 完成判定）
+file_mode        0x38 modeOfOperation（0=IDLE；1/3=download、4/5=upload 分流开关）
+file_path        0x38 目标路径（只存字符串；dirInfo 从不缓存）
+files            0x38 synthetic in-memory 文件存储（hardReset **保留**，实例隔离）
 ```
 
 > 当前**不包含** S3 定时器、`last_request_sid`、`unlocked_at`、
@@ -1713,8 +1932,10 @@ Phase 3 完成的是一次**结构性重构**（行为保持不变）：
   0x2001/0x2002 synthetic routines；routineControlOptionRecord /
   routineStatusRecord 与权限/会话门控属后续）
 - ✅ 已完成：`0x34/0x36/0x37` Download Transfer 与 `0x35` RequestUpload
-  （synthetic 内存模型，BSC 幂等重传/重发；真实 Flash、签名校验、
-  0x38/0x39 属后续）
+  （synthetic 内存模型，BSC 幂等重传/重发；真实 Flash、签名校验属后续）
+- ✅ 已完成：`0x38` RequestFileTransfer（mode 1–5，synthetic in-memory
+  文件模型；`0x39` RequestFileTransferExit、`0x06` ResumeFile、
+  真实文件系统/Flash、压缩/加密/签名校验属后续）
 - `0x28` CommunicationControl、`0x85` ControlDTCSetting
 - `0x78` ResponsePending 与 P2* 超时处理
 - `0x27` 多安全等级（Level 2：`0x03`/`0x04`，需位掩码式安全等级）

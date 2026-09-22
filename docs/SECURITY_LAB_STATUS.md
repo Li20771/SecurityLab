@@ -96,9 +96,10 @@ Current deployed system:
 ## 明确的 PARTIAL / 路线图（非空壳，第二轮能力建设）
 
 - 0x7DF 功能寻址**实时网关守护进程**（协议层与多 ECU 物理寻址实时均已通过）。
-- 真实 Flash / firmware flashing / 签名校验、0x38 / 0x39、Permission /
+- 真实 Flash / firmware flashing / 签名校验、0x39 / 0x06、Permission /
   session framework、0x19 其余 reportType、0x31 的 option/status
-  record（0x19/0x31/0x34-0x37 已全部落地）。
+  record（0x19/0x31/0x34-0x38 已全部落地；0x38 为 synthetic in-memory
+  文件模型，不含真实文件系统）。
 - JFFS2 / UBIFS 完整 extraction chain（当前 build + identify 已通过）。
 - ✅ 已收口：Python 依赖 transitive lock（`python-network-requirements.lock`）。
 - ✅ 已完成：CI Fast 在真实 GitHub runner 上的运行验证

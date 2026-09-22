@@ -106,11 +106,12 @@ Tester ──物理寻址──► ECU_A 0x7E0 / 应答 0x7E8
               连续失败 3 次 → lockout 10s（UDS_LOCKOUT_SECONDS 可覆盖）；seed 5s 过期
 ```
 
-- 已实现：0x10 SessionControl、0x11 ECUReset、0x19 ReadDTCInformation（reportType 01/02/0A，静态 dtc_database + EcuState.dtc_records，hardReset 保留 DTC）、0x22 ReadDataByIdentifier、0x27 SecurityAccess、0x2E WriteDataByIdentifier、0x31 RoutineControl（Start/Stop/Results，0x2001/0x2002 synthetic routines，hardReset 清 routine 状态、session 切换保留）、0x34/0x36/0x37 Download Transfer（synthetic in-memory 目标、DFI=00/ALFID=23、BSC 块序+幂等重传+回绕、size accounting、0x37 完整性检查后清理状态、hardReset 中止下载）、0x35 RequestUpload（256 字节循环源、固定块契约+上一块重建、duplicate 幂等重发、32130 上限、0x36/0x37 方向分流且 download 路径不变）、0x3E TesterPresent。
+- 已实现：0x10 SessionControl、0x11 ECUReset、0x19 ReadDTCInformation（reportType 01/02/0A，静态 dtc_database + EcuState.dtc_records，hardReset 保留 DTC）、0x22 ReadDataByIdentifier、0x27 SecurityAccess、0x2E WriteDataByIdentifier、0x31 RoutineControl（Start/Stop/Results，0x2001/0x2002 synthetic routines，hardReset 清 routine 状态、session 切换保留）、0x34/0x36/0x37 Download Transfer（synthetic in-memory 目标、DFI=00/ALFID=23、BSC 块序+幂等重传+回绕、size accounting、0x37 完整性检查后清理状态、hardReset 中止下载）、0x35 RequestUpload（256 字节循环源、固定块契约+上一块重建、duplicate 幂等重发、32130 上限、0x36/0x37 方向分流且 download 路径不变）、0x38 RequestFileTransfer（mode 1–5 addFile/deleteFile/replaceFile/readFile/readDir，synthetic in-memory 文件模型 `file_database.py`，只新增 file_mode/file_path/files 三字段、无 file 专用计数器、readDir 不缓存 dirInfo 而由 `_build_dir_info()` 确定性重算、0x36 数据源三分支、0x37 按 file_mode 分流且 addFile/replaceFile 仅在完成时提交 files、deleteFile 为 one-shot、8 向互斥复用既有 transfer 槽、hardReset 清 file 会话标识但保留 files）、0x3E TesterPresent。
 - 响应：正响应 `[sid+0x40, ...]`；否定响应 `7F sid nrc`。NRC：10/11/12/13/22/24/31/33/35/36/37/73 + 7F（默认会话不支持该服务）。
 - 0x2E 门控顺序：长度→未知 DID(31)→默认会话(7F)→未解锁(33)→只读 DID(22)→长度越界(13)→成功 6E；写 `state.did_overrides`，0x22 读 override 优先，0x11 清空。
 - 0x3E：`3E 00→7E 00`；`3E 80→抑制不发帧`；非法子功能 12；长度错 13。
-- 未实现（路线图，禁空壳）：0x38 / 0x39、真实 Flash 与签名校验、Permission/session framework、0x19 其余 reportType、0x31 的 option/status record，每个须 request/positive/NRC/state/unit/e2e 齐备。
+- 0x38 文件模型约束（**本项目模型约定，不声称是 ISO 14229-1 的规定**）：文件名与目录名**共享同一命名空间**，目录是**隐式**的（只作为 `state.files` 的 key 前缀存在）。AddFile 拒绝两类路径 → `NRC 0x22`：①目标名已被占用（已存在的文件或隐式目录）；②目标路径的某个**祖先已是文件**——后者会让同一名字既是文件又是隐式目录，而 dirInfo 每个名字只有一个 `size` 字段，两种语义无法唯一编码（该名字会退化成 ReadDir 列不出、ReadFile 却读得到的矛盾条目）。对称地，ReplaceFile/ReadFile/DeleteFile 对目录路径、ReadDir 对文件路径一律 → `NRC 0x31`。不变量由 `tests/test_file_transfer_unit.py::TestDirInfoUniqueEncoding` 用独立解码器对拍固化。
+- 未实现（路线图，禁空壳）：0x39 RequestFileTransferExit、0x06 ResumeFile、真实文件系统 / Flash 与签名校验、Permission/session framework、0x19 其余 reportType、0x31 的 option/status record，每个须 request/positive/NRC/state/unit/e2e 齐备。
 
 ### 3.3 Fuzz / Replay / Capture 数据流
 
