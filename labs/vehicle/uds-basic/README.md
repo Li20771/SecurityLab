@@ -931,7 +931,7 @@ bash tests/run_tests.sh e2e    # 只跑 vcan0 端到端测试
 | `tests/test_routine_unit.py` | 25 | 否 |
 | `tests/test_transfer_unit.py` | 40 | 否 |
 | `tests/test_upload_unit.py` | 47 | 否 |
-| `tests/test_file_transfer_unit.py` | 162 | 否 |
+| `tests/test_file_transfer_unit.py` | 174 | 否 |
 | `tests/test_e2e_vcan.py` | 66 | 是 |
 | `tests/test_isotp_options_vcan.py` | 14 | 是 |
 | `tests/test_write_did_vcan.py` | 8 | 是 |
@@ -941,7 +941,7 @@ bash tests/run_tests.sh e2e    # 只跑 vcan0 端到端测试
 | `tests/test_transfer_vcan.py` | 17 | 是 |
 | `tests/test_upload_vcan.py` | 16 | 是 |
 | `tests/test_file_transfer_vcan.py` | 41 | 是 |
-| **合计** | **659**（unit 474 + e2e 185） | — |
+| **合计** | **671**（unit 486 + e2e 185） | — |
 
 ### 8.2 离线单元测试（不需要 CAN）
 
@@ -1335,7 +1335,7 @@ uds-basic/
     ├── test_routine_unit.py     # 0x31 单元测试（25 用例，无需 CAN）
     ├── test_transfer_unit.py    # 0x34/36/37 单元测试（40 用例，无需 CAN）
     ├── test_upload_unit.py      # 0x35 单元测试（47 用例，无需 CAN）
-    ├── test_file_transfer_unit.py   # 0x38 单元测试（162 用例，无需 CAN）
+    ├── test_file_transfer_unit.py   # 0x38 单元测试（174 用例，无需 CAN）
     ├── test_e2e_vcan.py         # vcan0 端到端测试（65 用例）
     ├── test_isotp_options_vcan.py   # ISO-TP 传输参数矩阵（14 用例，需 vcan0）
     ├── test_write_did_vcan.py   # 0x2E/0x3E 真实解锁写入（8 用例，需 vcan0）
