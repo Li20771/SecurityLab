@@ -96,6 +96,17 @@ run_offline() {
 
         echo
     fi
+
+    # UDS 请求层（fuzz v1）：与上面的 ISO-TP 层同属"纯离线"层
+    if [ -f "$TESTS_DIR/test_uds_fuzz_offline.py" ]; then
+        if "$PYTHON_BIN" "$TESTS_DIR/test_uds_fuzz_offline.py"; then
+            ok "UDS fuzz offline tests passed"
+        else
+            fail "UDS fuzz offline tests failed"
+        fi
+
+        echo
+    fi
 }
 
 run_malformed() {
@@ -121,6 +132,18 @@ run_malformed() {
     fi
 
     echo
+
+    # UDS fuzz v1 vcan smoke（小规模，**不进默认 CI**：只在需要 vcan0 的
+    # 扩展门禁里跑，与上面的畸形 ISO-TP 实验同一 tier）
+    if [ -f "$TESTS_DIR/test_uds_fuzz_vcan.py" ]; then
+        if "$PYTHON_BIN" "$TESTS_DIR/test_uds_fuzz_vcan.py"; then
+            ok "UDS fuzz vcan smoke passed"
+        else
+            fail "UDS fuzz vcan smoke failed"
+        fi
+
+        echo
+    fi
 }
 
 case "$MODE" in
