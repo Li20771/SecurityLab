@@ -175,6 +175,7 @@ UDS_INTERFACE=vcan1 UDS_RX_ID=0x7E1 UDS_TX_ID=0x7E9 \
 |---|---|---|---|---|
 | `0x10` | DiagnosticSessionControl | `0x01` default<br>`0x02` programming<br>`0x03` extended | `0x50` | 已实现 |
 | `0x11` | ECUReset | `0x01` hardReset | `0x51` | 已实现 |
+| `0x14` | ClearDiagnosticInformation | —（`groupOfDTC` 参数） | `0x54` | 已实现（见 4.9） |
 | `0x19` | ReadDTCInformation | `0x01` numberOfDTCByStatusMask<br>`0x02` DTCByStatusMask<br>`0x0A` supportedDTC | `0x59` | 已实现（见 4.4） |
 | `0x22` | ReadDataByIdentifier | —（支持多 DID） | `0x62` | 已实现 |
 | `0x27` | SecurityAccess | `0x01` RequestSeed<br>`0x02` SendKey | `0x67` | 已实现 |
@@ -189,8 +190,7 @@ UDS_INTERFACE=vcan1 UDS_RX_ID=0x7E1 UDS_TX_ID=0x7E9 \
 
 **尚未实现**（会返回 `NRC 0x11 ServiceNotSupported`）：
 
-`0x06` ResumeFile、`0x39` RequestFileTransferExit、`0x14`
-ClearDiagnosticInformation、`0x19` 的其余 reportType
+`0x06` ResumeFile、`0x39` RequestFileTransferExit、`0x19` 的其余 reportType
 （03/04/05/06/07/08/09/0B…）、`0x28` CommunicationControl、
 `0x85` ControlDTCSetting 等。
 
@@ -567,6 +567,63 @@ transfer。
 firmware extraction、不做压缩/加密/签名校验；`0x06` ResumeFile 与
 `0x39` RequestFileTransferExit 不在本 PR 范围。
 
+### 4.9 0x14 ClearDiagnosticInformation
+
+```
+14 <groupOfDTC:3>   → 54
+```
+
+- `groupOfDTC` 为 **24-bit big-endian**，与 `0x19` 输出 DTC 的
+  `(dtc>>16, dtc>>8, dtc)` 编码一致。
+- 正响应**严格 1 字节 `0x54`，不回显 `groupOfDTC`**（ISO 14229-1 对该
+  服务的正响应即无参数；本项目只在确有需要处声明 profile 偏离，此处无需）。
+- 长度 ≠ 4（过短**或**多余字节）→ `NRC 0x13`。
+
+**支持集合（本项目 profile）**
+
+| `groupOfDTC` | 语义 | 结果 |
+|---|---|---|
+| `0xFFFFFF` | 全部 DTC | 全部 status 置 `0x00` |
+| `state.dtc_records` 中实际存在的单个 DTC | 该条 | 其 status 置 `0x00` |
+| 其它任何值（含 ISO 功能组 `0xFFFF00`–`0xFFFFFE`、`0x000000`、未支持 DTC） | 不支持 | `NRC 0x31` |
+
+**清除语义：status 置 `0x00`，绝不删除 key。**
+
+- key 集合即"支持的 DTC"集合，`0x19/0A` 报告的正是它。删 key 会让已清除
+  的 DTC 从 `0x0A` 消失（与"supported ≠ 当前故障"矛盾），也会让第二次
+  清除退化为 `0x31`（破坏幂等）。
+- 因此 `0xFFFFFF` 是"遍历并置零"，**不是** `dict.clear()`；空库执行
+  all-clear 仍成功返回 `54`。
+- 清除不存在/未支持的 DTC 返回 `0x31` 而**不是** no-op 成功 —— 与
+  "未知 DID → `0x31`""未知 RID → `0x31`"的项目惯例一致。
+- 静态 `dtc_database.DTC_DATABASE` **永不被写入**；`dtc_records` 也不重新绑定。
+
+**0x19 的可观察变化**（全清后）：`19 01 FF` → DTCCount `0`；
+`19 02 FF` → 只回 availability mask；**`19 0A` 仍返回全部成员，只有
+status 字节变 `0x00`**。
+
+**无 session / security 门控**（项目 profile 决定）：`0x11 hardReset` 是更
+彻底的破坏性操作（清 DID override 与 routine 状态）且零门控，若给 `0x14`
+加门控而 `0x11` 不加则语义不自洽；`0x19` 读 DTC 亦零门控。门控抽象属
+路线图中的 Permission / session framework，不在本 PR。
+
+**⚠️ 本 feature 的边界（如实声明）**
+
+1. `0x14` 是**当前 synthetic DTC model 的 runtime status 清除** —— 它只把
+   `EcuState.dtc_records` 中条目的 status 置零，**不触碰**任何静态数据。
+2. **本 ECU 没有 DTC 产生 / 故障注入机制**（`0x85 ControlDTCSetting`
+   未实现，也没有任何服务会置位 DTC status）。因此真实链路只能验证
+   "清除 → 观察 → 复位保留"三段语义，**不能**验证"故障发生 → DTC 置位
+   → 清除"。
+3. **functional group 不在本 PR**：现模型 `{DTC: statusOfDTC}` 不含任何
+   分组元数据，表达功能组需要新增映射结构。因此功能组取值自然落入
+   `0x31`。**这是本项目 profile，不声称是 ISO 功能组语义的完整实现。**
+4. `0x85` / `0x19` 其余 reportType / `0x28` / `0x39` / `0x06` 均不在本 PR。
+
+**生命周期**：`0x14` 之后 `hardReset` **不恢复** status（`0x11` 刻意保留
+`dtc_records` 内容）；`hardReset` 之后 `0x14` 正常工作；`0x14` 不影响
+`did_overrides` / routine 状态 / transfer 字段；`EcuState` **不新增字段**。
+
 ## 5. 支持的 NRC
 
 | NRC | 名称 | 本实验触发条件 |
@@ -599,6 +656,13 @@ firmware extraction、不做压缩/加密/签名校验；`0x06` ResumeFile 与
 | `11` | `7F 11 13` | 缺少 resetType |
 | `11 01 00` | `7F 11 13` | 多余字节 |
 | `11 02` | `7F 11 12` | resetType 未实现 |
+| `14` / `14 FF FF` | `7F 14 13` | 缺少 groupOfDTC（必须严格 4 字节） |
+| `14 FF FF FF 00` | `7F 14 13` | 多余字节 |
+| `14 FF FF FF` | `54` | 清除全部 DTC 的 status（正响应仅 1 字节） |
+| `14 10 00 01` | `54` | 清除单个 DTC；已为 0 再清仍 `54`（幂等） |
+| `14 10 00 09` | `7F 14 31` | 未支持的单个 DTC |
+| `14 FF FF 00` | `7F 14 31` | 功能组取值（本 profile 不支持功能组） |
+| `14 00 00 00` | `7F 14 31` | `0x000000` 不在支持集合 |
 | `22` | `7F 22 13` | 缺少 DID |
 | `22 F1` | `7F 22 13` | DID 不完整（奇数长度） |
 | `22 FF FF` | `7F 22 31` | 未知 DID |
@@ -928,6 +992,7 @@ bash tests/run_tests.sh e2e    # 只跑 vcan0 端到端测试
 | `tests/test_services_extra_unit.py` | 17 | 否 |
 | `tests/test_gateway_unit.py` | 13 | 否 |
 | `tests/test_dtc_unit.py` | 30 | 否 |
+| `tests/test_dtc_clear_unit.py` | 39 | 否 |
 | `tests/test_routine_unit.py` | 25 | 否 |
 | `tests/test_transfer_unit.py` | 40 | 否 |
 | `tests/test_upload_unit.py` | 47 | 否 |
@@ -937,11 +1002,12 @@ bash tests/run_tests.sh e2e    # 只跑 vcan0 端到端测试
 | `tests/test_write_did_vcan.py` | 8 | 是 |
 | `tests/test_multi_ecu_vcan.py` | 4 | 是 |
 | `tests/test_dtc_vcan.py` | 8 | 是 |
+| `tests/test_dtc_clear_vcan.py` | 11 | 是 |
 | `tests/test_routine_vcan.py` | 11 | 是 |
 | `tests/test_transfer_vcan.py` | 17 | 是 |
 | `tests/test_upload_vcan.py` | 16 | 是 |
 | `tests/test_file_transfer_vcan.py` | 41 | 是 |
-| **合计** | **671**（unit 486 + e2e 185） | — |
+| **合计** | **721**（unit 525 + e2e 196） | — |
 
 ### 8.2 离线单元测试（不需要 CAN）
 
@@ -1320,9 +1386,9 @@ uds-basic/
 │   ├── uds_types.py         # 协议常量 + 响应构造（零依赖）
 │   ├── did_database.py      # DID 数据库（受保护/可写 DID 标记）
 │   ├── dtc_database.py      # DTC 静态数据库（合成 DTC + mask/format 常量）
+│   ├── file_database.py     # 0x38 文件模型（FILE_MODE_*/出厂文件/dirInfo 编码）
 │   ├── routine_database.py   # Routine 静态数据库（0x2001/0x2002 定义）
 │   ├── transfer_database.py   # Download/Upload 静态配置（DFI/ALFID/上限/上传源）
-│   ├── file_database.py     # 0x38 文件模型（FILE_MODE_*/出厂文件/dirInfo 编码）
 │   ├── gateway.py           # 多 ECU 路由（VirtualEcu / DiagnosticGateway）
 │   └── keygen.py            # 教学用 seed/key 算法（无 CAN 依赖）
 └── tests/
@@ -1332,6 +1398,7 @@ uds-basic/
     ├── test_services_extra_unit.py  # 0x2E/0x3E 单元测试（17 用例，无需 CAN）
     ├── test_gateway_unit.py     # 多 ECU 路由测试（13 用例，无需 CAN）
     ├── test_dtc_unit.py         # 0x19 单元测试（30 用例，无需 CAN）
+    ├── test_dtc_clear_unit.py   # 0x14 单元测试（39 用例，无需 CAN）
     ├── test_routine_unit.py     # 0x31 单元测试（25 用例，无需 CAN）
     ├── test_transfer_unit.py    # 0x34/36/37 单元测试（40 用例，无需 CAN）
     ├── test_upload_unit.py      # 0x35 单元测试（47 用例，无需 CAN）
@@ -1341,6 +1408,7 @@ uds-basic/
     ├── test_write_did_vcan.py   # 0x2E/0x3E 真实解锁写入（8 用例，需 vcan0）
     ├── test_multi_ecu_vcan.py   # 三 ECU 物理寻址（4 用例，需 vcan0）
     ├── test_dtc_vcan.py         # 0x19 真实链路（8 用例，需 vcan0）
+    ├── test_dtc_clear_vcan.py   # 0x14 真实链路（11 用例，需 vcan0）
     ├── test_routine_vcan.py     # 0x31 真实链路（11 用例，需 vcan0）
     ├── test_transfer_vcan.py    # 0x34/36/37 真实链路（17 用例，需 vcan0）
     ├── test_upload_vcan.py      # 0x35 真实链路（16 用例，需 vcan0）
@@ -1393,6 +1461,10 @@ uds-basic/
   但**保留 files**（与保留 DTC 同侧）
 - [x] DTC 模型：静态 `dtc_database.py` + `EcuState.dtc_records` 运行时状态；
   hardReset 保留 DTC（故障记忆语义，unit + e2e 固化）
+- [x] `0x14` ClearDiagnosticInformation（synthetic DTC model 的 runtime
+  status 清除：`0xFFFFFF` 全清 / 单个 DTC；**status 置零不删 key**，
+  因此 `0x19/0A` 仍报告全部成员；未支持 DTC 与功能组取值 → `0x31`；
+  无 session/security 门控；`EcuState` 零新增字段，0x11/0x19 零改动）
 - [x] `0x7F` 否定响应与 NRC 判定（0x11/0x12/0x13/0x22/0x24/0x31/0x33/0x35/0x36/0x37/0x7F）
 - [x] 未实现服务统一返回 NRC 0x11
 - [x] 会话状态管理与复位回归
@@ -1501,6 +1573,7 @@ _security_services()            —— 每次请求现场构造 SecurityAccess h
 | `_make_security_access_handler(now, security_config)` | 0x27 依赖绑定工厂 |
 | `service_write_data_by_identifier` | 0x2E handler（门控链见 4.3，写入 `did_overrides`） |
 | `service_tester_present` | 0x3E handler（`3E 80` 返回空字节由入口层抑制发帧） |
+| `service_clear_diagnostic_information` | 0x14 handler（`groupOfDTC` 校验 + status 置零，见 4.9；`EcuState` 零新增字段） |
 | `service_read_dtc_information` | 0x19 handler（reportType 01/02/0A，只读 `dtc_records`） |
 | `service_routine_control` | 0x31 handler（Start/Stop/Results 状态机，见 4.5） |
 | `service_request_download` | 0x34 handler（DFI/ALFID 校验 + 建立 download session，见 4.6；含 upload 互斥 guard） |
@@ -1509,7 +1582,7 @@ _security_services()            —— 每次请求现场构造 SecurityAccess h
 | `service_request_transfer_exit` | 0x37 handler（顶层方向分流：upload 以 sent 判定 / download 既有逻辑；按 `file_mode` 决定是否提交 `files`） |
 | `service_request_file_transfer` | 0x38 handler（mode 1–5；九步 NRC 优先级；建立/收尾 file transfer，见 4.8） |
 | `_upload_source_chunk(state, position, length)` | 0x36 upload 分支的数据源三分支（文件 / dirInfo / 既有循环模式） |
-| `SERVICES` | **静态** registry（0x10 / 0x11 / 0x19 / 0x22 / 0x2E / 0x31 / 0x34 / 0x35 / 0x36 / 0x37 / **0x38** / 0x3E） |
+| `SERVICES` | **静态** registry（0x10 / 0x11 / **0x14** / 0x19 / 0x22 / 0x2E / 0x31 / 0x34 / 0x35 / 0x36 / 0x37 / 0x38 / 0x3E） |
 | `handle_uds_request(request, state, *, services=None)` | 协议层 dispatcher |
 
 **`EcuState` 的 26 个字段**（当前实现，不多不少）：
@@ -1573,6 +1646,7 @@ files            0x38 synthetic in-memory 文件存储（hardReset **保留**，
 SERVICES = {
     0x10: service_diagnostic_session_control,
     0x11: service_ecu_reset,
+    0x14: service_clear_diagnostic_information,
     0x19: service_read_dtc_information,
     0x22: service_read_data_by_identifier,
     0x2E: service_write_data_by_identifier,
@@ -1581,6 +1655,7 @@ SERVICES = {
     0x35: service_request_upload,
     0x36: service_transfer_data,
     0x37: service_request_transfer_exit,
+    0x38: service_request_file_transfer,
     0x3E: service_tester_present,
 }
 ```
@@ -1928,6 +2003,8 @@ Phase 3 完成的是一次**结构性重构**（行为保持不变）：
 - ✅ 已完成：`0x3E` TesterPresent（见 4.1）
 - ✅ 已完成：`0x19` ReadDTCInformation 的 reportType 01/02/0A
   （其余 reportType 与 0x85 DTC 控制属后续）
+- ✅ 已完成：`0x14` ClearDiagnosticInformation（见 4.9；功能组、DTC
+  产生/故障注入、0x85 属后续）
 - ✅ 已完成：`0x31` RoutineControl（Start/Stop/RequestResults +
   0x2001/0x2002 synthetic routines；routineControlOptionRecord /
   routineStatusRecord 与权限/会话门控属后续）

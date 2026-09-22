@@ -23,7 +23,7 @@ SecurityLab 第一轮建设及工程收口已经完成，**PR #1 已合入 main*
 | SocketCAN / vcan0 | VERIFIED | 开机自启；`ip link show vcan0` |
 | can-utils | VERIFIED | `candump/cansend/canplayer/isotpsend ...` |
 | ISO-TP | VERIFIED | `run_tests.sh all`（uds-basic） |
-| UDS（10/11/19/22/27/2E/31/34/35/36/37/3E） | VERIFIED | `labs/vehicle/uds-basic`（ecu.py / isotp_client.py）；0x19 / 0x31 / 0x34-0x37（download + upload）为第二轮（已合入） |
+| UDS（10/11/14/19/22/27/2E/31/34/35/36/37/38/3E） | VERIFIED | `labs/vehicle/uds-basic`（ecu.py / isotp_client.py）；0x19 / 0x31 / 0x34-0x37（download + upload）为第二轮，0x38 file transfer 与 0x14 DTC runtime status 清除为后续（均已合入）；**0x14 是 synthetic DTC model 的 status 清除，本 ECU 无 DTC 产生/故障注入机制，功能组与 0x85 未实现** |
 | 多 ECU / Gateway | VERIFIED + PARTIAL | `ecu/gateway.py`；实时 0x7DF 守护进程待建 |
 | CAN/ISO-TP fuzz | VERIFIED | `fuzz/isotp_fuzz.py --smoke ...`（见 TEST_MATRIX）；最小复现 `scripts/repro/verify_fuzz_smoke.sh` |
 | Replay | VERIFIED | `fuzz/replay.py <path> [--all] [--repeat N]` |
@@ -98,8 +98,9 @@ Current deployed system:
 - 0x7DF 功能寻址**实时网关守护进程**（协议层与多 ECU 物理寻址实时均已通过）。
 - 真实 Flash / firmware flashing / 签名校验、0x39 / 0x06、Permission /
   session framework、0x19 其余 reportType、0x31 的 option/status
-  record（0x19/0x31/0x34-0x38 已全部落地；0x38 为 synthetic in-memory
-  文件模型，不含真实文件系统）。
+  record、0x28 / 0x85、DTC 功能组与 DTC 产生/故障注入
+  （0x19/0x31/0x34-0x38 已全部落地；0x38 为 synthetic in-memory
+  文件模型，不含真实文件系统；0x14 只清 runtime status）。
 - JFFS2 / UBIFS 完整 extraction chain（当前 build + identify 已通过）。
 - ✅ 已收口：Python 依赖 transitive lock（`python-network-requirements.lock`）。
 - ✅ 已完成：CI Fast 在真实 GitHub runner 上的运行验证
