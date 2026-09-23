@@ -4,38 +4,50 @@
 >
 > 规则：只记录经实际命令验证的事实；状态取值 VERIFIED / PARTIAL / BLOCKED / NOT_APPLICABLE。
 
-## CURRENT STATE — 2026-09-21
+## CURRENT STATE — 2026-09-23
 
-**CURRENT_PHASE**: Phase 4 — Second-Round Planning
+**CURRENT_PHASE**:
+Phase 4 — Second-Round Planning / Post-OQ3 Baseline
 
 **CURRENT_TASK**:
-完成第一轮合入后的基线封存，盘点第二轮缺口并确定第一项实施任务
+OQ3 MF-v1 已合并，建立新的 main 基线并确定下一项第二轮能力
 
 **BRANCH**:
-`chore/engineering-close-20260921`（已合并，历史分支；
-第二轮能力一律新建 feature branch）
+`chore/post-merge-baseline-20260923`（本轮只做文档同步；
+第二轮能力一律新建独立 feature branch）
 
 **PR**:
-#1 MERGED / CLOSED
-merge commit `89a12a0cf43c6a23bf9cb5c6d393d1aa0198f87a`
+#10 MERGED / CLOSED
+merge commit `abcb8b4d21ac678fb6c86ec607c79e17e3177980`
 
 **MAIN**:
-`89a12a0cf43c6a23bf9cb5c6d393d1aa0198f87a`（= 第一轮正式基线）
+`abcb8b4d21ac678fb6c86ec607c79e17e3177980`（= PR #10 合并后的当前基线）
 
 **GitHub CI**:
 post-merge Fast QA = PASS
-Run = `35582069002`（event=push，branch=main）
+Run = `35835334696`（event=push，branch=main）
+
+**PREVIOUS BASELINE（历史，不再作为当前状态）**:
+PR #1 MERGED / CLOSED，main = `89a12a0cf43c6a23bf9cb5c6d393d1aa0198f87a`
+（第一轮正式基线；证据 run `35582069002`）
+
+**OQ3 MF-v1 状态**: **MERGED**（PR #10）
+契约 SF ≤ 7B / MF 8–128B / >128B admission reject / max 19 frames / M1–M7；
+offline 120 passed / 23594 subtests；OQ3 smoke PASS 10 / FAIL 0；
+v1 golden 947 且两个 digest unchanged。
+**stateful / multi-request sequences = OUT OF SCOPE**。
 
 **NEXT_STEP**:
-完成第二轮能力盘点与优先级设计 → 确定第一项能力 →
+重新检查当前 main 真实状态 → 确定下一项第二轮能力 →
 创建独立 feature branch 开发（小功能 → 小 PR → 可验证 → 合入）。
 
 **SECOND-ROUND MODE**:
 不再把多个大型能力一次性堆进 main；每个能力单独 feature branch、
 单独 PR、单独审查与回滚。
 
-**SECOND-ROUND FIRST TARGET — UDS 0x19 ReadDTCInformation
-（设计已修正 2026-09-21，按此执行，未实现）**:
+**NEXT CANDIDATE（未实现；待下一阶段重新检查当前 main 真实状态后再决定是否实施）
+— UDS 0x19 ReadDTCInformation
+（设计已修正 2026-09-21）**:
 
 - 子功能与报文（教学实验统一 DTCFormatIdentifier = 0x01，
   ISO 14229-1 DTC format）:
