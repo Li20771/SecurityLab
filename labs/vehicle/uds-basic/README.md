@@ -142,7 +142,8 @@ class EcuState:
 ```
 
 - `0x10` 切换会话时更新 `STATE.session`，并**清除解锁状态与 seed**
-- `0x11 01`（hardReset）把会话复位回 `defaultSession`，同样清除解锁状态
+- `0x11 01/02/03`（hardReset / keyOffOnReset / softReset）把会话复位回
+  `defaultSession`，同样清除解锁状态（三者状态等价，见 4.10）
 - 被拒绝的请求**不会**改变会话状态（已由测试覆盖）
 - **失败计数与锁定在会话切换 / 复位后保留**（本教学 ECU 的设计选择，见 6.4）
 - `ecu.STATE` 只是 `uds_server.STATE` 的 re-export，**不是第二份状态**
@@ -174,7 +175,7 @@ UDS_INTERFACE=vcan1 UDS_RX_ID=0x7E1 UDS_TX_ID=0x7E9 \
 | SID | 服务 | 子功能 | 肯定响应 | 状态 |
 |---|---|---|---|---|
 | `0x10` | DiagnosticSessionControl | `0x01` default<br>`0x02` programming<br>`0x03` extended | `0x50` | 已实现 |
-| `0x11` | ECUReset | `0x01` hardReset | `0x51` | 已实现 |
+| `0x11` | ECUReset | `0x01` hardReset<br>`0x02` keyOffOnReset<br>`0x03` softReset | `0x51` | 已实现（见 4.10） |
 | `0x14` | ClearDiagnosticInformation | —（`groupOfDTC` 参数） | `0x54` | 已实现（见 4.9） |
 | `0x19` | ReadDTCInformation | `0x01` numberOfDTCByStatusMask<br>`0x02` DTCByStatusMask<br>`0x0A` supportedDTC | `0x59` | 已实现（见 4.4） |
 | `0x22` | ReadDataByIdentifier | —（支持多 DID） | `0x62` | 已实现 |
@@ -216,7 +217,7 @@ UDS_INTERFACE=vcan1 UDS_RX_ID=0x7E1 UDS_TX_ID=0x7E9 \
 ```
 请求: 11 <resetType>
 响应: 51 <resetType>
-实际: 51 01
+实际: 51 01 / 51 02 / 51 03（三个 resetType 状态等价，见 4.10）
 ```
 
 **0x22 ReadDataByIdentifier（支持多 DID）**
@@ -624,6 +625,48 @@ status 字节变 `0x00`**。
 `dtc_records` 内容）；`hardReset` 之后 `0x14` 正常工作；`0x14` 不影响
 `did_overrides` / routine 状态 / transfer 字段；`EcuState` **不新增字段**。
 
+### 4.10 0x11 ECUReset（resetType 01 / 02 / 03）
+
+```
+请求: 11 <resetType>
+响应: 51 <resetType>
+
+11 01 → 51 01      hardReset
+11 02 → 51 02      keyOffOnReset
+11 03 → 51 03      softReset
+11 04 → 7F 11 12   enableRapidPowerShutDown（未实现）
+11 05 → 7F 11 12   disableRapidPowerShutDown（未实现）
+11 FF → 7F 11 12   未知 resetType
+11    → 7F 11 13   缺少 resetType
+```
+
+**三个 resetType 在本实验模型中状态等价（`experiment-defined`）**：
+
+| resetType | 状态转换 |
+|---|---|
+| `0x01` hardReset | ┐ |
+| `0x02` keyOffOnReset | ├─ 共用同一个 reset-sensitive state transition |
+| `0x03` softReset | ┘ |
+
+区分三者需要**电源域、硬件复位深度、应用层与固件层之分、NVM controller**
+等语义，本教学模型一概不具备。因此本实验**不制造人为差异** ——
+这**不是 ISO 14229-1 的强制要求**，而是本 ECU 的明确设计选择，
+由 `test_ecu_unit.py::TestEcuResetEquivalence` 逐字段固化为可执行断言
+（26 字段快照 + 三态互比），任何"给某个 resetType 加差异"的改动都会立刻失败。
+
+复位影响 `EcuState` 的 26 个字段中：
+
+- **复位 21 个**：`session`、`security_level`、`pending_seed`、
+  `seed_issued_at`、`seed_consumed`、`did_overrides`、`active_routines`、
+  `routine_start_counts`、download 6 字段、upload 5 字段、
+  `file_mode`、`file_path`
+- **保留 5 个**：`failed_attempts`、`lockout_until`、`seed_counter`
+  （防复位绕过暴力破解惩罚）、`dtc_records`（故障历史记忆）、
+  `files`（"非易失存储"替身）
+
+**未实现**：`0x04` / `0x05`（快速下电），以及
+`suppressPosRspMsgIndicationBit`（本实验不为 `0x11` 实现该位）。
+
 ## 5. 支持的 NRC
 
 | NRC | 名称 | 本实验触发条件 |
@@ -655,7 +698,8 @@ status 字节变 `0x00`**。
 | `10 04` | `7F 10 12` | 会话类型不支持 |
 | `11` | `7F 11 13` | 缺少 resetType |
 | `11 01 00` | `7F 11 13` | 多余字节 |
-| `11 02` | `7F 11 12` | resetType 未实现 |
+| `11 04` / `11 05` | `7F 11 12` | resetType 未实现（快速下电） |
+| `11 FF` | `7F 11 12` | 未知 resetType |
 | `14` / `14 FF FF` | `7F 14 13` | 缺少 groupOfDTC（必须严格 4 字节） |
 | `14 FF FF FF 00` | `7F 14 13` | 多余字节 |
 | `14 FF FF FF` | `54` | 清除全部 DTC 的 status（正响应仅 1 字节） |
@@ -865,14 +909,18 @@ ISO 14229-1 并未把"seed 与 key 必须等长、且必须为 4 字节"规定�
 |---|---|---|---|
 | `0x10` 切换到任意会话 | 重置为 LOCKED | 清除 | **保留** |
 | `0x11 01` hardReset | 重置为 LOCKED | 清除 | **保留** |
+| `0x11 02` keyOffOnReset | 重置为 LOCKED | 清除 | **保留** |
+| `0x11 03` softReset | 重置为 LOCKED | 清除 | **保留** |
 
 **为什么会话切换必须清除解锁状态**：否则 Tester 可在
 `extendedDiagnosticSession` 解锁后切回 `defaultSession` 并保持解锁，
 形成真实的权限绕过漏洞。本实验用测试固化了这一语义
 （`test_protected_did_denied_after_session_downgrade`）。
 
-**为什么 `0x11 01` 保留失败计数与锁定**：防止通过复位 ECU
-刷掉暴力破解的惩罚状态。
+**为什么 `0x11 01/02/03` 保留失败计数与锁定**：防止通过复位 ECU
+刷掉暴力破解的惩罚状态。三个 resetType 在本模型中状态等价（见 4.10），
+因此这一安全姿态对三者必须一致 —— 否则 `11 02` 会成为标准协议级的
+锁定绕过入口（尝试若干次 → 复位清零 → 继续尝试）。
 
 > ⚠️ **这不是所有真实 ECU 都必然如此。**
 > 部分真实 ECU 会在复位时清空失败计数与锁定。
