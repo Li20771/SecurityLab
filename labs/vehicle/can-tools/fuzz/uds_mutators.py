@@ -1,24 +1,33 @@
 #!/usr/bin/env python3
 """
-UDS fuzz v1 —— UDS 层变异（**恰好 4 个维度**）
+UDS fuzz —— UDS 层变异（**恰好 4 个维度**，v1 + OQ3 Phase 1）
 
-Frozen Contract v3 §5/§6/§7/§8：
+维度（Frozen Contract：不得新增第五维）：
 
-    维度：uds_len / uds_sid / uds_sub / uds_payload
-    **没有 uds_seq** —— Layer C（跨请求序列）已从 v1 删除
+    uds_len / uds_sid / uds_sub / uds_payload
+    **没有 uds_seq** —— 跨请求序列属下一阶段 Stateful Design Review
 
-三个硬约束：
+三个硬约束（两条路径共用）：
 
-1. **deterministic**：``same seed + same mutation spec`` → same UDS request
+1. **deterministic**：``same seed + same mutation spec`` → same frames
 2. **no-op rejected**：变异后 frames 的 ``frames_fingerprint`` 与 seed 相同 → 拒绝
-3. **final len <= 7**：任何超出 :data:`uds_corpus.MAX_UDS_REQUEST_LEN` 的
-   变异**不生成**（spec 生成期过滤）或在 apply 期拒绝（防御性），**绝不截断**
+3. **final len <= envelope**：超出**本 seed 自己 envelope**（R5-b：v1 seed = 7、
+   MF seed = 128）的变异**不生成**（生成期过滤）或在 apply 期拒绝，
+   **绝不截断**
+
+两条变异路径（OQ3）：
+
+    payload 级 : 改 UDS payload 字节 → 重新编码（uds_corpus.encode_uds_request）
+    mf_* 帧级  : 改**规范分帧**的 FF/CF PCI 字节或删除末帧，**payload 字节不变**
+
+mf_* 是唯一允许**故意破坏 transport framing** 的变异（Frozen Contract Layer B），
+共七个：M1..M7，全部位于 ``uds_len`` 维度，全部带 ``mf_`` 保留前缀。
 
 本模块**不 import** ``isotp_fuzz``（引擎）：变异逻辑保持纯函数，可完全离线单测。
 帧指纹复用 ``isotp_mutators.frames_fingerprint``（不复制）。
 
-层边界：本模块只改**一个 UDS 请求的字节**；编码与去重在别处（``uds_corpus`` /
-``uds_fuzz``），跨请求状态一律 OUT OF SCOPE。
+层边界：本模块只作用于**一个请求**（及其分帧）；编码与去重在别处
+（``uds_corpus`` / ``uds_fuzz``），跨请求状态一律 OUT OF SCOPE。
 """
 
 import os
@@ -32,6 +41,7 @@ for _p in (_TOOLS_DIR, _HERE):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+import isotp_corpus  # noqa: E402  （只取 PCI_FF / PCI_CF 常量）
 import isotp_mutators  # noqa: E402  （只取 frames_fingerprint）
 import uds_corpus  # noqa: E402
 from uds_corpus import (  # noqa: E402
@@ -49,6 +59,15 @@ __all__ = [
     "ALL_DIMENSIONS",
     "UNIMPL_SIDS",
     "SUPPRESS_BIT",
+    "MF_OP_FF_DECLARED_ZERO",
+    "MF_OP_FF_DECLARED_MINUS_ONE",
+    "MF_OP_FF_DECLARED_PLUS_ONE",
+    "MF_OP_FF_DECLARED_MAX",
+    "MF_OP_CF_DROP_LAST",
+    "MF_OP_CF_SN_ZERO",
+    "MF_OP_CF_SN_OFF_BY_ONE",
+    "MF_OPS",
+    "FF_DECLARED_MAX",
     "MutationError",
     "mutation_specs_for_seed",
     "apply_mutation",
@@ -79,6 +98,51 @@ SUPPRESS_BIT = 0x80
 
 #: ``uds_payload.field_boundary`` 中 0x2E 的数据长度取值。
 DID_WRITE_DATA_LENGTHS: Tuple[int, ...] = (1, 4)
+
+
+# ----------------------------------------------------------------------
+# OQ3 multi-frame 传输变异（M1..M7）
+# ----------------------------------------------------------------------
+#
+# 全部位于 ``uds_len`` 维度（attribution rule 4：它们改变"声明/实际长度关系"
+# 或"预期 payload 的交付"）。它们修改的是**传输帧字节**（FF/CF 的 PCI），
+# **不修改 UDS payload 字节** —— 这正是用保留前缀 ``mf_`` 与 v1 的
+# payload 级 ``decl_*`` 区分开的原因。
+#
+# 禁止新增第八个 mf_* op，禁止任何 wildcard family（Frozen Contract）。
+
+MF_OP_FF_DECLARED_ZERO = "mf_ff_declared_zero"
+MF_OP_FF_DECLARED_MINUS_ONE = "mf_ff_declared_minus_one"
+MF_OP_FF_DECLARED_PLUS_ONE = "mf_ff_declared_plus_one"
+MF_OP_FF_DECLARED_MAX = "mf_ff_declared_max"
+MF_OP_CF_DROP_LAST = "mf_cf_drop_last"
+MF_OP_CF_SN_ZERO = "mf_cf_sn_zero"
+MF_OP_CF_SN_OFF_BY_ONE = "mf_cf_sn_off_by_one"
+
+#: 冻结的七个 mf_* op（顺序即 spec 生成顺序 M1..M7）。
+MF_OPS: Tuple[str, ...] = (
+    MF_OP_FF_DECLARED_ZERO,        # M1
+    MF_OP_FF_DECLARED_MINUS_ONE,   # M2
+    MF_OP_FF_DECLARED_PLUS_ONE,    # M3
+    MF_OP_FF_DECLARED_MAX,         # M4
+    MF_OP_CF_DROP_LAST,            # M5
+    MF_OP_CF_SN_ZERO,              # M6
+    MF_OP_CF_SN_OFF_BY_ONE,        # M7
+)
+
+#: FF 12-bit 声明长度的上限（M4 用）。
+FF_DECLARED_MAX = 0x0FFF
+
+#: 只改 FF PCI 的两个字节、不改帧数的 op。
+_MF_DECLARED_OPS: Dict[str, str] = {
+    MF_OP_FF_DECLARED_ZERO: "zero",
+    MF_OP_FF_DECLARED_MINUS_ONE: "minus_one",
+    MF_OP_FF_DECLARED_PLUS_ONE: "plus_one",
+    MF_OP_FF_DECLARED_MAX: "max",
+}
+
+#: 只改单个 CF 的 PCI 低半字节（SN）的 op。
+_MF_SN_OPS: Tuple[str, ...] = (MF_OP_CF_SN_ZERO, MF_OP_CF_SN_OFF_BY_ONE)
 
 
 class MutationError(ValueError):
@@ -160,30 +224,76 @@ def _field_boundary_specs(raw: bytes) -> List[Dict]:
     return out
 
 
+def _mf_specs(raw: bytes) -> List[Dict]:
+    """
+    MF seeds 专属的 M1..M7 spec（Frozen Contract "Complete mf_* enumeration"）。
+
+    只在**规范分帧确实为 MF**（L ≥ 8）时生成。因为 v1 seed 的 envelope 固定为 7
+    （R5-b），它们永远进不到这里 —— 所以 v1 seed 不会获得任何 mf_* spec。
+
+    顺序固定为 M1..M5 然后 M6（CF index 升序）然后 M7（CF index 升序）。
+    """
+    if len(raw) <= MAX_UDS_REQUEST_LEN:
+        return []
+
+    specs: List[Dict] = [
+        _spec(DIM_LEN, {"op": MF_OP_FF_DECLARED_ZERO}, "mf-ff-declared-zero"),
+        _spec(DIM_LEN, {"op": MF_OP_FF_DECLARED_MINUS_ONE}, "mf-ff-declared-minus-one"),
+        _spec(DIM_LEN, {"op": MF_OP_FF_DECLARED_PLUS_ONE}, "mf-ff-declared-plus-one"),
+        _spec(DIM_LEN, {"op": MF_OP_FF_DECLARED_MAX}, "mf-ff-declared-max"),
+        _spec(DIM_LEN, {"op": MF_OP_CF_DROP_LAST}, "mf-cf-drop-last"),
+    ]
+
+    cf_count = uds_corpus.framing_cf_count(len(raw))
+
+    # ---- M6：SN := 0，但排除 SN 本来就是 0 的 CF（否则是 no-op）----
+    for index in range(1, cf_count + 1):
+        if uds_corpus.cf_sequence_number(index) == 0:
+            continue
+
+        specs.append(_spec(
+            DIM_LEN, {"op": MF_OP_CF_SN_ZERO, "cf": index},
+            f"mf-cf-sn-zero@cf{index}",
+        ))
+
+    # ---- M7：SN := (SN+1) & 0x0F，对**每一个** CF index 各一条 ----
+    #       mod-16 自增没有不动点，所以不存在 no-op。
+    for index in range(1, cf_count + 1):
+        specs.append(_spec(
+            DIM_LEN, {"op": MF_OP_CF_SN_OFF_BY_ONE, "cf": index},
+            f"mf-cf-sn-off-by-one@cf{index}",
+        ))
+
+    return specs
+
+
 def mutation_specs_for_seed(seed: Dict) -> List[Dict]:
     """
     返回某个 seed 上"有意义"的变异列表（**稳定顺序**）。
 
-    生成期即过滤掉不适用 / 会超长的 spec —— 因此"最终请求 ≤7"由构造保证。
+    生成期即过滤掉不适用 / 会超长的 spec —— 因此"最终请求 ≤ envelope"
+    由构造保证。**envelope 取自该 seed 自身**（R5-b：v1 seed = 7，
+    MF seed = 128），不是全局常数。
     """
     raw = bytes(seed["uds_request"])
     length = len(raw)
     service = raw[0]
+    envelope = seed.get("envelope", MAX_UDS_REQUEST_LEN)
 
     if seed.get("reference_only"):
         return []
 
     specs: List[Dict] = []
 
-    # ---- uds_len ----
+    # ---- uds_len（长度门限相对**本 seed 的** envelope）----
     if length >= 2:
         specs.append(_spec(DIM_LEN, {"op": "sid_only"}, "len=sid-only"))
         specs.append(_spec(DIM_LEN, {"op": "drop1"}, "len=drop1"))
 
-    if length <= MAX_UDS_REQUEST_LEN - 1:
+    if length <= envelope - 1:
         specs.append(_spec(DIM_LEN, {"op": "add1_00"}, "len=+1(00)"))
 
-    if length <= MAX_UDS_REQUEST_LEN - 2:
+    if length <= envelope - 2:
         specs.append(_spec(DIM_LEN, {"op": "add2_00"}, "len=+2(00)"))
         specs.append(_spec(DIM_LEN, {"op": "add2_ff"}, "len=+2(FF)"))
 
@@ -236,6 +346,9 @@ def mutation_specs_for_seed(seed: Dict) -> List[Dict]:
                 f"pay=rep[{index}]=FF"))
 
     specs.extend(_field_boundary_specs(raw))
+
+    # ---- OQ3：MF 传输变异（只对 MF seed 生成；v1 seed 永远进不来）----
+    specs.extend(_mf_specs(raw))
 
     return specs
 
@@ -392,14 +505,25 @@ def _apply_field(raw: bytes, params: Dict) -> bytes:
 
 def apply_mutation(seed: Dict, spec: Dict) -> Tuple[Optional[bytes], Optional[str]]:
     """
-    对 seed 施加一条 mutation，返回 ``(mutated_uds_bytes, skip_reason)``。
+    对 seed 施加一条**payload 级** mutation，返回 ``(mutated_uds_bytes, reason)``。
 
-    - 成功：``(bytes, None)``，且长度已确保 ≤ :data:`MAX_UDS_REQUEST_LEN`
+    - 成功：``(bytes, None)``，长度已确保 ≤ **该 seed 的 envelope**（R5-b）
     - 不适用：``(None, reason)`` —— 不是失败，是"该 spec 对该 seed 无意义"
+
+    OQ3 的 mf_* op 是**帧级**变异（改 FF/CF 的 PCI，不改 payload 字节），
+    因此本函数对它们一律返回 ``(None, reason)``，要求调用方改用
+    :func:`build_mutated_frames` —— 避免"payload 没变"被误读成 no-op。
     """
     raw = bytes(seed["uds_request"])
     dimension = spec["dimension"]
     params = spec["params"]
+    envelope = seed.get("envelope", MAX_UDS_REQUEST_LEN)
+
+    if params.get("op") in MF_OPS:
+        return None, (
+            f"{params['op']} 是帧级（transport）变异，payload 字节不变；"
+            f"请使用 build_mutated_frames()"
+        )
 
     try:
         if dimension == DIM_LEN:
@@ -418,38 +542,116 @@ def apply_mutation(seed: Dict, spec: Dict) -> Tuple[Optional[bytes], Optional[st
     if not mutated:
         return None, "变异产生空请求"
 
-    if len(mutated) > MAX_UDS_REQUEST_LEN:
+    if len(mutated) > envelope:
         return None, (
-            f"变异产生 {len(mutated)} 字节 > {MAX_UDS_REQUEST_LEN}"
+            f"变异产生 {len(mutated)} 字节 > 本 seed envelope {envelope}"
             f"（超长不生成、不截断）"
         )
 
     return mutated, None
 
 
+def _apply_mf_op(frames: List[Dict], raw: bytes,
+                 spec: Dict) -> Tuple[Optional[List[Dict]], Optional[str]]:
+    """
+    在**规范分帧**上施加一个 mf_* 传输变异（M1..M7）。
+
+    只修改 FF/CF 的 PCI 字节（M5 除外，它删除帧），**绝不修改 payload 字节**。
+    返回 ``(frames, reason)``。
+    """
+    op = spec["params"]["op"]
+    out = [dict(action) for action in frames]
+
+    # ---- M1..M4：只改 FF 的 12-bit 声明长度，帧数与 payload 均不变 ----
+    if op in _MF_DECLARED_OPS:
+        declared = {
+            "zero": 0,
+            "minus_one": len(raw) - 1,
+            "plus_one": len(raw) + 1,
+            "max": FF_DECLARED_MAX,
+        }[_MF_DECLARED_OPS[op]]
+
+        if not 0 <= declared <= FF_DECLARED_MAX:
+            return None, f"声明长度 {declared} 超出 12-bit 范围"
+
+        if declared == len(raw):
+            return None, f"声明长度与规范值相同（{declared}）—— no-op"
+
+        first = bytes(out[0]["data"])
+        out[0] = dict(out[0], data=bytes([
+            (isotp_corpus.PCI_FF | ((declared >> 8) & 0x0F)) & 0xFF,
+            declared & 0xFF,
+        ]) + first[2:])
+
+        return out, None
+
+    # ---- M5：删除最后一个 CF（FF 与其余 CF 逐字节不变）----
+    if op == MF_OP_CF_DROP_LAST:
+        if len(out) < 2:
+            return None, "没有 CF 可删（该 case 不是 MF 分帧）"
+
+        return out[:-1], None
+
+    # ---- M6 / M7：只改某一个 CF 的 PCI 低半字节（SN）----
+    if op in _MF_SN_OPS:
+        index = int(spec["params"]["cf"])
+
+        if not 1 <= index <= len(out) - 1:
+            return None, f"CF index {index} 越界（本 case 有 {len(out) - 1} 个 CF）"
+
+        action = out[index]
+        data = bytes(action["data"])
+        current = data[0] & 0x0F
+
+        new_sn = 0 if op == MF_OP_CF_SN_ZERO else (current + 1) & 0x0F
+
+        if new_sn == current:
+            return None, f"CF #{index} 的 SN 已经是 {current} —— no-op"
+
+        out[index] = dict(action, data=bytes([(data[0] & 0xF0) | new_sn]) + data[1:])
+
+        return out, None
+
+    return None, f"未知 mf_* op {op!r}"
+
+
 def build_mutated_frames(seed: Dict, spec: Dict) -> Tuple[Optional[List[Dict]], Optional[str]]:
     """
     完整变异流水（到 ``frames[]`` 为止，不含去重）：
 
-        spec → mutated UDS bytes → ISO-TP SF encoding → frames[]
-              → 与 seed 的 frames 比较指纹 → no-op 拒绝
+        payload 级 op : spec → mutated UDS bytes → encoding → frames[]
+        mf_* 帧级 op  : spec → canonical frames → 帧级 PCI/帧数变换
+        然后两者都 → 与 seed 的 frames 比较指纹 → no-op 拒绝
 
     返回 ``(frames, skip_reason)``；形状与既有引擎的
     ``isotp_mutators.apply_mutation`` 对称。
+
+    no-op 判据对两条路径**统一**：任何生成出来的 spec 都必须改变
+    ``frames_fingerprint``（Frozen Contract §8），no-op 在这里就被拒，
+    绝不依赖 campaign 去重兜底。
     """
-    mutated, reason = apply_mutation(seed, spec)
+    params = spec.get("params") or {}
+    canonical_frames = uds_corpus.encode_uds_request(seed["uds_request"])
 
-    if mutated is None:
-        return None, reason
+    if params.get("op") in MF_OPS:
+        frames, reason = _apply_mf_op(
+            canonical_frames, bytes(seed["uds_request"]), spec)
 
-    try:
-        frames = uds_corpus.encode_uds_request(mutated)
-        seed_frames = uds_corpus.encode_uds_request(seed["uds_request"])
-    except uds_corpus.UdsEncodeError as exc:
-        return None, f"编码失败：{exc}"
+        if frames is None:
+            return None, reason
+    else:
+        mutated, reason = apply_mutation(seed, spec)
+
+        if mutated is None:
+            return None, reason
+
+        try:
+            frames = uds_corpus.encode_uds_request(mutated)
+        except uds_corpus.UdsEncodeError as exc:
+            return None, f"编码失败：{exc}"
 
     if isotp_mutators.frames_fingerprint(frames) == \
-            isotp_mutators.frames_fingerprint(seed_frames):
+            isotp_mutators.frames_fingerprint(canonical_frames):
         return None, (
             f"no-op mutation（{spec.get('label', spec['dimension'])} 与 seed 帧序列相同）"
         )

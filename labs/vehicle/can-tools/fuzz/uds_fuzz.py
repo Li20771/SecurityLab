@@ -119,6 +119,23 @@ def build_candidates(seeds: Optional[List[str]] = None,
                 })
                 continue
 
+            # ---- Layer C 准入：帧数上限 ----
+            #
+            # 刻意**不**在此检查 Layer A canonical framing：Layer B 的 mf_*
+            # 变异正是**故意**破坏 framing 的，对它们要求 canonical 一致性
+            # 会让 MF 变异全部被拒。准入只管 schema/可序列化/可指纹化/帧数。
+            if len(frames) > uds_corpus.MAX_FRAMES_PER_CASE:
+                skipped.append({
+                    "seed_id": seed["seed_id"],
+                    "dimension": spec["dimension"],
+                    "label": spec["label"],
+                    "reason": (
+                        f"帧数 {len(frames)} 超过 MAX_FRAMES_PER_CASE "
+                        f"{uds_corpus.MAX_FRAMES_PER_CASE}"
+                    ),
+                })
+                continue
+
             case_id = cs.make_case_id(seed["seed_id"], spec["dimension"], spec["label"])
             mutation = {
                 "dimension": spec["dimension"],
