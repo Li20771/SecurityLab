@@ -41,7 +41,7 @@ SecurityLab 第一轮建设及工程收口已经完成；**第二轮第一项能
 | SocketCAN / vcan0 | VERIFIED | 开机自启；`ip link show vcan0` |
 | can-utils | VERIFIED | `candump/cansend/canplayer/isotpsend ...` |
 | ISO-TP | VERIFIED | `run_tests.sh all`（uds-basic） |
-| UDS（10/11/14/19/22/27/2E/31/34/35/36/37/38/3E） | VERIFIED | `labs/vehicle/uds-basic`（ecu.py / isotp_client.py）；0x19 / 0x31 / 0x34-0x37（download + upload）为第二轮，0x38 file transfer 与 0x14 DTC runtime status 清除为后续（均已合入）；**0x14 是 synthetic DTC model 的 status 清除，本 ECU 无 DTC 产生/故障注入机制，功能组与 0x85 未实现** |
+| UDS（10/11/14/19/22/27/2E/31/34/35/36/37/38/3E） | VERIFIED | `labs/vehicle/uds-basic`（ecu.py / isotp_client.py）；0x19 / 0x31 / 0x34-0x37（download + upload）/ 0x38 file transfer **均已合入 main 并有 unit + e2e 验证**；**边界**：0x14 是 synthetic DTC model 的 status 清除，本 ECU 无 DTC 产生/故障注入机制；0x19 仅 reportType 01/02/0A；0x38 为 synthetic in-memory 文件模型（非真实文件系统）；功能组、0x28 / 0x85、0x39 / 0x06 未实现 |
 | 多 ECU / Gateway | VERIFIED + PARTIAL | `ecu/gateway.py`；实时 0x7DF 守护进程待建 |
 | CAN/ISO-TP fuzz | VERIFIED | `fuzz/isotp_fuzz.py --smoke ...`（见 TEST_MATRIX）；最小复现 `scripts/repro/verify_fuzz_smoke.sh` |
 | UDS fuzz v1（请求层 SF） | VERIFIED | `fuzz/uds_fuzz.py --seed 12345 --max-cases N --out-dir …`；单请求 UDS 变异（SF ≤ 7B）；最小复现 `scripts/repro/verify_uds_fuzz_smoke.sh` |
