@@ -10,26 +10,27 @@
 Phase 4 — Second-Round / Post-OQ5 Baseline
 
 **CURRENT_TASK**:
-OQ5 DTC severity 已合并，建立新的 main 基线并确定下一项第二轮能力
+OQ5 DTC severity 已合并；本轮为**文档基线清理**；下一项第二轮能力待重新盘点后确定
 
 **BRANCH**:
-`chore/docs-post-oq5-baseline-20260923`（本轮只做文档同步；
+`chore/docs-baseline-cleanup-20260923`（本轮只做文档基线清理；
 第二轮能力一律新建独立 feature branch）
 
 **PR**:
-#13 MERGED / CLOSED
-merge commit `3349d79cac30b50593f6c826df8a1147fa9b4d34`
+#14 MERGED / CLOSED
+merge commit `dfe3ea79b625764cfd93c8d19d47eb868553e50a`（**仅文档变更**）
 
 **MAIN**:
-`3349d79cac30b50593f6c826df8a1147fa9b4d34`（= PR #13 合并后的当前基线）
+`dfe3ea79b625764cfd93c8d19d47eb868553e50a`（= PR #14 docs merge 后的当前基线）
 
 **GitHub CI**:
 post-merge Fast QA = PASS
-Run = `35851051243`（event=push，branch=main）
+Run = `35851993556`（event=push，branch=main）
 
 **PREVIOUS BASELINE（历史，不再作为当前状态）**:
-PR #10 MERGED，main = `abcb8b4d21ac678fb6c86ec607c79e17e3177980`（OQ3 基线）
+PR #13 MERGED，main = `3349d79cac30b50593f6c826df8a1147fa9b4d34`（**OQ5 代码基线**）
 PR #12 MERGED，main = `c96f858668d7fa6aa17bcafe4f9d920abe140d32`（OQ4 基线）
+PR #10 MERGED，main = `abcb8b4d21ac678fb6c86ec607c79e17e3177980`（OQ3 基线）
 PR #1 MERGED，main = `89a12a0cf43c6a23bf9cb5c6d393d1aa0198f87a`（第一轮正式基线）
 
 **OQ5 状态**: **MERGED / COMPLETED**（PR #13）

@@ -1,12 +1,12 @@
 # SecurityLab 状态看板（SECURITY LAB STATUS）
 
-> 更新：2026-09-23（PR #13 / OQ5 合并后封存）。权威明细见 `FINAL_ENVIRONMENT_AUDIT_2026-09-20.md`（审计快照）、`ENGINEERING_CLOSE_2026-09-21.md`（第一轮收口报告）与 `TEST_MATRIX.md`；断点过程见 `AUTONOMOUS_BUILD_STATE.md`。
+> 更新：2026-09-23（PR #14 / docs baseline 合并后封存）。权威明细见 `FINAL_ENVIRONMENT_AUDIT_2026-09-20.md`（审计快照）、`ENGINEERING_CLOSE_2026-09-21.md`（第一轮收口报告）与 `TEST_MATRIX.md`；断点过程见 `AUTONOMOUS_BUILD_STATE.md`。
 
 ## 一句话现状
 
 SecurityLab 第一轮建设及工程收口已经完成；第二轮已连续交付三项能力
 （OQ3 MF-v1、OQ4 ECUReset 扩展、OQ5 DTC severity），
-**最新一项 OQ5 已通过 PR #13 合入 main**。
+并已完成 OQ5 之后的文档基线同步（PR #14，仅文档）。
 
 第一轮正式基线（历史）：
 
@@ -15,9 +15,14 @@ SecurityLab 第一轮建设及工程收口已经完成；第二轮已连续交�
 
 当前 main 基线：
 
-- PR #13（`feat(uds): add 0x19 DTC severity reports`）：**MERGED / CLOSED**
-- merge commit / main HEAD：`3349d79cac30b50593f6c826df8a1147fa9b4d34`
-- post-merge GitHub Actions Fast QA：PASS（run `35851051243`，event=push，branch=main）
+- PR #14（`docs: sync post-OQ5 capability baseline`）：**MERGED / CLOSED**
+- merge commit / main HEAD：`dfe3ea79b625764cfd93c8d19d47eb868553e50a`
+- 该 merge **只引入文档变更**（`README.md` + 三份 `docs/`），无生产代码 / 测试变更
+- post-merge GitHub Actions Fast QA：PASS（run `35851993556`，event=push，branch=main）
+
+> **注意区分**：OQ5 的**代码基线**是 `3349d79cac30b50593f6c826df8a1147fa9b4d34`
+> （PR #13 merge）。它是当前 main 的**祖先**，不是当前 main —— 当前 main 已前进
+> 到 `dfe3ea7`（仅文档）。OQ5 的能力现状见下方「第二轮已完成能力」。
 
 当前阶段：**Phase 4 — Second-Round / Post-OQ5 Baseline**——OQ5 已合入并封存，
 下一项第二轮能力待**重新盘点当前 main 真实状态后确定**（不预设具体功能）；
@@ -38,7 +43,9 @@ SecurityLab 第一轮建设及工程收口已经完成；第二轮已连续交�
 | severity 位 | `0x80` checkImmediately / `0x40` checkAtNextHalt / `0x20` maintenanceOnly |
 | MF | `0x19/08` 在 3 DTC 时为 **20 字节** → 走 kernel ISO-TP MF（e2e 逐字节断言重组后 payload） |
 | wire profile | **正响应不回显 reportType（既有契约不变）**；count 型（01/07）不输出 `DTCSeverityAvailabilityMask`；记录顺序 `severity → functionalUnit → DTC → status` |
-| 验证 | UDS unit **581** / e2e **208** / all **789**；qa_fast PASS —— 均为 **Local verified** |
+| 验证（**Local verified**） | UDS unit **581** / e2e **208** / all **789**；qa_fast PASS —— 本机实测，**非** GitHub runner 结果 |
+| CI 证据（**GitHub CI verified**） | Fast job（ruff / mypy / uds unit / can-tools offline）在分支与 main 上均 success：run `35849957710`（push）/ `35850109044`（pull_request）/ `35851051243`（main post-merge） |
+| CI **未覆盖** | **e2e 不在 CI 内**（需 vcan0，仅 extended / manual）—— 故 208 与 789 只能是 Local verified |
 
 ### OQ4 — 0x11 ECUReset 扩展（PR #12）
 
@@ -77,17 +84,17 @@ SecurityLab 第一轮建设及工程收口已经完成；第二轮已连续交�
 | Replay | VERIFIED | `fuzz/replay.py <path> [--all] [--repeat N]` |
 | Kernel oracle（fuzz） | VERIFIED | 三态 AVAILABLE/UNAVAILABLE/ERROR；不可用 ≠ 0 events（收口新增） |
 | CAN capture 三格式 | VERIFIED | `can-tools/capture/capture_lab.sh`（CAN log/BLF/PCAP） |
-| ARM/AArch64 工具链 | VERIFIED | aarch64/armhf-linux-gnu-gcc |
-| QEMU + GDB 远程调试 | VERIFIED | `qemu-aarch64 -g` + `gdb-multiarch target remote` |
-| 逆向（Ghidra/r2/binutils） | VERIFIED | `/opt/ghidra/support/analyzeHeadless`、r2、objdump |
-| 动态分析 | VERIFIED | strace / ltrace / qemu -strace / gdb |
-| 固件分析 | VERIFIED | `labs/firmware/synthetic-ecu/`、binwalk、squashfs/jffs2/ubifs |
-| 通用 fuzz（AFL++） | VERIFIED | `labs/fuzzing/afl-demo/`（用 afl-gcc） |
+| ARM/AArch64 工具链 | VERIFIED（**manual-only**） | aarch64/armhf-linux-gnu-gcc；`scripts/repro/verify_arm.sh` 实编译+实执行（断言输出 `ARM_RUNTIME_OK 42`）。**不在 CI / qa_\* / healthcheck 内** |
+| QEMU + GDB 远程调试 | VERIFIED（**manual-only**） | `qemu-aarch64 -g` + `gdb-multiarch target remote`（`scripts/repro/verify_qemu_gdb.sh`，断点命中→continue→rc0）。**不在任何门禁内**；QEMU **system-mode 无代码调用**（仅文档提及） |
+| 逆向（Ghidra / binutils） | VERIFIED（Ghidra）/ **PARTIAL**（r2、objdump） | Ghidra：`scripts/repro/verify_ghidra.sh`（AARCH64 + ERROR_COUNT=0 + main 反汇编 12 条，**manual-only**）；readelf / strings 在固件脚本中真实使用；**r2 / objdump / nm 在 tracked 代码中仅有存在性检查**，无脚本调用 |
+| 动态分析 | **PARTIAL** | `qemu-aarch64` 执行 + `gdb-multiarch` remote 有脚本；**strace / ltrace / qemu -strace 仅有存在性检查**（`healthcheck.sh`），tracked 代码中无脚本化运行 |
+| 固件分析 | **PARTIAL** | SquashFS **完整链**（build / identify / **真解包** `unsquashfs`）；**JFFS2 / UBIFS / UBI 仅 build + identify，无解包**（jefferson / ubireader 未安装，仅存在性探测）；脚本中 binwalk **只做识别**，`binwalk -e` 无脚本调用 |
+| 通用 fuzz（AFL++） | IMPLEMENTED（**manual-only**） | `labs/fuzzing/afl-demo/run.sh` 有真实 `RESULT=PASS/FAIL`（崩溃发现 + 确定性复现）断言；**不被 CI / qa_\* 调用** |
 | YARA / IOC | VERIFIED | `labs/yara-basic/scan.sh` |
 | 网络安全工具 | VERIFIED | nmap/tshark/tcpdump/ncat/socat/nft；`scripts/nettools_check.sh` |
 | Docker | VERIFIED（audit/local capability） | Ubuntu CLI → Docker Desktop E2E 已验证；当前 PR 不重新定义 Docker 当前运行态 |
 | 质量门禁 | VERIFIED | `scripts/qa_fast.sh`（离线）/ `qa_extended.sh`（vcan） |
-| CI | VERIFIED（Fast runner，branch + main 双证） | `.github/workflows/ci.yml`；Fast：PR #13 branch push run `35849957710` / pull_request run `35850109044` = success，main post-merge run `35851051243` = success；Extended：仅 workflow_dispatch，目前不作为自动 PR 门禁 |
+| CI | VERIFIED（Fast runner，branch + main 双证） | `.github/workflows/ci.yml`；Fast：PR #13 branch push run `35849957710` / pull_request run `35850109044` = success；**当前 main**（PR #14 docs merge）post-merge run `35851993556` = success；Extended：仅 workflow_dispatch，目前不作为自动 PR 门禁 |
 | 统一健康检查 | VERIFIED | `scripts/healthcheck.sh [--extended]` |
 | DSH Agent Web GUI | VERIFIED | `systemctl --user status dsh-web`，http://127.0.0.1:8731 |
 | binfmt / WSL interop | REPO VERIFIED / SYSTEM DEPLOYMENT NOT REVERIFIED | `configs/binfmt/binfmt-selfheal.sh` v2.3 fail-closed（helper 缺失绝不回落 systemd-binfmt） |
@@ -153,7 +160,7 @@ Current deployed system:
 - JFFS2 / UBIFS 完整 extraction chain（当前 build + identify 已通过）。
 - ✅ 已收口：Python 依赖 transitive lock（`python-network-requirements.lock`）。
 - ✅ 已完成：CI Fast 在真实 GitHub runner 上的运行验证
-  （最新 post-merge main run `35851051243` = success）；Extended 仍仅 workflow_dispatch。
+  （当前 main post-merge run `35851993556` = success）；Extended 仍仅 workflow_dispatch。
 - 不启动：Docker Security Lab、Obsidian 系统、新真实 CAN 接口（需明确授权）。
 - 可选：jefferson/ubireader、pwndbg/gef、libFuzzer/Honggfuzz、DBC 解析。
 
