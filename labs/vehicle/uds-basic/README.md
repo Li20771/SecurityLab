@@ -186,16 +186,16 @@ DTC 的三层职责**刻意分离**，互不越界：
 import dtc_runtime
 
 dtc_runtime.is_registered_dtc(0x100001)            # True
-dtc_runtime.set_dtc_status(state, 0x100001, 0x09)  # 产生 / 更新（受校验）
+dtc_runtime.set_dtc_status(state, 0x100001, 0x09)  # 产生 / 更新（受校验）→ True
 dtc_runtime.get_dtc_status(state, 0x100001)        # 读回
 dtc_runtime.clear_dtc_status(state, 0x100001)      # 清除（即 0x14 的写入落点）
 ```
 
-| 函数 | 校验 | 用途 |
-|---|---|---|
-| `set_dtc_status(state, dtc, status)` | 已注册 DTC + `status ∈ [0x00, 0xFF]` | 产生 / 更新 |
-| `clear_dtc_status(state, dtc)` | **不做注册校验** | 0x14 的写入落点 |
-| `get_dtc_status(state, dtc)` | 已注册 DTC | 读取 |
+| 函数 | 校验 | 受 0x85 开关约束？ | 用途 |
+|---|---|---|---|
+| `set_dtc_status(state, dtc, status)` | 已注册 DTC + `status ∈ [0x00, 0xFF]` | **是** | 产生 / 更新；返回是否写入了 |
+| `clear_dtc_status(state, dtc)` | **不做注册校验** | 否 | 0x14 的写入落点 |
+| `get_dtc_status(state, dtc)` | 已注册 DTC | 否 | 读取 |
 
 **两个写入入口的契约差异是刻意的**：`0x14` 接受 `dtc_records` 中实际存在的
 任何 key（含运行时 / 测试注入的 DTC），给它加注册校验会**改变 0x14 行为**，
@@ -204,6 +204,11 @@ dtc_runtime.clear_dtc_status(state, 0x100001)      # 清除（即 0x14 的写入
 
 失败语义：未注册 → `UnknownDtcError`；status 越界 → `DtcStateError`；
 **两项校验都发生在任何写入之前**，被拒的调用不触碰 state。
+
+**0x85 开关**：`EcuState.dtc_setting_enabled` 为 `False`（DTC setting OFF，见 4.11）
+时 `set_dtc_status()` **不写任何东西**并返回 `False`；已有 status 冻结。
+OFF 被抑制**刻意不抛异常** —— 那是正常配置状态而非错误。
+`clear_dtc_status()` / `get_dtc_status()` **完全不受该开关影响**。
 
 闭环（fault generation 只经该 Python API，不经协议）：
 
@@ -235,6 +240,7 @@ set_dtc_status(dtc, 非零)   → DTC active
 | `0x37` | RequestTransferExit | — | `0x77` | 已实现（见 4.6） |
 | `0x38` | RequestFileTransfer | `0x01` addFile<br>`0x02` deleteFile<br>`0x03` replaceFile<br>`0x04` readFile<br>`0x05` readDir | `0x78` | 已实现（见 4.8） |
 | `0x3E` | TesterPresent | `0x00` zeroSubFunction<br>`0x80` 抑制正响应 | `0x7E` / 无响应 | 已实现 |
+| `0x85` | ControlDTCSetting | `0x01` DTC setting on<br>`0x02` DTC setting off | `0xC5` | 已实现（见 4.11） |
 
 **尚未实现**（会返回 `NRC 0x11 ServiceNotSupported`）：
 
@@ -767,20 +773,56 @@ status 字节变 `0x00`**。
 等语义，本教学模型一概不具备。因此本实验**不制造人为差异** ——
 这**不是 ISO 14229-1 的强制要求**，而是本 ECU 的明确设计选择，
 由 `test_ecu_unit.py::TestEcuResetEquivalence` 逐字段固化为可执行断言
-（26 字段快照 + 三态互比），任何"给某个 resetType 加差异"的改动都会立刻失败。
+（27 字段快照 + 三态互比），任何"给某个 resetType 加差异"的改动都会立刻失败。
 
-复位影响 `EcuState` 的 26 个字段中：
+复位影响 `EcuState` 的 27 个字段中：
 
-- **复位 21 个**：`session`、`security_level`、`pending_seed`、
+- **复位 22 个**：`session`、`security_level`、`pending_seed`、
   `seed_issued_at`、`seed_consumed`、`did_overrides`、`active_routines`、
   `routine_start_counts`、download 6 字段、upload 5 字段、
-  `file_mode`、`file_path`
+  `file_mode`、`file_path`、`dtc_setting_enabled`
 - **保留 5 个**：`failed_attempts`、`lockout_until`、`seed_counter`
   （防复位绕过暴力破解惩罚）、`dtc_records`（故障历史记忆）、
   `files`（"非易失存储"替身）
 
 **未实现**：`0x04` / `0x05`（快速下电），以及
 `suppressPosRspMsgIndicationBit`（本实验不为 `0x11` 实现该位）。
+
+### 4.11 0x85 ControlDTCSetting
+
+```
+请求: 85 <DTCSettingType>      严格 2 字节
+响应: C5 <DTCSettingType>      **回显** DTCSettingType
+
+85 01    → C5 01        DTC setting ON
+85 02    → C5 02        DTC setting OFF
+85 03    → 7F 85 12     未实现的 DTCSettingType
+85 00    → 7F 85 12     （同上）
+85 FF    → 7F 85 12     （同上）
+85       → 7F 85 13     缺少 DTCSettingType
+85 01 00 → 7F 85 13     多余字节
+```
+
+**本服务不"清 DTC"**：它控制的是 DTC status bits *是否允许继续被 runtime
+mutation 更新*，本身不改变任何已有 status。
+
+| DTCSettingType | 对 `dtc_runtime.set_dtc_status()` 的效果 |
+|---|---|
+| `0x01` ON（**默认**） | 正常更新 status |
+| `0x02` OFF | **冻结** —— 不写入任何东西，已有 status 保持不变，函数返回 `False` |
+
+**与 0x14 的关系（本项目 profile）**：两者**语义独立**。`0x85 02`（OFF）
+**不**阻止 `0x14` 清除 DTC —— OFF 冻结的是"故障产生 / 更新"这条路径，
+不是"清除"这条路径。因此 OFF 期间 `0x14` 仍可清除，`0x19` 仍能读到清除结果。
+
+**易失性**：`EcuState.dtc_setting_enabled` 是**易失的控制模式**（不是故障
+记忆），因此 `0x11 01/02/03` **恢复为上电默认 ON**。理由：若复位保留 OFF，
+Tester 可让故障检测被无限期停用 —— 一个任何标准复位都清不掉的"安全相关"
+状态，与 0x11 幂等复位的语义冲突。
+
+**本服务不设 session / security 门控** —— 与 `0x11` / `0x14` / `0x19` 的
+既有 zero-gated profile 一致；门控抽象属路线图中的 Permission / session
+framework。`suppressPosRspMsgIndicationBit` 不在本 feature 范围。
 
 ## 5. 支持的 NRC
 
@@ -848,6 +890,11 @@ status 字节变 `0x00`**。
 | `3E 01` / `3E FF` | `7F 3E 12` | 子功能不支持（bit7 剥离后非 0） |
 | `3E 00` | `7E 00` | 肯定响应 |
 | `3E 80` | （无响应） | 抑制正响应，ecu.py 不发帧 |
+| `85` | `7F 85 13` | 缺少 DTCSettingType |
+| `85 01 00` / `85 02 00` | `7F 85 13` | 多余字节 |
+| `85 00` / `85 03` / `85 FF` | `7F 85 12` | DTCSettingType 未实现 |
+| `85 01` | `C5 01` | DTC setting ON（开启 runtime mutation） |
+| `85 02` | `C5 02` | DTC setting OFF（冻结 runtime mutation；**不**阻止 0x14） |
 | `19` | `7F 19 13` | 缺少 reportType |
 | `19 01` / `19 02`（缺 mask） | `7F 19 13` | 长度不足 |
 | `19 01 FF 00` / `19 02 FF 00` / `19 0A 00` | `7F 19 13` | 多余字节 |
@@ -1163,7 +1210,7 @@ bash tests/run_tests.sh e2e    # 只跑 vcan0 端到端测试
 | `tests/test_keygen_unit.py` | 34 | 否 |
 | `tests/test_services_extra_unit.py` | 17 | 否 |
 | `tests/test_gateway_unit.py` | 13 | 否 |
-| `tests/test_dtc_unit.py` | 98 | 否 |
+| `tests/test_dtc_unit.py` | 115 | 否 |
 | `tests/test_dtc_clear_unit.py` | 39 | 否 |
 | `tests/test_routine_unit.py` | 25 | 否 |
 | `tests/test_transfer_unit.py` | 40 | 否 |
@@ -1173,13 +1220,13 @@ bash tests/run_tests.sh e2e    # 只跑 vcan0 端到端测试
 | `tests/test_isotp_options_vcan.py` | 14 | 是 |
 | `tests/test_write_did_vcan.py` | 8 | 是 |
 | `tests/test_multi_ecu_vcan.py` | 4 | 是 |
-| `tests/test_dtc_vcan.py` | 16 | 是 |
+| `tests/test_dtc_vcan.py` | 21 | 是 |
 | `tests/test_dtc_clear_vcan.py` | 11 | 是 |
 | `tests/test_routine_vcan.py` | 11 | 是 |
 | `tests/test_transfer_vcan.py` | 18 | 是 |
 | `tests/test_upload_vcan.py` | 16 | 是 |
 | `tests/test_file_transfer_vcan.py` | 41 | 是 |
-| **合计** | **811**（unit 603 + e2e 208） | — |
+| **合计** | **833**（unit 620 + e2e 213） | — |
 
 > 表中数字为 **Local verified**（本机 `run_tests.sh all` 实测）。
 > GitHub CI 的 fast job 只覆盖 ruff / mypy / **unit** / can-tools offline；

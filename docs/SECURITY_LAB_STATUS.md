@@ -54,7 +54,7 @@ SecurityLab 第一轮建设及工程收口已经完成；第二轮已连续交�
 | OQ4 | **MERGED / COMPLETED** |
 | merge commit | `c96f858668d7fa6aa17bcafe4f9d920abe140d32` |
 | 内容 | 新增 `0x11 02` keyOffOnReset、`0x11 03` softReset；三者在本实验模型中**状态等价**（experiment-defined，三态互比由测试固化） |
-| 边界 | 仅 hardReset / keyOffOnReset / softReset；沿用既有 21 复位 / 5 保留 字段划分 |
+| 边界 | 仅 hardReset / keyOffOnReset / softReset；沿用既有 22 复位 / 5 保留 字段划分 |
 
 ### OQ3 — UDS MF-v1（PR #10）
 
@@ -76,7 +76,7 @@ SecurityLab 第一轮建设及工程收口已经完成；第二轮已连续交�
 | SocketCAN / vcan0 | VERIFIED | 开机自启；`ip link show vcan0` |
 | can-utils | VERIFIED | `candump/cansend/canplayer/isotpsend ...` |
 | ISO-TP | VERIFIED | `run_tests.sh all`（uds-basic） |
-| UDS（10/11/14/19/22/27/2E/31/34/35/36/37/38/3E） | VERIFIED | `labs/vehicle/uds-basic`（ecu.py / isotp_client.py）；`0x11` 支持 01/02/03（三态等价）；**`0x19` 支持 01/02/07/08/09/0A**；0x31 / 0x34-0x37（download + upload）/ 0x38 file transfer 均已合入 main 并有 unit + e2e 验证；**边界**：0x14 是 synthetic DTC model 的 status 清除，本 ECU 无 DTC 产生/故障注入机制；`0x19` 其余 reportType（03/04/05/06/0B–0E/14/15/16/1A…）未实现；0x38 为 synthetic in-memory 文件模型（非真实文件系统）；功能组、0x28 / 0x85、0x39 / 0x06 未实现 |
+| UDS（10/11/14/19/22/27/2E/31/34/35/36/37/38/3E/85） | VERIFIED | `labs/vehicle/uds-basic`（ecu.py / isotp_client.py）；`0x11` 支持 01/02/03（三态等价）；**`0x19` 支持 01/02/07/08/09/0A**；**`0x85` 支持 01/02**（DTC setting ON/OFF：冻结/恢复 runtime mutation，**不**阻止 0x14）；0x31 / 0x34-0x37（download + upload）/ 0x38 file transfer 均已合入 main 并有 unit + e2e 验证；**边界**：0x14 是 synthetic DTC model 的 status 清除；DTC status 只能经进程内 `dtc_runtime` 变更，**无 UDS 故障注入命令**；`0x19` 其余 reportType（03/04/05/06/0B–0E/14/15/16/1A…）未实现；0x38 为 synthetic in-memory 文件模型（非真实文件系统）；功能组、0x28、0x39 / 0x06 未实现 |
 | 多 ECU / Gateway | VERIFIED + PARTIAL | `ecu/gateway.py`；实时 0x7DF 守护进程待建 |
 | CAN/ISO-TP fuzz | VERIFIED | `fuzz/isotp_fuzz.py --smoke ...`（见 TEST_MATRIX）；最小复现 `scripts/repro/verify_fuzz_smoke.sh` |
 | UDS fuzz v1（请求层 SF） | VERIFIED | `fuzz/uds_fuzz.py --seed 12345 --max-cases N --out-dir …`；单请求 UDS 变异（SF ≤ 7B）；最小复现 `scripts/repro/verify_uds_fuzz_smoke.sh` |
@@ -154,7 +154,7 @@ Current deployed system:
 - 真实 Flash / firmware flashing / 签名校验、0x39 / 0x06、Permission /
   session framework、`0x19` 其余 reportType（03/04/05/06/0B–0E/14/15/16/1A…；
   07/08/09 已随 OQ5 落地）、0x31 的 option/status
-  record、0x28 / 0x85、DTC 功能组与 DTC 产生/故障注入
+  record、0x28、DTC 功能组与 DTC 产生/故障注入
   （0x19/0x31/0x34-0x38 已落地；0x38 为 synthetic in-memory
   文件模型，不含真实文件系统；0x14 只清 runtime status）。
 - JFFS2 / UBIFS 完整 extraction chain（当前 build + identify 已通过）。
