@@ -1108,31 +1108,35 @@ bash tests/run_tests.sh unit   # 只跑离线单元测试
 bash tests/run_tests.sh e2e    # 只跑 vcan0 端到端测试
 ```
 
-当前测试规模（2026-09-22 实测，`bash tests/run_tests.sh all`）：
+当前测试规模（2026-09-23 实测，`bash tests/run_tests.sh all`；**Local verified**）：
 
 | 测试 | 数量 | 需要 vcan0 |
 |---|---|---|
-| `tests/test_ecu_unit.py` | 106 | 否 |
+| `tests/test_ecu_unit.py` | 116 | 否 |
 | `tests/test_keygen_unit.py` | 34 | 否 |
 | `tests/test_services_extra_unit.py` | 17 | 否 |
 | `tests/test_gateway_unit.py` | 13 | 否 |
-| `tests/test_dtc_unit.py` | 30 | 否 |
+| `tests/test_dtc_unit.py` | 76 | 否 |
 | `tests/test_dtc_clear_unit.py` | 39 | 否 |
 | `tests/test_routine_unit.py` | 25 | 否 |
 | `tests/test_transfer_unit.py` | 40 | 否 |
 | `tests/test_upload_unit.py` | 47 | 否 |
 | `tests/test_file_transfer_unit.py` | 174 | 否 |
-| `tests/test_e2e_vcan.py` | 66 | 是 |
+| `tests/test_e2e_vcan.py` | 69 | 是 |
 | `tests/test_isotp_options_vcan.py` | 14 | 是 |
 | `tests/test_write_did_vcan.py` | 8 | 是 |
 | `tests/test_multi_ecu_vcan.py` | 4 | 是 |
-| `tests/test_dtc_vcan.py` | 8 | 是 |
+| `tests/test_dtc_vcan.py` | 16 | 是 |
 | `tests/test_dtc_clear_vcan.py` | 11 | 是 |
 | `tests/test_routine_vcan.py` | 11 | 是 |
-| `tests/test_transfer_vcan.py` | 17 | 是 |
+| `tests/test_transfer_vcan.py` | 18 | 是 |
 | `tests/test_upload_vcan.py` | 16 | 是 |
 | `tests/test_file_transfer_vcan.py` | 41 | 是 |
-| **合计** | **721**（unit 525 + e2e 196） | — |
+| **合计** | **789**（unit 581 + e2e 208） | — |
+
+> 表中数字为 **Local verified**（本机 `run_tests.sh all` 实测）。
+> GitHub CI 的 fast job 只覆盖 ruff / mypy / **unit** / can-tools offline；
+> **e2e（需 vcan0）不在 CI 内**，因此 208 / 789 不能标为 CI verified。
 
 ### 8.2 离线单元测试（不需要 CAN）
 

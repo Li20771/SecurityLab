@@ -9,9 +9,11 @@
 > - **Environment audit reported**：来自 2026-09-20/21 审计窗口的既有实测记录
 >   （证据在 `tmp/audit/`，未版本化；本轮以 `scripts/repro/` 重新固化为可复现入口）；
 > - **GitHub CI verified**：真实 GitHub runner **实际运行通过**。
->   当前已验证（OQ5 DTC severity）：SecurityLab CI / Fast QA / run `35851051243` /
->   commit `3349d79cac30b50593f6c826df8a1147fa9b4d34`（PR #13 merge），result = success；
->   PR #13 分支上 run `35849957710`（push）/ `35850109044`（pull_request）同为 success。
+>   **当前 main**（`dfe3ea79b625764cfd93c8d19d47eb868553e50a`，PR #14 docs merge）：
+>   run `35851993556` = success。
+>   **OQ5 代码基线**（`3349d79cac30b50593f6c826df8a1147fa9b4d34`，PR #13 merge，现为
+>   当前 main 的祖先）：run `35851051243` = success；PR #13 分支上
+>   run `35849957710`（push）/ `35850109044`（pull_request）同为 success。
 >   Extended 尚未在真实 runner 验证（仅 workflow_dispatch），见 §8。
 >   **注意**：Fast CI 覆盖 ruff / mypy / UDS unit / can-tools offline ——
 >   **不含需要 vcan0 的 e2e**，故 e2e 数量一律为 Local verified。
@@ -26,7 +28,7 @@
 | Fuzz | 需 vcan0，耗时长 | `scripts/qa_extended.sh --fuzz`；最小复现 `scripts/repro/verify_fuzz_smoke.sh`；AFL 见 labs/fuzzing | CAN/ISO-TP 变异、AFL 崩溃发现 |
 | Repro（可复现验证） | 部分需 vcan | `scripts/repro/verify_{arm,qemu_gdb,ghidra,fuzz_smoke}.sh` | ARM/QEMU-GDB/Ghidra headless/fuzz smoke 最小闭环 |
 | Health | 快速门否 / `--extended` 需 vcan | `scripts/healthcheck.sh [--extended]` | 环境/工具/服务/链路总检 |
-| CI | GitHub runner | `.github/workflows/ci.yml` | fast 自动、extended 手动；**fast 已由 run `35851051243`（main，PR #13 merge）在真实 GitHub runner 上验证通过** |
+| CI | GitHub runner | `.github/workflows/ci.yml` | fast 自动、extended 手动；**fast 已由 run `35851993556`（当前 main，PR #14 docs merge）在真实 GitHub runner 上验证通过** |
 
 > 测试层级职责（pytest / run_tests.sh / qa_*）见 `docs/ARCHITECTURE.md` §5.1。
 
@@ -155,7 +157,7 @@ reported**（含于 `qa_extended.sh`，本机可重跑）。
 | 实验 | 入口 | 断言 | 状态 |
 |------|------|------|------|
 | 合成 ECU 固件 | `labs/firmware/synthetic-ecu/{build,analyze,firmware_diff,fs_formats}.sh` | 制作/识别 SquashFS（全链）、JFFS2/UBIFS（build+identify）、ELF 架构、diff、strings | Local verified |
-| binwalk 提取 | `binwalk -e --run-as=root <img>` | rootfs 提取成功（SquashFS） | Environment audit reported |
+| binwalk 提取 | `binwalk -e --run-as=root <img>`（**手动一次性**；仓库内**无脚本调用** `binwalk -e`，脚本只用它做识别） | rootfs 提取成功（SquashFS）；**证据产物未版本化**（gitignore） | Environment audit reported |
 | AFL++ 通用 fuzz | `labs/fuzzing/afl-demo/{build.sh,run.sh}` | afl-gcc 30-45s 发现栈溢出（sig6/134），重放一致 | Environment audit reported |
 | YARA | `labs/yara-basic/scan.sh` | TP 命中 beacon/ecu、TN clean 不告警、命中合成固件 | Environment audit reported |
 | 网络工具 | `scripts/nettools_check.sh` | nmap/tcpdump/tshark/ncat/socat/nc 6 PASS；nft/iptables 需 root | Local verified |
@@ -223,10 +225,16 @@ GitHub CI verified:
 - workflow：SecurityLab CI
 - event：push
 - branch：main
-- commit：`3349d79cac30b50593f6c826df8a1147fa9b4d34`（PR #13 merge commit）
-- run：`35851051243`
+- commit：`dfe3ea79b625764cfd93c8d19d47eb868553e50a`（PR #14 docs merge commit）
+- run：`35851993556`
 - result：**success**
 - 覆盖：ruff / mypy / UDS unit / can-tools offline（**不含 e2e**）
+- 该 merge **仅含文档变更**，无生产代码 / 测试变更
+
+**Post-merge（main）历史证据（OQ5 代码基线）：**
+
+- commit：`3349d79cac30b50593f6c826df8a1147fa9b4d34`（PR #13 merge commit）
+- run：`35851051243`，result：**success**——仅作历史记录，不作当前状态。
 
 **Post-merge（main）历史证据（OQ3 基线）：**
 
