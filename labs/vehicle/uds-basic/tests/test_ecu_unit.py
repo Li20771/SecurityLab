@@ -366,6 +366,7 @@ _ECU_STATE_FIELDS: tuple = (
     "file_mode",
     "file_path",
     "files",
+    "dtc_setting_enabled",
 )
 
 #: 复位必须**保留**的字段（故障记忆 / 非易失 / 防绕过）。
@@ -464,6 +465,10 @@ class TestEcuResetEquivalence(UdsTestCase):
         state.file_path = "/dirty"
         state.files["/dirty.txt"] = b"DIRTY-FILE"
 
+        # 0x85 DTC setting 是易失的控制模式：复位恢复为上电默认 ON，
+        # 因此脏状态取 OFF（False）才能让"复位改变了它"可观测。
+        state.dtc_setting_enabled = False
+
     def _reset_and_snapshot(self, reset_type: int) -> dict:
         response = handle_uds_request(bytes([SID_ECU_RESET, reset_type]))
 
@@ -490,10 +495,15 @@ class TestEcuResetEquivalence(UdsTestCase):
             set(RESET_TYPES_UNDER_TEST), set(SUPPORTED_RESET_TYPES)
         )
 
-    def test_field_inventory_matches_the_frozen_21_5_split(self) -> None:
-        """26 字段 = 21 复位 + 5 保留；字段集变化必须显式改这里。"""
-        self.assertEqual(len(self.STATE_FIELDS), 26)
-        self.assertEqual(len(self.RESET_FIELDS), 21)
+    def test_field_inventory_matches_the_frozen_22_5_split(self) -> None:
+        """
+        27 字段 = 22 复位 + 5 保留；字段集变化必须显式改这里。
+
+        OQ6-B 追加 ``dtc_setting_enabled``（0x85 开关）：它是**易失的控制模式**
+        而非故障记忆，故归入"复位"一侧（详见 ``_reset_volatile_state`` 的说明）。
+        """
+        self.assertEqual(len(self.STATE_FIELDS), 27)
+        self.assertEqual(len(self.RESET_FIELDS), 22)
         self.assertEqual(len(self.PRESERVED_FIELDS), 5)
 
     def test_three_reset_types_are_state_equivalent(self) -> None:

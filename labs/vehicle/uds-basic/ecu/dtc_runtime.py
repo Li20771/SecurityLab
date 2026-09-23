@@ -24,10 +24,16 @@ severity / functionalUnit 始终只从 ``dtc_database.DTC_METADATA`` 读取。
 两个写入入口的**契约差异是刻意的，不要合并**：
 
     set_dtc_status()     受校验（已注册 DTC + status 单字节范围）
-                         —— 用于"产生 / 更新"
+                         —— 用于"产生 / 更新"；**受 0x85 DTC setting 开关约束**
     clear_dtc_status()   **不做注册校验** —— 与 0x14 的既有语义一致
                          （0x14 接受 ``dtc_records`` 中实际存在的任何 key，
-                          含运行时注入的 DTC；加校验会改变 0x14 行为）
+                          含运行时注入的 DTC；加校验会改变 0x14 行为）；
+                         **且不受 0x85 开关约束**（清除语义独立于故障检测）
+
+**0x85 ControlDTCSetting 的作用面**：它只控制「DTC status bits 是否允许继续
+被 :func:`set_dtc_status` 更新」。``state.dtc_setting_enabled`` 为 ``False``
+时 mutation 被冻结（已有 status 不变），:func:`clear_dtc_status` 与
+:func:`get_dtc_status` 完全不受影响。
 
 本模块**不新增任何 UDS 服务**：fault generation 只经 Python API / test
 seam 完成，不把它做成协议能力。
@@ -65,16 +71,19 @@ class UnknownDtcError(DtcStateError):
     """目标 DTC 未注册（不在 ``DTC_DATABASE`` 中）。"""
 
 
-class _HasDtcRecords(Protocol):
+class _HasDtcState(Protocol):
     """
-    本模块只需要一个可变的 ``dtc_records`` 映射。
+    本模块需要的运行时 DTC 状态字段。
 
     刻意用 ``Protocol`` 而非 ``from uds_server import EcuState``：
-    ``uds_server`` 会 import 本模块（0x14 的写入落点），反向 import 会
+    ``uds_server`` 会 import 本模块（0x14 / 0x85 的落点），反向 import 会
     形成循环依赖。
     """
 
     dtc_records: dict[int, int]
+
+    #: 0x85 ControlDTCSetting 开关（``True`` = ON）。见 :func:`set_dtc_status`。
+    dtc_setting_enabled: bool
 
 
 def is_registered_dtc(dtc: int) -> bool:
@@ -82,7 +91,7 @@ def is_registered_dtc(dtc: int) -> bool:
     return dtc in DTC_DATABASE
 
 
-def set_dtc_status(state: _HasDtcRecords, dtc: int, status: int) -> None:
+def set_dtc_status(state: _HasDtcState, dtc: int, status: int) -> bool:
     """
     把**已注册** DTC 的运行时 status 设为 ``status``。
 
@@ -96,11 +105,19 @@ def set_dtc_status(state: _HasDtcRecords, dtc: int, status: int) -> None:
     - ``dtc`` 必须已注册 → 否则 :class:`UnknownDtcError`
     - ``DTC_STATUS_MIN <= status <= DTC_STATUS_MAX`` → 否则 :class:`DtcStateError`
 
+    **0x85 开关**：``state.dtc_setting_enabled`` 为 ``False``（DTC setting OFF）时
+    本函数**不写任何东西**，已有 status 保持冻结（即"故障检测被抑制"）。
+
+    OFF **刻意不抛异常** —— 被抑制是**正常配置状态**而非错误，调用方不该为它写
+    try/except。（真正非法的输入仍抛异常，见上。）
+
     **刻意不静默创建新 DTC**：未注册的 DTC 不会被写进 ``dtc_records``。
     否则会凭空多出一个没有 metadata 的永久 DTC —— 那会让 0x19/07、08
     （按 ``DTC_METADATA`` 做 severity 过滤）与 0x19/09 的语义变得难以解释。
 
     重复调用**幂等**：同一 ``(dtc, status)`` 写多次结果相同。
+
+    :return: 是否真的写入了 —— ``False`` 表示被 DTC setting OFF 抑制。
     """
     if not is_registered_dtc(dtc):
         raise UnknownDtcError(
@@ -114,10 +131,15 @@ def set_dtc_status(state: _HasDtcRecords, dtc: int, status: int) -> None:
             f"[0x{DTC_STATUS_MIN:02X}, 0x{DTC_STATUS_MAX:02X}]"
         )
 
+    if not state.dtc_setting_enabled:
+        return False
+
     state.dtc_records[dtc] = status
 
+    return True
 
-def clear_dtc_status(state: _HasDtcRecords, dtc: int) -> None:
+
+def clear_dtc_status(state: _HasDtcState, dtc: int) -> None:
     """
     把 DTC 的运行时 status 置 ``0x00``（清除故障）。
 
@@ -125,13 +147,17 @@ def clear_dtc_status(state: _HasDtcRecords, dtc: int) -> None:
     ``state.dtc_records`` 中**实际存在**的任何 key（含运行时 / 测试注入的
     DTC），给它加注册校验会改变 0x14 的行为。调用方自行负责先做成员判定。
 
+    **刻意不受 0x85 DTC setting 开关影响** —— ClearDiagnosticInformation 是
+    独立语义：``0x85 02``（OFF）冻结的是"故障**产生 / 更新**"这条路径，
+    不是"**清除**"这条路径。因此 OFF 时 0x14 仍可清除 DTC（本项目 profile）。
+
     本函数是 0x14 的**写入落点**；:func:`set_dtc_status` 则是"产生 / 更新"
     的受校验入口。两者契约不同，见模块 docstring。
     """
     state.dtc_records[dtc] = 0x00
 
 
-def get_dtc_status(state: _HasDtcRecords, dtc: int) -> int:
+def get_dtc_status(state: _HasDtcState, dtc: int) -> int:
     """
     读取**已注册** DTC 的当前运行时 status。
 

@@ -1274,5 +1274,283 @@ class TestDtcRuntimeResetInteraction(DtcTestCase):
                 )
 
 
+# ======================================================================
+# OQ6-B：0x85 ControlDTCSetting（DTC setting ON/OFF + mutation 冻结）
+# ======================================================================
+
+#: 0x85 正响应 SID。
+POS_CONTROL_DTC_SETTING = 0xC5
+
+#: 本实验实现的 DTCSettingType。
+DTC_SETTING_ON = 0x01
+DTC_SETTING_OFF = 0x02
+
+#: 用于观察"冻结 vs 生效"的 status mask。
+#:
+#: 刻意选 0x08：出厂 status 0x01/0x02/0x04 都**不含** bit3，因此
+#: "未生效"时所有报告都为空/计数 0；写入 0x09 后才命中 —— 这让
+#: ON / OFF 的差别在 **计数与记录**上都直接可见，而不只是 status 字节不同。
+FROZEN_PROBE_MASK = 0x08
+
+#: 变异后写入的 status（0x08 bit3 + 0x01 bit0）。
+MUTATED_STATUS = 0x09
+
+
+class TestControlDtcSettingRequest(DtcTestCase):
+    """0x85 请求校验 + 正响应 byte-exact。"""
+
+    def test_positive_responses_are_byte_exact(self) -> None:
+        self.assertEqual(
+            handle_uds_request(bytes([0x85, DTC_SETTING_ON]), self.state),
+            bytes([POS_CONTROL_DTC_SETTING, DTC_SETTING_ON]),
+        )
+        self.assertEqual(
+            handle_uds_request(bytes([0x85, DTC_SETTING_OFF]), self.state),
+            bytes([POS_CONTROL_DTC_SETTING, DTC_SETTING_OFF]),
+        )
+
+    def test_unsupported_setting_type_is_subfunction_not_supported(self) -> None:
+        for setting_type in (0x00, 0x03, 0xFF):
+            with self.subTest(setting_type=hex(setting_type)):
+                response = handle_uds_request(
+                    bytes([0x85, setting_type]), self.state
+                )
+
+                self.assertEqual(response, bytes([0x7F, 0x85, 0x12]))
+
+    def test_length_errors(self) -> None:
+        for request, label in (
+            (bytes([0x85]), "缺 DTCSettingType"),
+            (bytes([0x85, 0x01, 0x00]), "多余字节"),
+            (bytes([0x85, 0x02, 0x00]), "多余字节"),
+        ):
+            with self.subTest(label=label):
+                self.assertEqual(
+                    handle_uds_request(request, self.state),
+                    bytes([0x7F, 0x85, 0x13]),
+                )
+
+    def test_rejected_request_does_not_change_setting(self) -> None:
+        """被拒的 0x85 不得改变 setting 状态。"""
+        before = self.state.dtc_setting_enabled
+
+        handle_uds_request(bytes([0x85, 0x03]), self.state)
+        handle_uds_request(bytes([0x85]), self.state)
+
+        self.assertEqual(self.state.dtc_setting_enabled, before)
+
+
+class TestDtcSettingStateTransitions(DtcTestCase):
+
+    def test_default_is_on(self) -> None:
+        self.assertIs(EcuState().dtc_setting_enabled, True)
+
+    def test_off_then_on(self) -> None:
+        handle_uds_request(bytes([0x85, DTC_SETTING_OFF]), self.state)
+
+        self.assertIs(self.state.dtc_setting_enabled, False)
+
+        handle_uds_request(bytes([0x85, DTC_SETTING_ON]), self.state)
+
+        self.assertIs(self.state.dtc_setting_enabled, True)
+
+    def test_repeated_setting_is_idempotent(self) -> None:
+        for _ in range(2):
+            handle_uds_request(bytes([0x85, DTC_SETTING_OFF]), self.state)
+
+        self.assertIs(self.state.dtc_setting_enabled, False)
+
+        for _ in range(2):
+            handle_uds_request(bytes([0x85, DTC_SETTING_ON]), self.state)
+
+        self.assertIs(self.state.dtc_setting_enabled, True)
+
+    def test_instances_are_independent(self) -> None:
+        other = EcuState()
+
+        handle_uds_request(bytes([0x85, DTC_SETTING_OFF]), self.state)
+
+        self.assertIs(self.state.dtc_setting_enabled, False)
+        self.assertIs(other.dtc_setting_enabled, True, "另一个实例不受影响")
+
+
+class TestDtcSettingMutationFreeze(DtcTestCase):
+    """
+    OFF 冻结 mutation；既有 status 原样保持。
+    """
+
+    def test_off_freezes_the_target_dtc(self) -> None:
+        before = dtc_runtime.get_dtc_status(self.state, 0x100001)
+
+        handle_uds_request(bytes([0x85, DTC_SETTING_OFF]), self.state)
+
+        applied = dtc_runtime.set_dtc_status(self.state, 0x100001, MUTATED_STATUS)
+
+        self.assertIs(applied, False, "OFF 时 mutation 必须报告未写入")
+        self.assertEqual(
+            dtc_runtime.get_dtc_status(self.state, 0x100001), before,
+            "before = X → OFF → mutate(Y) → after 必须仍是 X",
+        )
+
+    def test_off_freezes_every_dtc(self) -> None:
+        handle_uds_request(bytes([0x85, DTC_SETTING_OFF]), self.state)
+        before = dict(self.state.dtc_records)
+
+        for dtc in DTC_DATABASE:
+            with self.subTest(dtc=hex(dtc)):
+                self.assertIs(
+                    dtc_runtime.set_dtc_status(self.state, dtc, MUTATED_STATUS),
+                    False,
+                )
+
+        self.assertEqual(self.state.dtc_records, before)
+
+    def test_on_restores_mutation(self) -> None:
+        handle_uds_request(bytes([0x85, DTC_SETTING_OFF]), self.state)
+        dtc_runtime.set_dtc_status(self.state, 0x100001, MUTATED_STATUS)
+
+        handle_uds_request(bytes([0x85, DTC_SETTING_ON]), self.state)
+
+        self.assertIs(
+            dtc_runtime.set_dtc_status(self.state, 0x100001, MUTATED_STATUS),
+            True,
+        )
+        self.assertEqual(
+            dtc_runtime.get_dtc_status(self.state, 0x100001), MUTATED_STATUS,
+            "OFF → ON → mutate(Y) → after 必须是 Y",
+        )
+
+
+class TestDtcSettingClearIndependence(DtcTestCase):
+    """0x14 是独立语义：OFF **不**阻止清除。"""
+
+    def test_off_does_not_block_single_clear(self) -> None:
+        dtc_runtime.set_dtc_status(self.state, 0x100001, MUTATED_STATUS)
+
+        handle_uds_request(bytes([0x85, DTC_SETTING_OFF]), self.state)
+
+        self.assertEqual(
+            handle_uds_request(bytes([0x14, 0x10, 0x00, 0x01]), self.state),
+            bytes([0x54]),
+        )
+        self.assertEqual(dtc_runtime.get_dtc_status(self.state, 0x100001), 0x00)
+
+    def test_off_does_not_block_all_clear(self) -> None:
+        dtc_runtime.set_dtc_status(self.state, 0x100002, 0x0F)
+
+        handle_uds_request(bytes([0x85, DTC_SETTING_OFF]), self.state)
+
+        self.assertEqual(
+            handle_uds_request(bytes([0x14, 0xFF, 0xFF, 0xFF]), self.state),
+            bytes([0x54]),
+        )
+        self.assertTrue(all(v == 0 for v in self.state.dtc_records.values()))
+        self.assertEqual(len(self.state.dtc_records), len(DTC_DATABASE), "key 保留")
+
+
+class TestDtcSetting0x19Visibility(DtcTestCase):
+    """
+    只验证 0x19 的**观察行为**（不改任何 wire format）：
+
+        OFF → mutate → 0x19 仍看到原 status
+        ON  → mutate → 0x19 看到新 status
+        OFF → 0x14   → 0x19 看到清除结果
+
+    用 ``FROZEN_PROBE_MASK``(0x08)：出厂 status 不含 bit3，故 OFF 时
+    所有报告都为空/计数 0，ON + mutate 后才命中。
+    """
+
+    def freeze(self) -> None:
+        handle_uds_request(bytes([0x85, DTC_SETTING_OFF]), self.state)
+
+    def unfreeze(self) -> None:
+        handle_uds_request(bytes([0x85, DTC_SETTING_ON]), self.state)
+
+    def test_off_hides_the_mutation_from_every_report(self) -> None:
+        self.freeze()
+        dtc_runtime.set_dtc_status(self.state, 0x100001, MUTATED_STATUS)
+
+        self.assertEqual(
+            handle_uds_request(bytes([0x19, 0x01, FROZEN_PROBE_MASK]), self.state),
+            bytes.fromhex("59 FF 01 00 00"), "0x19/01：仍为原 status",
+        )
+        self.assertEqual(
+            handle_uds_request(bytes([0x19, 0x02, FROZEN_PROBE_MASK]), self.state),
+            bytes.fromhex("59 FF"), "0x19/02：无匹配记录",
+        )
+        self.assertEqual(
+            handle_uds_request(bytes([0x19, 0x07, 0x80, FROZEN_PROBE_MASK]), self.state),
+            bytes.fromhex("59 FF 01 00 00"), "0x19/07：计数仍为 0",
+        )
+        self.assertEqual(
+            handle_uds_request(bytes([0x19, 0x08, 0x80, FROZEN_PROBE_MASK]), self.state),
+            bytes.fromhex("59 FF"), "0x19/08：无记录",
+        )
+        self.assertEqual(
+            handle_uds_request(bytes([0x19, 0x09, 0x10, 0x00, 0x01]), self.state),
+            bytes.fromhex("59 FF 80 01 10 00 01 01"),
+            "0x19/09：status 仍是出厂 0x01，severity 不变",
+        )
+
+    def test_on_reveals_the_mutation_to_every_report(self) -> None:
+        self.freeze()
+        dtc_runtime.set_dtc_status(self.state, 0x100001, MUTATED_STATUS)
+        self.unfreeze()
+        dtc_runtime.set_dtc_status(self.state, 0x100001, MUTATED_STATUS)
+
+        self.assertEqual(
+            handle_uds_request(bytes([0x19, 0x01, FROZEN_PROBE_MASK]), self.state),
+            bytes.fromhex("59 FF 01 00 01"),
+        )
+        self.assertEqual(
+            handle_uds_request(bytes([0x19, 0x02, FROZEN_PROBE_MASK]), self.state),
+            bytes.fromhex("59 FF 10 00 01 09"),
+        )
+        self.assertEqual(
+            handle_uds_request(bytes([0x19, 0x07, 0x80, FROZEN_PROBE_MASK]), self.state),
+            bytes.fromhex("59 FF 01 00 01"),
+        )
+        self.assertEqual(
+            handle_uds_request(bytes([0x19, 0x08, 0x80, FROZEN_PROBE_MASK]), self.state),
+            bytes.fromhex("59 FF 80 01 10 00 01 09"),
+        )
+        self.assertEqual(
+            handle_uds_request(bytes([0x19, 0x09, 0x10, 0x00, 0x01]), self.state),
+            bytes.fromhex("59 FF 80 01 10 00 01 09"),
+        )
+
+    def test_clear_while_off_is_visible(self) -> None:
+        """OFF → 0x14 → 0x19 看到清除结果（0x14 不被 OFF 阻止）。"""
+        self.freeze()
+
+        self.assertEqual(
+            handle_uds_request(bytes([0x14, 0x10, 0x00, 0x01]), self.state),
+            bytes([0x54]),
+        )
+
+        self.assertEqual(
+            handle_uds_request(bytes([0x19, 0x01, 0xFF]), self.state),
+            bytes.fromhex("59 FF 01 00 02"), "0x100001 已被清除，只剩 2 个命中",
+        )
+        self.assertEqual(
+            handle_uds_request(bytes([0x19, 0x09, 0x10, 0x00, 0x01]), self.state),
+            bytes.fromhex("59 FF 80 01 10 00 01 00"),
+            "0x19/09：status 归零，severity 不变",
+        )
+
+
+class TestControlDtcSettingResetInteraction(DtcTestCase):
+    """0x85 是易失控制模式：0x11 01/02/03 都恢复为上电默认 ON。"""
+
+    def test_reset_restores_on(self) -> None:
+        for reset_type in (0x01, 0x02, 0x03):
+            with self.subTest(reset_type=hex(reset_type)):
+                self.state.dtc_setting_enabled = False
+
+                handle_uds_request(bytes([SID_ECU_RESET, reset_type]), self.state)
+
+                self.assertIs(self.state.dtc_setting_enabled, True)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -1881,9 +1881,12 @@ class TestFileTransferLifecycle(FileTransferTestCase):
         self.assertEqual(state.files, FILE_DATABASE)
         self.assertIsNot(state.files, FILE_DATABASE)
 
-    def test_ecu_state_field_count_is_26(self) -> None:
-        """本 PR 只新增 3 个字段（23 → 26）。"""
-        self.assertEqual(len(fields(EcuState)), 26)
+    def test_ecu_state_field_count_is_27(self) -> None:
+        """
+        0x38 相关 PR 新增 3 个字段（23 → 26）；OQ6-B 的 0x85 再追加
+        ``dtc_setting_enabled``（26 → 27）。字段总数变化必须显式改这里。
+        """
+        self.assertEqual(len(fields(EcuState)), 27)
 
     def test_new_fields_are_exactly_the_three_declared(self) -> None:
         names = {field.name for field in fields(EcuState)}

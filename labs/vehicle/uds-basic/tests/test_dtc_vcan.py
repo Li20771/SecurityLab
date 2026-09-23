@@ -447,5 +447,80 @@ class TestDtcE2E(DtcVcanTestCase):
         self.assertEqual(before, after)
 
 
+# ======================================================================
+# OQ6-B：0x85 ControlDTCSetting（真实链路）
+# ======================================================================
+
+
+class TestControlDtcSettingE2E(DtcVcanTestCase):
+    """
+    0x85 的 vcan0 端到端验证。
+
+    本类由 ``DtcVcanTestCase.setUpClass`` 启动**自己的全新 ECU**，
+    因此这里清 DTC（0x14）不会影响 ``TestDtcE2E`` 的默认状态假设。
+
+    **覆盖边界**：``0x85`` 开关本身、以及"OFF **不**阻止 0x14 清除"
+    这两条在 wire 上都可达。而 "OFF → runtime mutation → 0x19 不变化"
+    这条**在真实链路上不可达** —— mutation 只能经进程内的
+    ``dtc_runtime.set_dtc_status()`` 触发，本项目**刻意不提供**"触发故障"的
+    UDS 服务（fault generation 不是协议能力）。该转换由
+    ``test_dtc_unit.py::TestDtcSettingMutationFreeze`` 在进程内覆盖。
+    """
+
+    def test_85_01_positive(self) -> None:
+        """85 01 → C5 01（回显 DTCSettingType）"""
+        self.assertEqual(exchange(bytes([0x85, 0x01])), bytes([0xC5, 0x01]))
+
+    def test_85_02_positive(self) -> None:
+        """85 02 → C5 02"""
+        self.assertEqual(exchange(bytes([0x85, 0x02])), bytes([0xC5, 0x02]))
+
+    def test_85_unsupported_setting_type(self) -> None:
+        """85 03 → 7F 85 12（子功能不支持）"""
+        self.assertEqual(exchange(bytes([0x85, 0x03])), bytes([0x7F, 0x85, 0x12]))
+
+    def test_85_length_errors(self) -> None:
+        """85 / 85 01 00 → 7F 85 13（长度错误）"""
+        self.assertEqual(exchange(bytes([0x85])), bytes([0x7F, 0x85, 0x13]))
+        self.assertEqual(
+            exchange(bytes([0x85, 0x01, 0x00])), bytes([0x7F, 0x85, 0x13])
+        )
+
+    def test_off_does_not_block_clear_and_reports_follow(self) -> None:
+        """
+        OFF **不**阻止 0x14；清除结果对 0x19 可见。
+
+            ON（默认） → 19 01 FF 计数 3
+            85 02       → OFF
+            14 10 00 01 → 54（仍可清除）
+            19 01 FF    → 计数 2
+            19 09       → status 0x00 且 severity 不变
+            85 01       → ON
+        """
+        self.assertEqual(
+            exchange(bytes([0x19, 0x01, 0xFF])),
+            bytes.fromhex("59 FF 01 00 03"),
+            "出厂 3 个命中",
+        )
+
+        self.assertEqual(exchange(bytes([0x85, 0x02])), bytes([0xC5, 0x02]))
+
+        self.assertEqual(exchange(bytes([0x14, 0x10, 0x00, 0x01])), bytes([0x54]))
+
+        self.assertEqual(
+            exchange(bytes([0x19, 0x01, 0xFF])),
+            bytes.fromhex("59 FF 01 00 02"),
+            "OFF 期间清除依然生效",
+        )
+
+        self.assertEqual(
+            exchange(bytes([0x19, 0x09, 0x10, 0x00, 0x01])),
+            bytes.fromhex("59 FF 80 01 10 00 01 00"),
+            "0x19/09：status 归零，severity / functionalUnit 不变",
+        )
+
+        self.assertEqual(exchange(bytes([0x85, 0x01])), bytes([0xC5, 0x01]))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

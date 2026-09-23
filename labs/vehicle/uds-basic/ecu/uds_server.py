@@ -113,6 +113,7 @@ __all__ = [
     "service_write_data_by_identifier",
     "service_tester_present",
     "service_read_dtc_information",
+    "service_control_dtc_setting",
     "service_routine_control",
     "service_request_download",
     "service_request_upload",
@@ -305,6 +306,18 @@ class EcuState:
     #: 与 download_buffer / upload_sent 等瞬态 transfer 状态语义刻意相反。
     files: dict[str, bytes] = field(default_factory=_default_files)
 
+    #: 0x85 ControlDTCSetting 的开关：DTC status bits 是否允许继续被
+    #: ``dtc_runtime.set_dtc_status()`` 更新。
+    #:
+    #: - ``True``（默认 = DTC setting **ON**）：runtime mutation 正常生效
+    #: - ``False``（= DTC setting **OFF**）：mutation 被冻结，
+    #:   已有 status **保持不变**
+    #:
+    #: **不影响 0x14**：ClearDiagnosticInformation 是独立语义 —— OFF 冻结的是
+    #: "故障产生 / 更新"这条路径，不是"清除"这条路径，故 OFF 时 0x14 仍可清除。
+    #: ECUReset(01/02/03) **恢复为 True**（见 ``_reset_volatile_state``）。
+    dtc_setting_enabled: bool = True
+
 
 #: 默认状态单例：ECU 进程使用的唯一运行时状态实例。
 #:
@@ -395,6 +408,12 @@ def _reset_volatile_state(state: EcuState) -> None:
     # 刻意**不**清 state.files：它是本实验的"非易失存储"替身，
     # 复位中止的是**传输**而不是已提交的数据（与 dtc_records 同侧的
     # 保留语义，与 did_overrides / download_buffer 的恢复出厂语义相反）。
+    #
+    # 0x85 DTC setting 是易失的**控制模式**（不是故障记忆），因此与
+    # session / did_overrides 同侧，复位恢复为上电默认 ON。
+    # 若复位保留 OFF，Tester 可让故障检测被无限期停用 —— 一个任何标准
+    # 复位都清不掉的"安全相关"状态，与 0x11 幂等复位的语义冲突。
+    state.dtc_setting_enabled = True
 
 
 # ======================================================================
@@ -886,6 +905,74 @@ def service_clear_diagnostic_information(request: bytes, state: EcuState) -> byt
     dtc_runtime.clear_dtc_status(state, group_of_dtc)
 
     return uds_types.positive_response(0x14)
+
+
+# ======================================================================
+# 0x85 ControlDTCSetting
+# ======================================================================
+
+#: 本 feature 实现的 0x85 DTCSettingType 子功能。
+DTC_SETTING_ON = 0x01
+DTC_SETTING_OFF = 0x02
+
+#: 本实验支持的 DTCSettingType 集合（其余 → NRC 0x12）。
+SUPPORTED_DTC_SETTING_TYPES: frozenset[int] = frozenset(
+    {
+        DTC_SETTING_ON,
+        DTC_SETTING_OFF,
+    }
+)
+
+
+def service_control_dtc_setting(request: bytes, state: EcuState) -> bytes:
+    """
+    处理 0x85 ControlDTCSetting。
+
+    请求：``85 <DTCSettingType>``（严格 2 字节）
+    响应：``C5 <DTCSettingType>``（**回显** DTCSettingType）
+
+    本实验只实现两个 DTCSettingType：
+
+        ``0x01`` DTC setting **ON**  —— 允许 ``dtc_runtime.set_dtc_status()``
+                                       继续更新 DTC status bits
+        ``0x02`` DTC setting **OFF** —— **冻结** DTC status bits 的更新
+
+    **本服务不"清 DTC"**：它控制的是 DTC status bits *是否允许继续被 runtime
+    mutation 更新*，本身不改变任何已有 status。OFF 之后已有 status 原样冻结。
+
+    **与 0x14 的关系（本项目 profile）**：两者语义**独立** ——
+    ``0x85 02``（OFF）**不**阻止 ``0x14`` 清除 DTC。OFF 冻结的是
+    "故障产生 / 更新"这条路径，不是"清除"这条路径；因此
+    ``0x85 02`` 之后 ``0x14`` 仍能清除，且 ``0x19`` 能看到清除结果。
+
+    NRC 判定顺序（与 0x11 等保持一致：**先长度、后子功能**）::
+
+        1. 长度 != 2                → 0x13
+        2. DTCSettingType 未实现     → 0x12
+        3. 肯定响应                  → C5 <type>
+
+    **本服务不设 session / security 门控** —— 与本项目 0x11 / 0x14 / 0x19 的
+    既有 zero-gated profile 一致；门控抽象属路线图中的
+    Permission / session framework，不在本 feature 范围。
+
+    suppressPosRspMsgIndicationBit 不在本 feature 范围（本项目尚未统一处理
+    该位，此处刻意不建立全局 suppress framework）。
+    """
+    if len(request) != 2:
+        return uds_types.negative_response(
+            0x85, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+        )
+
+    setting_type = request[1]
+
+    if setting_type not in SUPPORTED_DTC_SETTING_TYPES:
+        return uds_types.negative_response(
+            0x85, uds_types.NRC_SUBFUNCTION_NOT_SUPPORTED
+        )
+
+    state.dtc_setting_enabled = setting_type == DTC_SETTING_ON
+
+    return uds_types.positive_response(0x85, bytes([setting_type]))
 
 
 # ======================================================================
@@ -2054,6 +2141,7 @@ SERVICES = {
     0x37: service_request_transfer_exit,
     0x38: service_request_file_transfer,
     0x3E: service_tester_present,
+    0x85: service_control_dtc_setting,
 }
 
 

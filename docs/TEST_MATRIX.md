@@ -39,11 +39,11 @@
 
 | 测试文件 | 类型 | 用例数 | 覆盖 | 状态 |
 |----------|------|--------|------|------|
-| test_ecu_unit.py | unit | 116 | ECU 状态机、UDS 0x10/11/19/22/27/2E/3E、NRC、SecurityAccess 锁死/过期、hardReset 保留 DTC；**OQ4**：`11 02`/`11 03` 正响应、`11 04`/`11 05` → 12、resetType 三态等价（26 字段快照互比） | Local verified |
+| test_ecu_unit.py | unit | 116 | ECU 状态机、UDS 0x10/11/19/22/27/2E/3E、NRC、SecurityAccess 锁死/过期、hardReset 保留 DTC；**OQ4**：`11 02`/`11 03` 正响应、`11 04`/`11 05` → 12、resetType 三态等价（27 字段快照互比） | Local verified |
 | test_keygen_unit.py | unit | 34 | seed/key 生成、derive/verify、可导入性（独立进程） | Local verified |
 | test_services_extra_unit.py | unit | 17 | 0x2E 门控链、0x3E 正响应/抑制/非法子功能、独立 EcuState | Local verified |
 | test_gateway_unit.py | unit | 13 | 多 ECU 拓扑、物理/功能寻址、状态隔离、广播不泄漏、构造护栏 | Local verified |
-| test_dtc_unit.py | unit | 76 | 0x19/01/02/0A 报文与 mask 过滤、NRC 12/13、DTC 静态库约束、运行时状态与实例隔离；**OQ5**：`DTC_METADATA` 完整性、0x19/07 双 mask 计数（16-bit BE、无 severity availability byte）、0x19/08 六字节记录与**字段顺序** `severity→functionalUnit→DTC→status`、0x19/09 单 DTC、severity 与 0x14/0x11 正交性、wire profile 冻结 | Local verified |
+| test_dtc_unit.py | unit | 115 | 0x19/01/02/0A 报文与 mask 过滤、NRC 12/13、DTC 静态库约束、运行时状态与实例隔离；**OQ5**：`DTC_METADATA` 完整性、0x19/07 双 mask 计数（16-bit BE、无 severity availability byte）、0x19/08 六字节记录与**字段顺序** `severity→functionalUnit→DTC→status`、0x19/09 单 DTC、severity 与 0x14/0x11 正交性、wire profile 冻结；**OQ6-A**：`dtc_runtime` 读写/校验/幂等、未知 DTC 不静默创建、mutation→0x19→0x14 闭环；**OQ6-B**：0x85 请求校验与 byte-exact 响应、DTC setting ON/OFF、OFF 冻结 mutation、OFF 不阻止 0x14、0x19 在 OFF 下的可见性、实例隔离、reset 恢复 ON | Local verified |
 | test_dtc_clear_unit.py | unit | 39 | 0x14 严格 4 字节（短/多余 → 13）、`0xFFFFFF` 全清与单清、**status 置零不删 key**（0x0A 成员保留）、未支持 DTC 与功能组取值 → 31、NRC 不改 state、幂等、24-bit big-endian、空库、hardReset 不恢复 status、实例隔离、静态库不变、不影响 DID/routine/transfer | Local verified |
 | test_routine_unit.py | unit | 25 | 0x31 Start/Stop/Results 状态机、NRC 12/13/22/31、hardReset 清 routine 保 DTC、session 保留、实例隔离 | Local verified |
 | test_transfer_unit.py | unit | 40 | 0x34/36/37 状态机、NRC 13/22/24/31/73、BSC 回绕与幂等重传、size accounting、hardReset/session 生命周期 | Local verified |
@@ -53,14 +53,14 @@
 | test_isotp_options_vcan.py | e2e(vcan) | 14（矩阵） | ISO-TP SF/FF/CF/FC、STmin/BS、超时、malformed PCI | Local verified |
 | test_write_did_vcan.py | e2e(vcan) | 8 | 真实解锁写 DID→读回、hardReset 恢复、3E 80 总线静默 | Local verified |
 | test_multi_ecu_vcan.py | e2e(vcan) | 4（5.2s） | 三 ECU 进程物理寻址、会话隔离、错误地址无应答 | Local verified |
-| test_dtc_vcan.py | e2e(vcan) | 16 | 0x19 正响应/NRC 真实链路、hardReset 前后 DTC 一致；**OQ5**：0x19/07 正响应（5 字节，无 severity availability byte）、0x19/08 **20 字节 MF 响应逐字节断言**（重组后 payload，非帧数）、0x19/09 正响应与字段顺序、未知 DTC → 31 | Local verified |
+| test_dtc_vcan.py | e2e(vcan) | 21 | 0x19 正响应/NRC 真实链路、hardReset 前后 DTC 一致；**OQ5**：0x19/07 正响应（5 字节，无 severity availability byte）、0x19/08 **20 字节 MF 响应逐字节断言**（重组后 payload，非帧数）、0x19/09 正响应与字段顺序、未知 DTC → 31；**OQ6-B**：0x85 `C5 01`/`C5 02` 正响应、`7F 85 12`/`7F 85 13`、OFF 不阻止 0x14 且 0x19 反映清除结果 | Local verified |
 | test_dtc_clear_vcan.py | e2e(vcan) | 11 | 0x14 真实链路：**独立 ECU 进程**（清除在本进程内不可逆，0x11 不恢复 status）；核心顺序链路 19 0A→14(×2 幂等)→19 01 FF→19 02 FF→19 0A→14 单清已为 0→11 01→19 0A（status 全 0 且不被复位）；NRC 13/31（含字节序颠倒、功能组取值） | Local verified |
 | test_routine_vcan.py | e2e(vcan) | 11 | 0x31 状态机/NRC 真实链路、hardReset 清 routine（Start→11 01→Stop=0x22） | Local verified |
 | test_transfer_vcan.py | e2e(vcan) | 18 | 0x34/36/37 真实链路（含 126 字节 ISO-TP 多帧 vs UDS BSC 分层、幂等重传、hardReset abort、session mid-transfer）；**OQ4**：`11 02`/`11 03` 同样中止 download | Local verified |
 | test_upload_vcan.py | e2e(vcan) | 16 | 0x35 真实链路：初始 00→73、幂等重发、多块（ISO-TP 多帧 ≠ BSC）、hardReset abort、session、34↔35 互斥 | Local verified |
 | test_file_transfer_vcan.py | e2e(vcan) | 41 | 0x38 真实链路：**readDir 完整传输**（38 05→78 05…→36 01→76 01 <dirInfo>→…→37→77，非只验响应）、readDir 10 字节且不含 dirInfo 本体、多块 dirInfo（242 字节 / 2 块）与尾块 duplicate、readFile 300 字节三块、addFile/replaceFile 提交点与 abort（复位）不污染、deleteFile one-shot 后 0x34/0x35 可用、NRC、8 向互斥、hardReset 保留 files、session 不终止 | Local verified |
 
-- 汇总：`run_tests.sh all` → **PASS 21 / WARN 0 / FAIL 0**（unit **581** + e2e **208**，共 **789**；2026-09-23 本机实测，**Local verified**）。
+- 汇总：`run_tests.sh all` → **PASS 21 / WARN 0 / FAIL 0**（unit **620** + e2e **213**，共 **833**；2026-09-23 本机实测，**Local verified**）。
 - 已知非致命：`test_isotp_options_vcan.py:186` ResourceWarning（子进程 BufferedReader 未关）。
 
 ## 3. 车联网（can-tools）测试明细
