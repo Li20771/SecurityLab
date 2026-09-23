@@ -332,6 +332,67 @@ def reset_security_state(state: EcuState) -> None:
     state.seed_consumed = False
 
 
+def _reset_volatile_state(state: EcuState) -> None:
+    """
+    应用本实验定义的 **reset-sensitive diagnostic state** 状态转换。
+
+    **这不是完整硬件 volatile-memory 模型**：本实验模型没有电源域、没有
+    硬件复位、没有应用层重启、也没有 NVM controller。本函数表达的是本 ECU
+    在 ECUReset 下**可观测到的**诊断状态变化——凡在本模型内部被视为
+    "掉电即失"的状态一律复位，被视为"故障记忆 / 非易失"的一律保留。
+
+    复位（21 字段）::
+
+        session / security_level / pending_seed / seed_issued_at /
+        seed_consumed / did_overrides / active_routines /
+        routine_start_counts / download_* (6) / upload_* (5) /
+        file_mode / file_path
+
+    刻意保留（5 字段）::
+
+        failed_attempts / lockout_until / seed_counter
+            —— 防止 Tester 通过复位刷掉暴力破解惩罚状态
+        dtc_records
+            —— 故障历史记忆（与 did_overrides 的"复位即恢复出厂"刻意相反）
+        files
+            —— "非易失存储"替身（复位中止的是传输，不是已提交数据）
+
+    **experiment-defined**：``RESET_HARD`` / ``RESET_KEY_OFF_ON`` /
+    ``RESET_SOFT`` 三个 resetType 共用本转换，无任何类型专属差异。
+    本模型不具备区分三者所需的硬件/分层语义。
+    """
+    state.session = uds_types.SESSION_DEFAULT
+    reset_security_state(state)
+    # 复位使通过 0x2E 写入的 DID 恢复出厂默认值
+    state.did_overrides.clear()
+    # routine 状态是易失瞬态：复位清空（与 dtc_records 的故障
+    # 记忆语义刻意相反——DTC 保留、routine 清空，测试成对固化）
+    state.active_routines.clear()
+    state.routine_start_counts.clear()
+    # download transfer 同样是进行中的瞬态操作：复位必然中止
+    # （buffer/counter/last_block 全清，回到 IDLE）
+    state.download_active = False
+    state.download_address = 0
+    state.download_size = 0
+    state.download_expected_block = 0
+    state.download_buffer.clear()
+    state.download_last_block_request = None
+    # upload transfer 同属瞬态操作：复位中止（5 字段全清）
+    state.upload_active = False
+    state.upload_address = 0
+    state.upload_size = 0
+    state.upload_expected_block = 0
+    state.upload_sent = 0
+    # 0x38 file transfer 的会话标识同样是瞬态：复位中止进行中的
+    # AddFile / ReplaceFile（**不提交** download_buffer 进 files）、
+    # 中止 ReadFile / ReadDir（本来就只读，不影响 files）。
+    state.file_mode = FILE_MODE_IDLE
+    state.file_path = ""
+    # 刻意**不**清 state.files：它是本实验的"非易失存储"替身，
+    # 复位中止的是**传输**而不是已提交的数据（与 dtc_records 同侧的
+    # 保留语义，与 did_overrides / download_buffer 的恢复出厂语义相反）。
+
+
 # ======================================================================
 # 权限模型
 # ======================================================================
@@ -412,36 +473,7 @@ def service_ecu_reset(request: bytes, state: EcuState) -> bytes:
 
     # hardReset
     if reset_type == 0x01:
-        state.session = uds_types.SESSION_DEFAULT
-        reset_security_state(state)
-        # 复位使通过 0x2E 写入的 DID 恢复出厂默认值
-        state.did_overrides.clear()
-        # routine 状态是易失瞬态：复位清空（与 dtc_records 的故障
-        # 记忆语义刻意相反——DTC 保留、routine 清空，测试成对固化）
-        state.active_routines.clear()
-        state.routine_start_counts.clear()
-        # download transfer 同样是进行中的瞬态操作：复位必然中止
-        # （buffer/counter/last_block 全清，回到 IDLE）
-        state.download_active = False
-        state.download_address = 0
-        state.download_size = 0
-        state.download_expected_block = 0
-        state.download_buffer.clear()
-        state.download_last_block_request = None
-        # upload transfer 同属瞬态操作：复位中止（5 字段全清）
-        state.upload_active = False
-        state.upload_address = 0
-        state.upload_size = 0
-        state.upload_expected_block = 0
-        state.upload_sent = 0
-        # 0x38 file transfer 的会话标识同样是瞬态：复位中止进行中的
-        # AddFile / ReplaceFile（**不提交** download_buffer 进 files）、
-        # 中止 ReadFile / ReadDir（本来就只读，不影响 files）。
-        state.file_mode = FILE_MODE_IDLE
-        state.file_path = ""
-        # 刻意**不**清 state.files：它是本实验的"非易失存储"替身，
-        # 复位中止的是**传输**而不是已提交的数据（与 dtc_records 同侧的
-        # 保留语义，与 did_overrides / download_buffer 的恢复出厂语义相反）。
+        _reset_volatile_state(state)
 
         return uds_types.positive_response(0x11, bytes([reset_type]))
 
