@@ -177,7 +177,7 @@ UDS_INTERFACE=vcan1 UDS_RX_ID=0x7E1 UDS_TX_ID=0x7E9 \
 | `0x10` | DiagnosticSessionControl | `0x01` default<br>`0x02` programming<br>`0x03` extended | `0x50` | 已实现 |
 | `0x11` | ECUReset | `0x01` hardReset<br>`0x02` keyOffOnReset<br>`0x03` softReset | `0x51` | 已实现（见 4.10） |
 | `0x14` | ClearDiagnosticInformation | —（`groupOfDTC` 参数） | `0x54` | 已实现（见 4.9） |
-| `0x19` | ReadDTCInformation | `0x01` numberOfDTCByStatusMask<br>`0x02` DTCByStatusMask<br>`0x0A` supportedDTC | `0x59` | 已实现（见 4.4） |
+| `0x19` | ReadDTCInformation | `0x01` numberOfDTCByStatusMask<br>`0x02` DTCByStatusMask<br>`0x07` numberOfDTCBySeverityMaskRecord<br>`0x08` DTCBySeverityMaskRecord<br>`0x09` severityInformationOfDTC<br>`0x0A` supportedDTC | `0x59` | 已实现（见 4.4） |
 | `0x22` | ReadDataByIdentifier | —（支持多 DID） | `0x62` | 已实现 |
 | `0x27` | SecurityAccess | `0x01` RequestSeed<br>`0x02` SendKey | `0x67` | 已实现 |
 | `0x2E` | WriteDataByIdentifier | —（可写 DID 见 4.3） | `0x6E` | 已实现 |
@@ -192,8 +192,8 @@ UDS_INTERFACE=vcan1 UDS_RX_ID=0x7E1 UDS_TX_ID=0x7E9 \
 **尚未实现**（会返回 `NRC 0x11 ServiceNotSupported`）：
 
 `0x06` ResumeFile、`0x39` RequestFileTransferExit、`0x19` 的其余 reportType
-（03/04/05/06/07/08/09/0B…）、`0x28` CommunicationControl、
-`0x85` ControlDTCSetting 等。
+（03/04/05/06/0B–0E/14/15/16/1A…；07/08/09 已实现）、
+`0x28` CommunicationControl、`0x85` ControlDTCSetting 等。
 
 ### 4.1 响应格式
 
@@ -296,27 +296,88 @@ S3* 自动退会话，故无副作用）。
 
 ### 4.4 0x19 ReadDTCInformation
 
-本实验实现三个 reportType（其余 → `NRC 0x12`）：
+本实验实现六个 reportType（其余 → `NRC 0x12`）。
+
+**wire profile（本实验刻意区别于 ISO 14229-1）**：
 
 ```
-19 01 <DTCStatusMask> → 59 01 <DTCStatusAvailabilityMask>
-                           <DTCFormatIdentifier> <DTCCount_H> <DTCCount_L>
-
-19 02 <DTCStatusMask> → 59 02 <DTCStatusAvailabilityMask>
-                           [(DTC_H DTC_M DTC_L) <statusOfDTC>]*
-
-19 0A                → 59 0A <DTCStatusAvailabilityMask>
-                           [(DTC_H DTC_M DTC_L) <statusOfDTC>]*
+ISO 14229-1 : 59 <reportType> <DTCStatusAvailabilityMask> ...
+SecurityLab : 59 <DTCStatusAvailabilityMask> ...
 ```
 
-- `DTCStatusAvailabilityMask = 0xFF`、`DTCFormatIdentifier = 0x01`
-  （ISO 14229-1 DTC format），本实验固定。
+正响应第 2 字节**不是 reportType 回显**，而是 `DTCStatusAvailabilityMask`。
+这是本实验**既有**的 wire contract（`01`/`02`/`0A` 自首次实现起即如此，
+且被 unit + e2e 逐字节固化）。OQ5 新增的 `07`/`08`/`09` **沿用同一 profile**：
+既不回头改动既有三个类型（会破坏已有 wire contract），也不在新类型上单独
+引入回显（否则同一个服务会出现两套响应解析约定）。
+
+**status 家族**：
+
+```
+19 01 <DTCStatusMask>                   → 59 <DTCStatusAvailabilityMask>
+                                             <DTCFormatIdentifier>
+                                             <DTCCount_H> <DTCCount_L>
+
+19 02 <DTCStatusMask>                   → 59 <DTCStatusAvailabilityMask>
+                                             [(DTC:3) <statusOfDTC>]*
+
+19 0A                                   → 59 <DTCStatusAvailabilityMask>
+                                             [(DTC:3) <statusOfDTC>]*
+```
+
+**severity 家族**（OQ5 新增）：
+
+```
+19 07 <DTCSeverityMask> <DTCStatusMask> → 59 <DTCStatusAvailabilityMask>
+                                             <DTCSeverityAvailabilityMask>
+                                             <DTCFormatIdentifier>
+                                             <DTCCount_H> <DTCCount_L>
+
+19 08 <DTCSeverityMask> <DTCStatusMask> → 59 <DTCStatusAvailabilityMask>
+                                             <DTCSeverityAvailabilityMask>
+                                             [(DTC:3) <statusOfDTC>
+                                              <severity:1> <functionalUnit:1>]*
+
+19 09 <DTC:3>                           → 59 <DTCStatusAvailabilityMask>
+                                             [(DTC:3) <statusOfDTC>
+                                              <severity:1> <functionalUnit:1>]
+```
+
+- `DTCStatusAvailabilityMask = 0xFF`、`DTCSeverityAvailabilityMask = 0xE0`、
+  `DTCFormatIdentifier = 0x01`（ISO 14229-1 DTC format），本实验固定。
+- **severity 位定义**（本实验采用的三个有效位）：
+  `0x80` checkImmediately、`0x40` checkAtNextHalt、`0x20` maintenanceOnly；
+  `0x00` 表示 noSeverityAvailable。低 5 bit 不参与本实验 severity 语义。
 - `0x19/01`：DTCCount = `(statusOfDTC & mask) != 0` 的 DTC 数，
   16-bit big-endian；`0x19/02` 只返回匹配项、**不含 DTCCount**；
   `0x19/0A` 报告全部支持的 DTC（不受 status 过滤）。
+- `0x19/07` / `0x19/08`：两个 mask 为**逻辑与** ——
+  `(severity & severityMask) != 0` **且** `(status & statusMask) != 0`。
+  `0x19/08` 每条记录 **6 字节**（DTC 3 + status 1 + severity 1 + functionalUnit 1）。
+- `0x19/09`：按 DTC 查询；未知 DTC → `NRC 0x31`（与"未知 DID / 未知 RID →
+  0x31"的项目惯例一致）。
 - 记录按 DTC 升序输出，顺序稳定。
-- DTC 静态定义在 `ecu/dtc_database.py`（3 个合成 DTC，status 各不相同）；
-  运行时状态在 `EcuState.dtc_records`，跨请求保持。
+- 长度规则（含 reportType 字节）：`01`/`02` 为 3，`07`/`08` 为 4，
+  `09` 为 5，`0A` 为 2；不符 → `NRC 0x13`。
+
+**数据模型（两组字段刻意分离）**：
+
+| 存放位置 | 内容 | 谁改它 |
+|---|---|---|
+| `EcuState.dtc_records` | 运行时 `statusOfDTC` | `0x14` 置 `0x00`（key 保留） |
+| `ecu/dtc_database.py` → `DTC_METADATA` | **定义属性** `severity` / `functional_unit` | **没有任何服务会改它** |
+
+`severity` / `functional_unit` 是 **DTC 的定义属性**，与故障状态正交：
+
+- `0x14` 清除某 DTC 后，`0x19/09` 仍返回该 DTC、`status` 变 `0x00`，
+  而 `severity` / `functionalUnit` **保持不变**（清除的是故障，不是 DTC 的严重级别）；
+- `0x11 01/02/03` 不清 DTC、也不改 metadata，`0x19/07/08/09` 结果不变。
+
+> `DTC_METADATA` 与 `DTC_DATABASE` 的 DTC 键集合必须在导入期一致
+> （`dtc_database` 内有 fail-fast 护栏），否则模块无法导入。
+
+- DTC 静态定义在 `ecu/dtc_database.py`（3 个合成 DTC，status 与 severity
+  刻意各不相同）；运行时状态在 `EcuState.dtc_records`，跨请求保持。
 - **hardReset 不删除 DTC**：DTC 是故障历史记忆，与 DID override 的
   "复位即恢复出厂"语义刻意区分（unit + e2e 固化）。
 - suppressPosRspMsgIndicationBit 不在本 feature 范围（后续服务框架统一处理）。
@@ -740,6 +801,15 @@ status 字节变 `0x00`**。
 | `19 01 FF` | `59 FF 01 00 03` | 3 个 DTC 匹配（DTCCount=3） |
 | `19 02 01` | `59 FF 10 00 01 01` | 只返回 status bit0 置位的 DTC |
 | `19 0A` | `59 FF 10 00 01 01 10 00 02 02 10 00 03 04` | 全部支持的 DTC |
+| `19 07 E0` / `19 08 E0` | `7F 19 13` | severity 家族缺 statusMask（07/08 严格 4 字节） |
+| `19 07 E0 FF 00` / `19 08 E0 FF 00` | `7F 19 13` | severity 家族多余字节 |
+| `19 09 10 00` / `19 09 10 00 01 00` | `7F 19 13` | 0x09 严格 5 字节 |
+| `19 09 10 00 09` | `7F 19 31` | 未知 DTC（与"未知 DID/RID → 31"惯例一致） |
+| `19 07 E0 FF` | `59 FF E0 01 00 03` | severity + status 双 mask，3 个 DTC 全匹配 |
+| `19 07 80 FF` | `59 FF E0 01 00 01` | 只有 checkImmediately 的那一个 DTC |
+| `19 07 00 FF` / `19 07 E0 00` | `59 FF E0 01 00 00` | 任一 mask 为 0 → 无匹配（逻辑与） |
+| `19 08 E0 FF` | `59 FF E0 10 00 01 01 80 01 …`（21 字节） | 每条记录 6 字节；**超过单帧 → 走 ISO-TP MF** |
+| `19 09 10 00 01` | `59 FF 10 00 01 01 80 01` | 单 DTC：status + severity + functionalUnit |
 | `31 01`（长度 ≠ 4） | `7F 31 13` | 请求形态固定 4 字节 |
 | `31 04 20 01` | `7F 31 12` | 子功能不支持 |
 | `31 01 AA AA` | `7F 31 31` | 未知 routineIdentifier |
@@ -1433,7 +1503,7 @@ uds-basic/
 │   ├── uds_server.py        # 协议层：EcuState / handlers / registry / dispatcher
 │   ├── uds_types.py         # 协议常量 + 响应构造（零依赖）
 │   ├── did_database.py      # DID 数据库（受保护/可写 DID 标记）
-│   ├── dtc_database.py      # DTC 静态数据库（合成 DTC + mask/format 常量）
+│   ├── dtc_database.py      # DTC 静态数据库（合成 DTC + mask/format 常量 + DTC_METADATA）
 │   ├── file_database.py     # 0x38 文件模型（FILE_MODE_*/出厂文件/dirInfo 编码）
 │   ├── routine_database.py   # Routine 静态数据库（0x2001/0x2002 定义）
 │   ├── transfer_database.py   # Download/Upload 静态配置（DFI/ALFID/上限/上传源）
@@ -1622,7 +1692,7 @@ _security_services()            —— 每次请求现场构造 SecurityAccess h
 | `service_write_data_by_identifier` | 0x2E handler（门控链见 4.3，写入 `did_overrides`） |
 | `service_tester_present` | 0x3E handler（`3E 80` 返回空字节由入口层抑制发帧） |
 | `service_clear_diagnostic_information` | 0x14 handler（`groupOfDTC` 校验 + status 置零，见 4.9；`EcuState` 零新增字段） |
-| `service_read_dtc_information` | 0x19 handler（reportType 01/02/0A，只读 `dtc_records`） |
+| `service_read_dtc_information` | 0x19 handler（reportType 01/02/07/08/09/0A；status 只读 `dtc_records`，severity 只读 `DTC_METADATA`，见 4.4） |
 | `service_routine_control` | 0x31 handler（Start/Stop/Results 状态机，见 4.5） |
 | `service_request_download` | 0x34 handler（DFI/ALFID 校验 + 建立 download session，见 4.6；含 upload 互斥 guard） |
 | `service_request_upload` | 0x35 handler（DFI/ALFID/size 校验 + 建立 upload session，见 4.7） |
