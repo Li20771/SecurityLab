@@ -18,14 +18,18 @@ UDS Basic —— 0x19 ReadDTCInformation vcan0 端到端测试
 5. 长度错误（缺 mask / 多余数据）→ 7F 19 13
 6. hardReset 保留 DTC：11 01 前后 19 02 FF 响应一致
 
-OQ5 severity 家族:
+OQ5 severity 家族（SecurityLab profile：**不回显 reportType**、
+count 型**不输出 DTCSeverityAvailabilityMask**、记录字段顺序为
+**severity → functionalUnit → DTC → status**）:
 
 7. 0x19/07 reportNumberOfDTCBySeverityMaskRecord 正响应
+   （5 字节，与 0x19/01 同形）
 8. 0x19/08 reportDTCBySeverityMaskRecord 正响应 —— **天然 MF**：
-   3 DTC × 6 字节 + 3 字节头 = 21 字节 > 7，必须走 ISO-TP FF/CF。
-   本测试断言**内核 ISO-TP 重组后的完整 payload**，不断言 CAN 帧数
-   （帧数是传输层细节，不属 UDS 层契约）。
-9. 0x19/09 reportSeverityInformationOfDTC 正响应 / 未知 DTC → NRC 0x31
+   3 DTC × 6 字节 + 2 字节头 = 20 字节 > 7，必须走 ISO-TP FF/CF。
+   本测试断言**内核 ISO-TP 重组后的完整 payload**（逐字节），
+   不断言 CAN 帧数（帧数是传输层细节，不属 UDS 层契约）。
+9. 0x19/09 reportSeverityInformationOfDTC 正响应（8 字节）/
+   未知 DTC → NRC 0x31
 
 明确**不测**：其他 0x19 reportType、suppressPosRspMsgIndicationBit。
 
@@ -294,20 +298,33 @@ class TestDtcE2E(DtcVcanTestCase):
     # -- OQ5 severity 家族 ------------------------------------------------
 
     def test_09_severity_information_positive(self) -> None:
-        """19 09 <DTC:3> → 59 <availMask> <DTC:3> <status> <severity> <funcUnit>"""
+        """19 09 <DTC:3> → 59 <availMask> <severity> <funcUnit> <DTC:3> <status>"""
         response = exchange(bytes([0x19, 0x09, 0x10, 0x00, 0x01]))
 
-        severity, functional_unit = DEFAULT_DTC_METADATA[0x100001]
+        self.assertEqual(response, bytes.fromhex("59 FF 80 01 10 00 01 01"))
 
-        self.assertEqual(
-            response,
-            bytes([
-                0x59, DTC_STATUS_AVAILABILITY_MASK,
-                0x10, 0x00, 0x01,
-                DEFAULT_DTC_RECORDS[0x100001],
-                severity, functional_unit,
-            ]),
-        )
+    def test_09_field_order(self) -> None:
+        """字段顺序必须是 **severity → functionalUnit → DTC → status**。"""
+        for dtc, (severity, functional_unit) in DEFAULT_DTC_METADATA.items():
+            with self.subTest(dtc=hex(dtc)):
+                response = exchange(bytes([
+                    0x19, 0x09,
+                    (dtc >> 16) & 0xFF, (dtc >> 8) & 0xFF, dtc & 0xFF,
+                ]))
+
+                self.assertEqual(response[1], DTC_STATUS_AVAILABILITY_MASK)
+                self.assertEqual(response[2], severity, "第 3 字节必须是 severity")
+                self.assertEqual(
+                    response[3], functional_unit, "第 4 字节必须是 functionalUnit"
+                )
+                self.assertEqual(
+                    int.from_bytes(response[4:7], "big"), dtc,
+                    "第 5-7 字节必须是 DTC",
+                )
+                self.assertEqual(
+                    response[7], DEFAULT_DTC_RECORDS[dtc],
+                    "第 8 字节必须是 status",
+                )
 
     def test_09_unknown_dtc_out_of_range(self) -> None:
         self.assertNegative(
@@ -316,19 +333,18 @@ class TestDtcE2E(DtcVcanTestCase):
         )
 
     def test_07_severity_count_positive(self) -> None:
+        """与 0x19/01 同形：``59 <availMask> <format> <count:2>``，5 字节。"""
         response = exchange(bytes([0x19, 0x07, 0xE0, 0xFF]))
 
-        self.assertEqual(
-            response,
-            bytes([
-                0x59,
-                DTC_STATUS_AVAILABILITY_MASK,
-                DTC_SEVERITY_AVAILABILITY_MASK,
-                DTC_FORMAT_IDENTIFIER,
-                0x00,
-                len(DEFAULT_DTC_RECORDS),
-            ]),
-        )
+        self.assertEqual(response, bytes.fromhex("59 FF 01 00 03"))
+
+    def test_07_has_no_severity_availability_byte(self) -> None:
+        """0x19/07 **不得**输出 DTCSeverityAvailabilityMask。"""
+        response = exchange(bytes([0x19, 0x07, 0xE0, 0xFF]))
+
+        self.assertEqual(len(response), 5)
+        self.assertEqual(response[2], DTC_FORMAT_IDENTIFIER)
+        self.assertNotEqual(response[2], DTC_SEVERITY_AVAILABILITY_MASK)
 
     def test_07_each_severity_bit_selects_one_dtc(self) -> None:
         for bit in (0x80, 0x40, 0x20):
@@ -346,22 +362,55 @@ class TestDtcE2E(DtcVcanTestCase):
         """
         response = exchange(bytes([0x19, 0x08, 0xE0, 0xFF]))
 
-        expected = bytes([
-            0x59, DTC_STATUS_AVAILABILITY_MASK, DTC_SEVERITY_AVAILABILITY_MASK,
-        ])
+        # SecurityLab profile：59 <statusAvailMask> 后紧跟记录，
+        # 记录字段顺序 = severity → functionalUnit → DTC(3) → status。
+        expected = bytes([0x59, DTC_STATUS_AVAILABILITY_MASK])
 
         for dtc in sorted(DEFAULT_DTC_RECORDS):
             severity, functional_unit = DEFAULT_DTC_METADATA[dtc]
             expected += bytes([
+                severity, functional_unit,
                 (dtc >> 16) & 0xFF, (dtc >> 8) & 0xFF, dtc & 0xFF,
-                DEFAULT_DTC_RECORDS[dtc], severity, functional_unit,
+                DEFAULT_DTC_RECORDS[dtc],
             ])
 
         self.assertEqual(response, expected)
+        self.assertEqual(
+            response,
+            bytes.fromhex(
+                "59 FF"
+                " 80 01 10 00 01 01"
+                " 40 02 10 00 02 02"
+                " 20 03 10 00 03 04"
+            ),
+            "3 DTC 时必须是这 20 字节",
+        )
+        self.assertEqual(len(response), 20)
         self.assertGreater(
             len(response), SINGLE_FRAME_MAX,
             "本用例必须覆盖 MF：响应长度需超过单帧上限",
         )
+
+    def test_08_record_field_order(self) -> None:
+        """每条记录必须按 severity → functionalUnit → DTC → status 排列。"""
+        response = exchange(bytes([0x19, 0x08, 0xE0, 0xFF]))
+
+        body = response[2:]
+
+        self.assertEqual(len(body) % 6, 0)
+
+        for offset in range(0, len(body), 6):
+            record = body[offset:offset + 6]
+            severity, functional_unit = record[0], record[1]
+            dtc = int.from_bytes(record[2:5], "big")
+            status = record[5]
+
+            expected_severity, expected_unit = DEFAULT_DTC_METADATA[dtc]
+
+            with self.subTest(dtc=hex(dtc)):
+                self.assertEqual(severity, expected_severity)
+                self.assertEqual(functional_unit, expected_unit)
+                self.assertEqual(status, DEFAULT_DTC_RECORDS[dtc])
 
     def test_invalid_report_type(self) -> None:
         for report_type in (0x03, 0x7F):

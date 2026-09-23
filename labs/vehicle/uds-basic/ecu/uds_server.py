@@ -59,7 +59,6 @@ from dtc_database import (
     DTC_DATABASE,
     DTC_FORMAT_IDENTIFIER,
     DTC_METADATA,
-    DTC_SEVERITY_AVAILABILITY_MASK,
     DTC_SEVERITY_NO_SEVERITY_AVAILABLE,
     DTC_STATUS_AVAILABILITY_MASK,
     DtcMetadata,
@@ -977,12 +976,13 @@ def service_read_dtc_information(request: bytes, state: EcuState) -> bytes:
     **severity 家族**（OQ5 新增，沿用同一 profile）：
 
     - ``19 07 <DTCSeverityMask> <DTCStatusMask>`` → ``59 <availMask>
-      <severityAvailMask> <DTCFormatIdentifier> <DTCCount_H> <DTCCount_L>``；
-      两个 mask 为**逻辑与**。
+      <DTCFormatIdentifier> <DTCCount_H> <DTCCount_L>``；两个 mask 为
+      **逻辑与**。与 ``0x19/01`` **同形** —— 本实验的 count 型正响应统一为
+      ``59 <availMask> <format> <count>``，**不输出 DTCSeverityAvailabilityMask**。
     - ``19 08 <DTCSeverityMask> <DTCStatusMask>`` → ``59 <availMask>
-      <severityAvailMask> [(DTC:3)(status:1)(severity:1)(funcUnit:1)]*``。
+      [(severity:1)(funcUnit:1)(DTC:3)(status:1)]*``。
     - ``19 09 <DTC:3>`` → ``59 <availMask>
-      [(DTC:3)(status:1)(severity:1)(funcUnit:1)]``；未知 DTC → NRC 0x31。
+      (severity:1)(funcUnit:1)(DTC:3)(status:1)``；未知 DTC → NRC 0x31。
 
     **本实验的 wire profile（刻意区别于 ISO 14229-1）**：正响应第 2 字节
     **不是 reportType 回显**，而是 ``DTCStatusAvailabilityMask``::
@@ -994,6 +994,11 @@ def service_read_dtc_information(request: bytes, state: EcuState) -> bytes:
     unit + e2e 逐字节固化）。OQ5 的 07/08/09 **沿用同一 profile**：既不因
     "标准如此"回头改动既有三个类型，也不在新类型上单独引入回显——否则
     同一个服务会出现两套响应解析约定。
+
+    **注意**：去掉 reportType 只意味着**少一个字段**，不代表可以改变其余
+    字段的存在性或顺序。本实验的 count 型正响应不带
+    ``DTCSeverityAvailabilityMask``；记录型正响应的记录字段顺序为
+    ``severity → functionalUnit → DTC → status``（见上）。
 
     长度规则（含 reportType 字节）：01/02 为 3，07/08 为 4，09 为 5，
     0A 为 2；不符 → NRC 0x13。
@@ -1078,9 +1083,10 @@ def service_read_dtc_information(request: bytes, state: EcuState) -> bytes:
             _matching_dtcs_by_severity(state, severity_mask, status_mask)
         )
 
+        # SecurityLab profile：与 0x19/01 同形 —— 只有 SID + availability +
+        # format + count，**不输出 DTCSeverityAvailabilityMask**。
         payload = bytes([
             DTC_STATUS_AVAILABILITY_MASK,
-            DTC_SEVERITY_AVAILABILITY_MASK,
             DTC_FORMAT_IDENTIFIER,
             (count >> 8) & 0xFF,
             count & 0xFF,
@@ -1096,25 +1102,24 @@ def service_read_dtc_information(request: bytes, state: EcuState) -> bytes:
 
         severity_mask = request[2]
         status_mask = request[3]
-        payload = bytes([
-            DTC_STATUS_AVAILABILITY_MASK,
-            DTC_SEVERITY_AVAILABILITY_MASK,
-        ])
+
+        # SecurityLab profile：不输出 DTCSeverityAvailabilityMask。
+        payload = bytes([DTC_STATUS_AVAILABILITY_MASK])
 
         matched = _matching_dtcs_by_severity(
             state, severity_mask, status_mask
         )
 
-        # 每条记录 6 字节：DTC(3) + status(1) + severity(1) + functionalUnit(1)。
-        # 记录内字段顺序与 0x08 保持一致（ISO 14229-1 的记录布局）。
+        # 每条记录 6 字节，字段顺序为
+        # **severity(1) + functionalUnit(1) + DTC(3) + status(1)**。
         for dtc, status, severity, functional_unit in matched:
             payload += bytes([
+                severity,
+                functional_unit,
                 (dtc >> 16) & 0xFF,
                 (dtc >> 8) & 0xFF,
                 dtc & 0xFF,
                 status,
-                severity,
-                functional_unit,
             ])
 
         return uds_types.positive_response(0x19, payload)
@@ -1137,14 +1142,16 @@ def service_read_dtc_information(request: bytes, state: EcuState) -> bytes:
 
         # status 取自运行时；severity / functionalUnit 取自静态 metadata，
         # 二者**不合并存储**（0x14 只动前者）。
+        # 字段顺序与 0x19/08 的记录一致：
+        # **severity(1) + functionalUnit(1) + DTC(3) + status(1)**。
         payload = bytes([
             DTC_STATUS_AVAILABILITY_MASK,
+            metadata.severity,
+            metadata.functional_unit,
             (dtc >> 16) & 0xFF,
             (dtc >> 8) & 0xFF,
             dtc & 0xFF,
             state.dtc_records[dtc],
-            metadata.severity,
-            metadata.functional_unit,
         ])
 
         return uds_types.positive_response(0x19, payload)

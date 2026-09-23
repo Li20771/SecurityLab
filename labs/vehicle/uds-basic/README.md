@@ -311,6 +311,11 @@ SecurityLab : 59 <DTCStatusAvailabilityMask> ...
 既不回头改动既有三个类型（会破坏已有 wire contract），也不在新类型上单独
 引入回显（否则同一个服务会出现两套响应解析约定）。
 
+> **去掉 reportType 只意味着少一个字段**，不代表可以改变其余字段的存在性
+> 或顺序。本实验的 count 型正响应（`01` / `07`）到 `<DTCFormatIdentifier>`
+> 为止，**不输出 `DTCSeverityAvailabilityMask`**；记录型正响应（`08` / `09`）
+> 的每条记录字段顺序为 **`severity` → `functionalUnit` → `DTC` → `status`**。
+
 **status 家族**：
 
 ```
@@ -329,22 +334,22 @@ SecurityLab : 59 <DTCStatusAvailabilityMask> ...
 
 ```
 19 07 <DTCSeverityMask> <DTCStatusMask> → 59 <DTCStatusAvailabilityMask>
-                                             <DTCSeverityAvailabilityMask>
                                              <DTCFormatIdentifier>
                                              <DTCCount_H> <DTCCount_L>
 
 19 08 <DTCSeverityMask> <DTCStatusMask> → 59 <DTCStatusAvailabilityMask>
-                                             <DTCSeverityAvailabilityMask>
-                                             [(DTC:3) <statusOfDTC>
-                                              <severity:1> <functionalUnit:1>]*
+                                             [<severity:1> <functionalUnit:1>
+                                              <DTC:3> <statusOfDTC>]*
 
 19 09 <DTC:3>                           → 59 <DTCStatusAvailabilityMask>
-                                             [(DTC:3) <statusOfDTC>
-                                              <severity:1> <functionalUnit:1>]
+                                             <severity:1> <functionalUnit:1>
+                                             <DTC:3> <statusOfDTC>
 ```
 
-- `DTCStatusAvailabilityMask = 0xFF`、`DTCSeverityAvailabilityMask = 0xE0`、
-  `DTCFormatIdentifier = 0x01`（ISO 14229-1 DTC format），本实验固定。
+- `DTCStatusAvailabilityMask = 0xFF`、`DTCFormatIdentifier = 0x01`
+  （ISO 14229-1 DTC format），本实验固定。
+- **本实验不在正响应中输出 `DTCSeverityAvailabilityMask`**（`0xE0` 仅作为
+  "本实验支持的 severity 位集合"的定义常量，见 `dtc_database.py`）。
 - **severity 位定义**（本实验采用的三个有效位）：
   `0x80` checkImmediately、`0x40` checkAtNextHalt、`0x20` maintenanceOnly；
   `0x00` 表示 noSeverityAvailable。低 5 bit 不参与本实验 severity 语义。
@@ -353,7 +358,9 @@ SecurityLab : 59 <DTCStatusAvailabilityMask> ...
   `0x19/0A` 报告全部支持的 DTC（不受 status 过滤）。
 - `0x19/07` / `0x19/08`：两个 mask 为**逻辑与** ——
   `(severity & severityMask) != 0` **且** `(status & statusMask) != 0`。
-  `0x19/08` 每条记录 **6 字节**（DTC 3 + status 1 + severity 1 + functionalUnit 1）。
+  `0x19/07` 与 `0x19/01` **同形**（只有计数口径不同）；
+  `0x19/08` 每条记录 **6 字节**，字段顺序固定为
+  **`severity`(1) → `functionalUnit`(1) → `DTC`(3) → `status`(1)**。
 - `0x19/09`：按 DTC 查询；未知 DTC → `NRC 0x31`（与"未知 DID / 未知 RID →
   0x31"的项目惯例一致）。
 - 记录按 DTC 升序输出，顺序稳定。
@@ -805,11 +812,11 @@ status 字节变 `0x00`**。
 | `19 07 E0 FF 00` / `19 08 E0 FF 00` | `7F 19 13` | severity 家族多余字节 |
 | `19 09 10 00` / `19 09 10 00 01 00` | `7F 19 13` | 0x09 严格 5 字节 |
 | `19 09 10 00 09` | `7F 19 31` | 未知 DTC（与"未知 DID/RID → 31"惯例一致） |
-| `19 07 E0 FF` | `59 FF E0 01 00 03` | severity + status 双 mask，3 个 DTC 全匹配 |
-| `19 07 80 FF` | `59 FF E0 01 00 01` | 只有 checkImmediately 的那一个 DTC |
-| `19 07 00 FF` / `19 07 E0 00` | `59 FF E0 01 00 00` | 任一 mask 为 0 → 无匹配（逻辑与） |
-| `19 08 E0 FF` | `59 FF E0 10 00 01 01 80 01 …`（21 字节） | 每条记录 6 字节；**超过单帧 → 走 ISO-TP MF** |
-| `19 09 10 00 01` | `59 FF 10 00 01 01 80 01` | 单 DTC：status + severity + functionalUnit |
+| `19 07 E0 FF` | `59 FF 01 00 03` | severity + status 双 mask，3 个 DTC 全匹配（同 0x19/01 形状） |
+| `19 07 80 FF` | `59 FF 01 00 01` | 只有 checkImmediately 的那一个 DTC |
+| `19 07 00 FF` / `19 07 E0 00` | `59 FF 01 00 00` | 任一 mask 为 0 → 无匹配（逻辑与） |
+| `19 08 E0 FF` | `59 FF 80 01 10 00 01 01 …`（20 字节） | 每条记录 6 字节，顺序 severity→funcUnit→DTC→status；**超过单帧 → 走 ISO-TP MF** |
+| `19 09 10 00 01` | `59 FF 80 01 10 00 01 01` | 单 DTC：severity + functionalUnit + DTC + status |
 | `31 01`（长度 ≠ 4） | `7F 31 13` | 请求形态固定 4 字节 |
 | `31 04 20 01` | `7F 31 12` | 子功能不支持 |
 | `31 01 AA AA` | `7F 31 31` | 未知 routineIdentifier |

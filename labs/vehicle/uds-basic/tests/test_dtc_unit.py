@@ -23,7 +23,16 @@ OQ5 severity 家族（本文件下半部分）:
 11. 0x19/09 reportSeverityInformationOfDTC（已知/未知 DTC、status 取自运行时）
 12. severity 与 0x14 的**正交性**（清 status 不改 severity）
 13. severity 与 ECUReset 的一致性（0x11 不清 DTC、不改 metadata）
-14. **wire profile 冻结**：正响应不回显 reportType（01/02/0A/07/08/09 一致）
+14. **wire profile 冻结**（01/02/0A/07/08/09 一致），两条约定：
+    * 正响应**不回显 reportType**；
+    * count 型正响应**不输出 DTCSeverityAvailabilityMask**，
+      记录型正响应的字段顺序为 **severity → functionalUnit → DTC → status**。
+
+wire format（SecurityLab profile）::
+
+    19 07 E0 FF  → 59 FF 01 00 03                     （5 字节，同 0x19/01 形状）
+    19 08 E0 FF  → 59 FF 80 01 10 00 01 01 40 02 …    （20 字节，走 ISO-TP MF）
+    19 09 10 00 01 → 59 FF 80 01 10 00 01 01          （8 字节）
 
 明确**不测**：其他 0x19 reportType（03/04/05/06/0B–0E/14/15/1A…）、
 suppressPosRspMsgIndicationBit（不在本 feature 范围）。
@@ -82,13 +91,16 @@ ALL_SEVERITY_BITS = (
 class DtcTestCase(unittest.TestCase):
     """每个测试使用独立 EcuState 实例，互不污染。"""
 
-    #: 0x19/09 正响应布局：
-    #: ``59 <availMask> <DTC:3> <status:1> <severity:1> <functionalUnit:1>``
-    #: （不回显 reportType —— 见 TestReadDtcWireProfile）
-    SEV_INFO_DTC_SLICE = slice(2, 5)
-    SEV_INFO_STATUS = 5
-    SEV_INFO_SEVERITY = 6
-    SEV_INFO_FUNCTIONAL_UNIT = 7
+    #: 0x19/09 正响应布局（SecurityLab profile）：
+    #: ``59 <statusAvailMask> <severity:1> <functionalUnit:1> <DTC:3> <status:1>``
+    #:
+    #: 两条 profile 约定：
+    #:   * **不回显 reportType**（见 TestReadDtcWireProfile）
+    #:   * **不输出 DTCSeverityAvailabilityMask**
+    SEV_INFO_SEVERITY = 2
+    SEV_INFO_FUNCTIONAL_UNIT = 3
+    SEV_INFO_DTC_SLICE = slice(4, 7)
+    SEV_INFO_STATUS = 7
 
     def setUp(self) -> None:
         self.state = EcuState()
@@ -106,12 +118,16 @@ class DtcTestCase(unittest.TestCase):
             response[0], POS_READ_DTC,
             f"期望 0x19/09 肯定响应，实际 {response.hex(' ')}",
         )
+        self.assertEqual(
+            response[1], DTC_STATUS_AVAILABILITY_MASK,
+            "第 2 字节必须是 DTCStatusAvailabilityMask",
+        )
 
         return {
-            "dtc": int.from_bytes(response[self.SEV_INFO_DTC_SLICE], "big"),
-            "status": response[self.SEV_INFO_STATUS],
             "severity": response[self.SEV_INFO_SEVERITY],
             "functional_unit": response[self.SEV_INFO_FUNCTIONAL_UNIT],
+            "dtc": int.from_bytes(response[self.SEV_INFO_DTC_SLICE], "big"),
+            "status": response[self.SEV_INFO_STATUS],
         }
 
 
@@ -477,15 +493,17 @@ class TestReportNumberOfDTCBySeverity(DtcTestCase):
             bytes([0x19, 0x07, severity_mask, status_mask]), self.state
         )
 
-        self.assertEqual(response[0], POS_READ_DTC)
+        # SecurityLab profile：``59 <statusAvail> <format> <count:2>``，
+        # 共 5 字节 —— **没有 DTCSeverityAvailabilityMask**。
         self.assertEqual(
-            response[:3],
+            response[:2] + response[2:3],
             bytes([
                 POS_READ_DTC,
                 DTC_STATUS_AVAILABILITY_MASK,
-                DTC_SEVERITY_AVAILABILITY_MASK,
+                DTC_FORMAT_IDENTIFIER,
             ]),
         )
+        self.assertEqual(len(response), 5, "0x19/07 响应固定 5 字节")
 
         return (response[-2] << 8) | response[-1]
 
@@ -494,18 +512,34 @@ class TestReportNumberOfDTCBySeverity(DtcTestCase):
             bytes([0x19, 0x07, 0xE0, 0xFF]), self.state
         )
 
-        self.assertEqual(
-            response,
-            bytes([
-                POS_READ_DTC,
-                DTC_STATUS_AVAILABILITY_MASK,
-                DTC_SEVERITY_AVAILABILITY_MASK,
-                DTC_FORMAT_IDENTIFIER,
-                0x00,
-                len(DTC_DATABASE),
-            ]),
-        )
-        self.assertEqual(len(response), 6, "0x19/07 响应固定 6 字节")
+        self.assertEqual(response, bytes.fromhex("59 FF 01 00 03"))
+
+    def test_no_severity_availability_byte(self) -> None:
+        """
+        0x19/07 **不得**输出 DTCSeverityAvailabilityMask。
+
+        本实验的 count 型正响应与 0x19/01 同形（SID + availability +
+        format + count）。去掉 reportType 只意味着**少一个字段**，不代表
+        可以改变其余字段的存在性。
+        """
+        for severity_mask in (0xE0, 0x80, 0x40, 0x20, 0x00):
+            with self.subTest(severity_mask=hex(severity_mask)):
+                response = handle_uds_request(
+                    bytes([0x19, 0x07, severity_mask, 0xFF]), self.state
+                )
+
+                # 第 3 字节必须是 DTCFormatIdentifier（而非 severity availability）
+                self.assertEqual(response[2], DTC_FORMAT_IDENTIFIER)
+                self.assertNotEqual(response[2], DTC_SEVERITY_AVAILABILITY_MASK)
+                self.assertEqual(len(response), 5)
+
+    def test_shape_matches_0x19_01(self) -> None:
+        """0x19/07 与 0x19/01 必须同形（仅计数口径不同）。"""
+        seventh = handle_uds_request(bytes([0x19, 0x07, 0xE0, 0xFF]), self.state)
+        first = handle_uds_request(bytes([0x19, 0x01, 0xFF]), self.state)
+
+        self.assertEqual(len(seventh), len(first))
+        self.assertEqual(seventh[:3], first[:3])
 
     def test_full_masks_count_every_dtc(self) -> None:
         self.assertEqual(self.count_of(0xE0, 0xFF), len(DTC_DATABASE))
@@ -551,16 +585,27 @@ class TestReportNumberOfDTCBySeverity(DtcTestCase):
             )
 
         self.assertEqual(response[-2:], bytes([0x01, 0x00]))
-        self.assertEqual(len(response), 6, "0x19/07 响应固定 6 字节")
+        self.assertEqual(len(response), 5, "0x19/07 响应固定 5 字节")
 
 
 class TestReportDTCBySeverity(DtcTestCase):
     """0x19/08 reportDTCBySeverityMaskRecord。"""
 
-    RECORD_SIZE = 6  # DTC(3) + status(1) + severity(1) + functionalUnit(1)
+    #: 每条记录 6 字节，字段顺序 **severity(1) → functionalUnit(1) →
+    #: DTC(3) → status(1)**（SecurityLab profile）。
+    RECORD_SIZE = 6
+
+    #: 正响应头部长度：``59 <statusAvailMask>``，然后紧跟记录。
+    HEADER_SIZE = 2
 
     def records_of(self, response: bytes) -> list:
-        body = response[3:]  # 跳过 SID + statusAvail + severityAvail
+        self.assertEqual(
+            response[:2],
+            bytes([POS_READ_DTC, DTC_STATUS_AVAILABILITY_MASK]),
+            "0x19/08 正响应必须以 59 <statusAvailMask> 开头",
+        )
+
+        body = response[self.HEADER_SIZE:]
 
         self.assertEqual(
             len(body) % self.RECORD_SIZE, 0,
@@ -577,20 +622,28 @@ class TestReportDTCBySeverity(DtcTestCase):
             bytes([0x19, 0x08, 0xE0, 0xFF]), self.state
         )
 
-        expected = bytes([
-            POS_READ_DTC,
-            DTC_STATUS_AVAILABILITY_MASK,
-            DTC_SEVERITY_AVAILABILITY_MASK,
-        ])
+        self.assertEqual(
+            response,
+            bytes.fromhex(
+                "59 FF"
+                " 80 01 10 00 01 01"
+                " 40 02 10 00 02 02"
+                " 20 03 10 00 03 04"
+            ),
+        )
 
-        for dtc, status in sorted(self.state.dtc_records.items()):
-            metadata = DTC_METADATA[dtc]
-            expected += bytes([
-                (dtc >> 16) & 0xFF, (dtc >> 8) & 0xFF, dtc & 0xFF,
-                status, metadata.severity, metadata.functional_unit,
-            ])
+    def test_no_severity_availability_byte(self) -> None:
+        """0x19/08 头部只有 SID + statusAvail，**不含** severity availability。"""
+        response = handle_uds_request(
+            bytes([0x19, 0x08, 0xE0, 0xFF]), self.state
+        )
 
-        self.assertEqual(response, expected)
+        self.assertEqual(response[0], POS_READ_DTC)
+        self.assertEqual(response[1], DTC_STATUS_AVAILABILITY_MASK)
+        self.assertNotEqual(
+            response[1], DTC_SEVERITY_AVAILABILITY_MASK,
+            "第 2 字节不得是 DTCSeverityAvailabilityMask",
+        )
 
     def test_every_record_is_six_bytes(self) -> None:
         response = handle_uds_request(
@@ -599,17 +652,49 @@ class TestReportDTCBySeverity(DtcTestCase):
 
         self.assertEqual(len(self.records_of(response)), len(DTC_DATABASE))
         self.assertEqual(
-            len(response), 3 + self.RECORD_SIZE * len(DTC_DATABASE)
+            len(response),
+            self.HEADER_SIZE + self.RECORD_SIZE * len(DTC_DATABASE),
+        )
+        self.assertEqual(len(response), 20, "3 DTC 时固定 20 字节（>7 → MF）")
+
+    def test_record_field_order(self) -> None:
+        """
+        字段顺序必须是 **severity → functionalUnit → DTC → status**。
+
+        交叉核对：按上述偏移解读出来的值必须与 DTC_METADATA / dtc_records
+        完全对应；若顺序写错，读取值必然对不上。
+        """
+        response = handle_uds_request(
+            bytes([0x19, 0x08, 0xE0, 0xFF]), self.state
         )
 
-    def test_records_carry_dtc_status_severity_and_functional_unit(self) -> None:
+        for record in self.records_of(response):
+            severity = record[0]
+            functional_unit = record[1]
+            dtc = int.from_bytes(record[2:5], "big")
+            status = record[5]
+
+            metadata = DTC_METADATA[dtc]
+
+            with self.subTest(dtc=hex(dtc)):
+                self.assertEqual(severity, metadata.severity, "record[0] 必须是 severity")
+                self.assertEqual(
+                    functional_unit, metadata.functional_unit,
+                    "record[1] 必须是 functionalUnit",
+                )
+                self.assertEqual(
+                    status, self.state.dtc_records[dtc],
+                    "record[5] 必须是当前 status",
+                )
+
+    def test_records_carry_all_four_fields(self) -> None:
         response = handle_uds_request(
             bytes([0x19, 0x08, 0x80, 0xFF]), self.state
         )
 
         self.assertEqual(
             self.records_of(response),
-            [bytes([0x10, 0x00, 0x01, 0x01, 0x80, 0x01])],
+            [bytes([0x80, 0x01, 0x10, 0x00, 0x01, 0x01])],
         )
 
     def test_output_order_is_stable_by_dtc(self) -> None:
@@ -618,7 +703,10 @@ class TestReportDTCBySeverity(DtcTestCase):
 
         self.assertEqual(first, second)
 
-        dtcs = [record[:3] for record in self.records_of(first)]
+        dtcs = [
+            int.from_bytes(record[2:5], "big")
+            for record in self.records_of(first)
+        ]
 
         self.assertEqual(dtcs, sorted(dtcs), "记录必须按 DTC 升序")
 
@@ -629,7 +717,7 @@ class TestReportDTCBySeverity(DtcTestCase):
 
         self.assertEqual(
             self.records_of(response),
-            [bytes([0x10, 0x00, 0x03, 0x04, 0x20, 0x03])],
+            [bytes([0x20, 0x03, 0x10, 0x00, 0x03, 0x04])],
         )
 
     def test_empty_result_is_header_only(self) -> None:
@@ -637,14 +725,7 @@ class TestReportDTCBySeverity(DtcTestCase):
             bytes([0x19, 0x08, 0x00, 0xFF]), self.state
         )
 
-        self.assertEqual(
-            response,
-            bytes([
-                POS_READ_DTC,
-                DTC_STATUS_AVAILABILITY_MASK,
-                DTC_SEVERITY_AVAILABILITY_MASK,
-            ]),
-        )
+        self.assertEqual(response, bytes([POS_READ_DTC, DTC_STATUS_AVAILABILITY_MASK]))
 
 
 class TestReportSeverityInformation(DtcTestCase):
@@ -658,12 +739,28 @@ class TestReportSeverityInformation(DtcTestCase):
     def test_known_dtc_byte_exact(self) -> None:
         response = handle_uds_request(self.request_for(0x100001), self.state)
 
-        self.assertEqual(
-            response,
-            bytes([POS_READ_DTC, DTC_STATUS_AVAILABILITY_MASK,
-                   0x10, 0x00, 0x01, 0x01, 0x80, 0x01]),
-        )
+        self.assertEqual(response, bytes.fromhex("59 FF 80 01 10 00 01 01"))
         self.assertEqual(len(response), 8)
+
+    def test_field_order(self) -> None:
+        """
+        字段顺序必须是 **severity → functionalUnit → DTC → status**。
+
+        交叉核对：按该偏移解读出的值必须与 `DTC_METADATA` /
+        `dtc_records` 完全对应；若顺序写错，读取值必然对不上。
+        """
+        for dtc in sorted(self.state.dtc_records):
+            with self.subTest(dtc=hex(dtc)):
+                parsed = self.parse_severity_info(
+                    handle_uds_request(self.request_for(dtc), self.state)
+                )
+
+                self.assertEqual(parsed["severity"], DTC_METADATA[dtc].severity)
+                self.assertEqual(
+                    parsed["functional_unit"], DTC_METADATA[dtc].functional_unit
+                )
+                self.assertEqual(parsed["dtc"], dtc)
+                self.assertEqual(parsed["status"], self.state.dtc_records[dtc])
 
     def test_each_dtc_reports_its_own_metadata(self) -> None:
         expected = {
@@ -775,11 +872,7 @@ class TestDtcSeverityClearInteraction(DtcTestCase):
 
         self.assertEqual(
             response,
-            bytes([
-                POS_READ_DTC,
-                DTC_STATUS_AVAILABILITY_MASK,
-                DTC_SEVERITY_AVAILABILITY_MASK,
-            ]),
+            bytes([POS_READ_DTC, DTC_STATUS_AVAILABILITY_MASK]),
         )
 
     def test_all_clear_keeps_09_status_zero_but_severity_intact(self) -> None:
