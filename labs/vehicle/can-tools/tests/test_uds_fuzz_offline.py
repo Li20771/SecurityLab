@@ -43,13 +43,17 @@ for _p in (_TOOLS_DIR, _FUZZ_DIR):
         sys.path.insert(0, _p)
 
 import case_schema as cs  # noqa: E402
+import isotp_corpus  # noqa: E402
 import isotp_mutators  # noqa: E402
 import uds_corpus  # noqa: E402
 import uds_fuzz  # noqa: E402
 import uds_mutators as um  # noqa: E402
 
-#: v1 OUT 的 SID（Frozen Contract §2）——绝不应出现在 corpus 里
-OUT_SIDS = (0x34, 0x35, 0x36)
+#: 仍然 OUT 的 SID（OQ3 后 0x34/0x35 已转为 IN，只剩 0x36 standalone）
+OUT_SIDS = (0x36,)
+
+#: v1 envelope（R5-b：v1 seed 的长度信封，在 genesis 固定，不随 OQ3 改变）
+V1_ENVELOPE = uds_corpus.MAX_UDS_REQUEST_LEN
 
 #: 允许的 action 类型（**不新增**）
 KNOWN_ACTION_TYPES = {"inject", "wait", "await_fc"}
@@ -68,6 +72,28 @@ class UdsFuzzOfflineTestCase(unittest.TestCase):
 
     def spec(self, dimension, params, label="x"):
         return {"dimension": dimension, "params": params, "label": label}
+
+    def _payload_of(self, frames) -> bytes:
+        """
+        从 frames 还原 canonical payload（仅用于测试断言）。
+
+        size-class aware：SF 取 PCI 低半字节的声明长度；MF 取 FF 的 12-bit
+        声明长度，拼接 FF + 全部 CF 的 payload 后按声明长度截断。
+        定义在**基类**：Layer A（长度不变量）与 Layer C（准入）的断言共用它。
+        """
+        first = bytes(frames[0]["data"])
+
+        if (first[0] & 0xF0) == isotp_corpus.PCI_SF:
+            return first[1:1 + (first[0] & 0x0F)]
+
+        declared = ((first[0] & 0x0F) << 8) | first[1]
+        out = bytearray(first[2:])
+
+        for action in frames[1:]:
+            data = bytes(action["data"])
+            out += data[1:]
+
+        return bytes(out[:declared])
 
 
 # ----------------------------------------------------------------------
@@ -91,18 +117,47 @@ class TestUdsCorpus(UdsFuzzOfflineTestCase):
             with self.subTest(sid=f"0x{sid:02X}"):
                 self.assertNotIn(sid, services)
 
-    def test_all_seeds_within_single_frame_limit(self) -> None:
+    def test_all_seeds_within_their_own_envelope(self) -> None:
+        """
+        每个 seed 都必须落在**它自己的** envelope 内（R5-b）。
+
+        v1 seed 仍然被 7 字节 envelope 死死限制住——OQ3 的 128 **不得**
+        放宽任何 v1 seed。
+        """
         for seed in uds_corpus.CORPUS:
+            envelope = seed.get("envelope", V1_ENVELOPE)
+
             with self.subTest(seed=seed["seed_id"]):
-                self.assertLessEqual(len(seed["uds_request"]),
-                                     uds_corpus.MAX_UDS_REQUEST_LEN)
+                self.assertLessEqual(len(seed["uds_request"]), envelope)
+
+                if envelope == V1_ENVELOPE:
+                    self.assertLessEqual(len(seed["uds_request"]),
+                                         uds_corpus.MAX_UDS_REQUEST_LEN)
 
     def test_all_seeds_are_non_empty_and_encodable(self) -> None:
         for seed in uds_corpus.CORPUS:
+            length = len(seed["uds_request"])
+            envelope = seed.get("envelope", V1_ENVELOPE)
+
             with self.subTest(seed=seed["seed_id"]):
                 self.assertTrue(seed["uds_request"])
+
                 frames = self.encode(seed["uds_request"])
-                self.assertEqual(len(frames), 1)
+
+                # size class 由**长度**决定，不由 envelope 决定
+                if length <= uds_corpus.MAX_UDS_REQUEST_LEN:
+                    self.assertEqual(len(frames), 1)
+                else:
+                    self.assertEqual(
+                        len(frames),
+                        1 + uds_corpus.framing_cf_count(length),
+                    )
+
+                self.assertTrue(
+                    uds_corpus.framing_invariant_ok(seed["uds_request"], frames))
+
+                if envelope == V1_ENVELOPE:
+                    self.assertEqual(len(frames), 1, "v1 seed 必须仍是单帧")
 
     def test_seed_ids_are_unique_and_stable(self) -> None:
         ids = [seed["seed_id"] for seed in uds_corpus.CORPUS]
@@ -118,22 +173,46 @@ class TestUdsCorpus(UdsFuzzOfflineTestCase):
         self.assertEqual(seed["uds_request"], bytes([0x3E, 0x80]))
         self.assertEqual(seed["service"], 0x3E)
 
-    def test_file_transfer_seeds_cover_modes_02_04_05(self) -> None:
+    def test_file_transfer_seeds_cover_all_in_modes(self) -> None:
+        """OQ3 后 0x38 五个 mode 全部 IN（01/03 需要 MF 才可能达到）。"""
         modes = {
             seed["uds_request"][1]
             for seed in uds_corpus.CORPUS
             if seed["service"] == 0x38
         }
 
-        self.assertEqual(modes, {0x02, 0x04, 0x05})
+        self.assertEqual(modes, {0x01, 0x02, 0x03, 0x04, 0x05})
 
-    def test_no_file_transfer_seed_for_out_modes(self) -> None:
+    def test_mf_seeds_carry_the_mf_envelope(self) -> None:
+        """MF seed 必须 (a) 声明 128 envelope 且 (b) 长度 ≥ 8（否则 MF 无意义）。"""
+        mf_seeds = [s for s in uds_corpus.CORPUS
+                    if s.get("envelope") == uds_corpus.MAX_MF_UDS_REQUEST_LEN]
+
+        self.assertTrue(mf_seeds, "应当存在 MF seeds")
+
+        for seed in mf_seeds:
+            with self.subTest(seed=seed["seed_id"]):
+                self.assertGreaterEqual(len(seed["uds_request"]), 8)
+                self.assertLessEqual(len(seed["uds_request"]),
+                                     uds_corpus.MAX_MF_UDS_REQUEST_LEN)
+
+    def test_mf_seed_service_coverage(self) -> None:
+        """Frozen Contract §13 的 MF scope：0x22 / 0x2E / 0x34 / 0x35 / 0x38。"""
+        mf_services = {
+            s["service"] for s in uds_corpus.CORPUS
+            if s.get("envelope") == uds_corpus.MAX_MF_UDS_REQUEST_LEN
+        }
+
+        self.assertEqual(mf_services, {0x22, 0x2E, 0x34, 0x35, 0x38})
+
+    def test_no_mf_seed_for_out_of_scope_services(self) -> None:
+        """0x36 / 0x37 standalone 与 stateful 用的 0x27 都不得有 MF seed。"""
         for seed in uds_corpus.CORPUS:
-            if seed["service"] != 0x38:
+            if seed.get("envelope") != uds_corpus.MAX_MF_UDS_REQUEST_LEN:
                 continue
 
             with self.subTest(seed=seed["seed_id"]):
-                self.assertNotIn(seed["uds_request"][1], (0x01, 0x03))
+                self.assertNotIn(seed["service"], (0x27, 0x36, 0x37))
 
 
 # ----------------------------------------------------------------------
@@ -147,8 +226,32 @@ class TestUdsEncoder(UdsFuzzOfflineTestCase):
         with self.assertRaises(uds_corpus.UdsEncodeError):
             self.encode(b"")
 
-    def test_rejects_over_seven(self) -> None:
-        for length in (8, 9, 16):
+    def test_size_class_boundaries(self) -> None:
+        """
+        OQ3 §3 size class（**取代** v1 的"L>7 必须 reject"）：
+
+            1..7             → 恰好一个 SF（v1 路径，R5-c 冻结）
+            8..128           → canonical FF + CF
+            > MAX_MF_UDS_REQUEST_LEN → reject（**不生成、不截断**）
+        """
+        # ---- 8..envelope：合法，且必须是 canonical MF ----
+        for length in (8, 9, 16, 122, uds_corpus.MAX_MF_UDS_REQUEST_LEN):
+            request = bytes([0x22]) + bytes(length - 1)
+
+            with self.subTest(length=length):
+                frames = self.encode(request)
+
+                self.assertGreater(len(frames), 1, "8 字节起必须分帧为 MF")
+                self.assertEqual(frames[0]["data"][0] & 0xF0,
+                                 isotp_corpus.PCI_FF, "首帧必须是 FF")
+                self.assertLessEqual(len(frames),
+                                     uds_corpus.MAX_FRAMES_PER_CASE)
+                self.assertTrue(
+                    uds_corpus.framing_invariant_ok(request, frames),
+                    "合法长度必须产出 canonical 分帧")
+
+        # ---- 超出 envelope：必须 reject（不是截断）----
+        for length in (uds_corpus.MAX_MF_UDS_REQUEST_LEN + 1, 200):
             with self.subTest(length=length):
                 with self.assertRaises(uds_corpus.UdsEncodeError):
                     self.encode(bytes([0x22]) + bytes(length - 1))
@@ -170,16 +273,46 @@ class TestUdsEncoder(UdsFuzzOfflineTestCase):
                 self.assertEqual(len(frame) - 1, length)
 
     def test_payload_roundtrip(self) -> None:
-        """帧 → payload 还原必须与原 UDS 请求逐字节相同。"""
-        for seed in uds_corpus.CORPUS:
-            with self.subTest(seed=seed["seed_id"]):
-                frame = self.encode(seed["uds_request"])[0]["data"]
-                declared = frame[0] & 0x0F
+        """
+        帧 → payload 还原必须与原 UDS 请求逐字节相同（**size-class aware**）。
 
-                self.assertEqual(frame[1:1 + declared], seed["uds_request"])
+        v1 的写法假定 ``frames[0]`` 永远是 SF、并把 PCI 低半字节当长度用；
+        对 MF seed 而言 ``frames[0]`` 是 FF，其低半字节只是 12-bit 长度的
+        高位——该假定已被 OQ3 supersede。
+
+        SF：帧数 == 1，PCI 低半字节 == payload 长度。
+        MF：帧数 > 1，FF 声明的 12-bit 长度 == canonical payload 长度。
+        """
+        for seed in uds_corpus.CORPUS:
+            request = seed["uds_request"]
+
+            with self.subTest(seed=seed["seed_id"]):
+                frames = self.encode(request)
+                first = bytes(frames[0]["data"])
+
+                if len(request) <= uds_corpus.MAX_UDS_REQUEST_LEN:
+                    self.assertEqual(len(frames), 1, "v1 长度必须恰好一个 SF")
+                    self.assertEqual(first[0] & 0xF0, isotp_corpus.PCI_SF)
+                    self.assertEqual(first[0] & 0x0F, len(request))
+                else:
+                    self.assertGreater(len(frames), 1, "MF 必须多于一个帧")
+                    self.assertEqual(first[0] & 0xF0, isotp_corpus.PCI_FF)
+
+                    declared = ((first[0] & 0x0F) << 8) | first[1]
+
+                    self.assertEqual(
+                        declared, len(request),
+                        "FF 声明长度必须等于 canonical payload 长度")
+
+                # 还原（SF 与 MF 共用同一路径）必须逐字节相同
+                self.assertEqual(self._payload_of(frames), request)
 
     def test_sf_invariant_helper_accepts_good_frames(self) -> None:
+        """``sf_invariant_ok`` 只对 **SF 分帧**成立：只对 v1 envelope 的 seed 断言。"""
         for seed in uds_corpus.CORPUS:
+            if seed.get("envelope") != V1_ENVELOPE:
+                continue
+
             with self.subTest(seed=seed["seed_id"]):
                 frame = self.encode(seed["uds_request"])[0]["data"]
 
@@ -658,11 +791,18 @@ class TestUdsNoOpRejection(UdsFuzzOfflineTestCase):
 
 class TestUdsLengthInvariant(UdsFuzzOfflineTestCase):
 
-    def test_every_generated_request_is_within_limit(self) -> None:
-        """穷举所有 seed × 所有 spec：生成结果一律 ≤7。"""
+    def test_every_generated_request_is_within_its_envelope(self) -> None:
+        """
+        穷举所有 seed × 所有 payload 级 spec：生成结果一律 ≤ **该 seed 的** envelope。
+
+        v1 seed（envelope 7）单独再断言一次 ≤7 —— 这正是 R5-b 的可执行形式。
+        """
         checked = 0
+        v1_checked = 0
 
         for seed in uds_corpus.CORPUS:
+            envelope = seed.get("envelope", V1_ENVELOPE)
+
             for spec in um.mutation_specs_for_seed(seed):
                 mutated, reason = um.apply_mutation(seed, spec)
 
@@ -672,21 +812,46 @@ class TestUdsLengthInvariant(UdsFuzzOfflineTestCase):
                 checked += 1
 
                 with self.subTest(seed=seed["seed_id"], label=spec["label"]):
-                    self.assertLessEqual(len(mutated),
-                                         uds_corpus.MAX_UDS_REQUEST_LEN)
+                    self.assertLessEqual(len(mutated), envelope)
+
+                    if envelope == V1_ENVELOPE:
+                        v1_checked += 1
+                        self.assertLessEqual(
+                            len(mutated), uds_corpus.MAX_UDS_REQUEST_LEN)
 
         self.assertGreater(checked, 500, "覆盖率过低，测试可能没跑全")
+        self.assertGreater(v1_checked, 500, "v1 seed 覆盖过低")
 
-    def test_every_generated_case_satisfies_sf_invariant(self) -> None:
+    def test_every_canonical_mutation_result_is_framing_consistent(self) -> None:
+        """
+        Layer A：**非 mf_*** 的变异结果必须满足 canonical framing 判据。
+
+        mf_* 是 Layer B 允许故意破坏 framing 的唯一手段，因此被刻意排除。
+        """
         candidates, _ = uds_fuzz.build_candidates()
 
         self.assertTrue(candidates)
 
+        canonical = 0
+
         for candidate in candidates:
-            frame = candidate["case"]["frames"][0]["data"]
+            op = (candidate["case"]["mutation"].get("params") or {}).get("op")
+
+            if op in um.MF_OPS:
+                continue
+
+            canonical += 1
 
             with self.subTest(case=candidate["case"]["case_id"]):
-                self.assertTrue(uds_corpus.sf_invariant_ok(frame))
+                # 从 frames 反推 payload 长度：SF 声明值 / FF 声明值
+                self.assertTrue(
+                    uds_corpus.framing_invariant_ok(
+                        self._payload_of(candidate["case"]["frames"]),
+                        candidate["case"]["frames"],
+                    )
+                )
+
+        self.assertGreater(canonical, 500)
 
 
 # ----------------------------------------------------------------------
@@ -721,10 +886,19 @@ class TestUdsCaseSchema(UdsFuzzOfflineTestCase):
                              cs.SCHEMA_VERSION)
             self.assertEqual(cs.SCHEMA_VERSION, 1)
 
-    def test_cases_are_single_frame(self) -> None:
+    def test_cases_are_size_class_consistent(self) -> None:
+        """v1 seed 的 case 仍是单帧；MF seed 的 case ≤ MAX_FRAMES_PER_CASE。"""
         for candidate in self.candidates:
+            frames = candidate["case"]["frames"]
+
             with self.subTest(case=candidate["case"]["case_id"]):
-                self.assertEqual(len(candidate["case"]["frames"]), 1)
+                self.assertLessEqual(len(frames),
+                                     uds_corpus.MAX_FRAMES_PER_CASE)
+
+                seed = uds_corpus.seed_by_id(candidate["seed_id"])
+
+                if seed.get("envelope") == V1_ENVELOPE:
+                    self.assertEqual(len(frames), 1, "v1 seed 必须仍是单帧")
 
     def test_canonical_identity_is_stable(self) -> None:
         for candidate in self.candidates[:20]:
@@ -911,12 +1085,63 @@ class TestUdsMutationGuards(UdsFuzzOfflineTestCase):
         )
 
     def test_guard_encoder_refuses_to_emit_corrupted_frames(self) -> None:
-        """Guard 1b：编码器自己不会产出违反不变量的帧。"""
-        candidates, _ = uds_fuzz.build_candidates()
-        bad = [c["case"]["case_id"] for c in candidates
-               if not uds_corpus.sf_invariant_ok(c["case"]["frames"][0]["data"])]
+        """
+        Guard 1b：**生产 encoder 不会自行产出违反 framing 不变量**的帧。
 
-        self.assertEqual(bad, [])
+        按层区分（Frozen Contract）——不能对每个 candidate 一律套 SF 判据：
+
+            Layer A canonical（seed 编码 / 非 mf_* 变异重编码）
+                → **必须**满足 framing_invariant_ok
+            Layer B mf_*（故意破坏 transport framing）
+                → 刻意排除：它们违反 framing 是**预期行为**，不是损坏
+
+        v1 的写法对**所有** candidate 断言 ``sf_invariant_ok(frames[0])``，
+        于是把每个合法 MF case（首帧是 FF，本就不是 SF）误判为损坏。
+        """
+        # ---- (1) 编码器对其**自身**的 canonical 输出负责 ----
+        for seed in uds_corpus.CORPUS:
+            request = seed["uds_request"]
+            frames = uds_corpus.encode_uds_request(request)
+
+            with self.subTest(seed=seed["seed_id"]):
+                self.assertTrue(
+                    uds_corpus.framing_invariant_ok(request, frames),
+                    "encoder 对 canonical 输入的输出必须满足 framing 不变量")
+
+                if len(request) <= uds_corpus.MAX_UDS_REQUEST_LEN:
+                    self.assertEqual(len(frames), 1, "v1 seed 必须仍是单帧")
+                else:
+                    self.assertGreater(len(frames), 1, "MF seed 必须分帧")
+
+        # ---- (2) 非 mf_* 变异的结果仍须是 canonical 分帧 ----
+        candidates, _ = uds_fuzz.build_candidates()
+
+        canonical = 0
+        malformed = 0
+
+        for candidate in candidates:
+            case = candidate["case"]
+
+            if (case["mutation"].get("params") or {}).get("op") in um.MF_OPS:
+                malformed += 1
+                continue
+
+            canonical += 1
+
+            with self.subTest(case=case["case_id"]):
+                frames = case["frames"]
+
+                self.assertTrue(
+                    uds_corpus.framing_invariant_ok(
+                        self._payload_of(frames), frames),
+                    "非 mf_* 的 case 必须是 canonical 分帧")
+
+                self.assertLessEqual(len(frames),
+                                     uds_corpus.MAX_FRAMES_PER_CASE)
+
+        # 两侧都必须非空，否则本 guard 是空转
+        self.assertGreater(canonical, 500, "canonical 覆盖过低，guard 失去意义")
+        self.assertGreater(malformed, 0, "mf_* 应存在，排除逻辑不得为空")
 
     def test_guard_noop_mutation_is_detected(self) -> None:
         """Guard 2：变异产出与 seed 相同的 frames → 必须被拒。"""
@@ -936,6 +1161,547 @@ class TestUdsMutationGuards(UdsFuzzOfflineTestCase):
 
         self.assertEqual(isotp_mutators.frames_fingerprint(seed_frames),
                          isotp_mutators.frames_fingerprint(mutated_frames))
+
+
+# ======================================================================
+# OQ3 Phase 1 —— multi-frame
+# ======================================================================
+
+
+def _mf_payload(length: int) -> bytes:
+    """构造长度为 ``length``、内容确定的 payload（用于编码器测试）。"""
+    return bytes([0x22]) + bytes((index * 7 + 3) & 0xFF
+                                for index in range(length - 1))
+
+
+def _synthetic_mf_seed(length: int) -> dict:
+    """构造一个测试用的 MF seed（不入 corpus，仅用于走 mutator 路径）。"""
+    return {
+        "seed_id": f"synthetic-mf-{length}",
+        "uds_request": _mf_payload(length),
+        "service": 0x22,
+        "control_byte": None,
+        "category": "test",
+        "note": "synthetic (test-only)",
+        "envelope": uds_corpus.MAX_MF_UDS_REQUEST_LEN,
+        "reference_only": False,
+    }
+
+
+class TestUdsMfEncoder(UdsFuzzOfflineTestCase):
+    """OQ3 Phase 1-A：size-class aware encoder 的精确输出。"""
+
+    def test_length_table(self) -> None:
+        """L → (帧数, FF 声明长度, CF 数) 全表。"""
+        table = (
+            (1, 1, None, 0),
+            (7, 1, None, 0),
+            (8, 2, 8, 1),
+            (13, 2, 13, 1),
+            (14, 3, 14, 2),
+            (15, 3, 15, 2),
+            (78, 12, 78, 11),
+            (128, 19, 128, 18),
+        )
+
+        for length, frames_expected, declared_expected, cf_expected in table:
+            with self.subTest(length=length):
+                payload = _mf_payload(length)
+                frames = self.encode(payload)
+
+                self.assertEqual(len(frames), frames_expected)
+                self.assertEqual(len(frames), 1 + cf_expected)
+                self.assertEqual(uds_corpus.framing_cf_count(length), cf_expected)
+
+                first = bytes(frames[0]["data"])
+
+                if declared_expected is None:
+                    self.assertEqual(first[0] & 0xF0, isotp_corpus.PCI_SF)
+                    self.assertEqual(first[0] & 0x0F, length)
+                else:
+                    self.assertEqual((first[0] & 0xF0) >> 4, 1, "必须是 FF")
+                    self.assertEqual(
+                        ((first[0] & 0x0F) << 8) | first[1], declared_expected)
+                    self.assertEqual(len(first), 2 + 6, "FF 携带 6 payload 字节")
+                    self.assertEqual(first[2:], payload[:6])
+
+    def test_sf_bytes_unchanged_for_v1_range(self) -> None:
+        """L ≤ 7 走 v1 字面路径：一个 inject、单帧、payload 逐字节相同。"""
+        for length in (1, 2, 7):
+            with self.subTest(length=length):
+                payload = _mf_payload(length)
+                frames = self.encode(payload)
+
+                self.assertEqual(len(frames), 1)
+                self.assertEqual(frames[0]["type"], "inject")
+                self.assertEqual(frames[0]["id"], isotp_corpus.INJECT_ID)
+                self.assertEqual(
+                    frames[0]["data"],
+                    isotp_corpus.sf(payload),
+                    "SF 必须与 v1 编码逐字节相同",
+                )
+
+    def test_cf_payload_and_sn_sequence(self) -> None:
+        payload = _mf_payload(14)
+        frames = self.encode(payload)
+        cf1 = bytes(frames[1]["data"])
+        cf2 = bytes(frames[2]["data"])
+
+        self.assertEqual(cf1[0] & 0xF0, isotp_corpus.PCI_CF)
+        self.assertEqual(cf1[0] & 0x0F, 1)
+        self.assertEqual(cf1[1:], payload[6:13])
+        self.assertEqual(cf2[0] & 0x0F, 2)
+        self.assertEqual(cf2[1:], payload[13:14], "末块可以短于 7 字节")
+        self.assertEqual(len(cf2), 1 + 1)
+
+    def test_sn_wrap_at_sixteen(self) -> None:
+        """CF #16 的 SN 必须是 0，CF #17 回到 1（ISO-TP SN 回绕）。"""
+        frames = self.encode(_mf_payload(128))
+        cfs = frames[1:]
+
+        self.assertEqual(len(cfs), 18)
+        self.assertEqual([bytes(c["data"])[0] & 0x0F for c in cfs[:3]], [1, 2, 3])
+        self.assertEqual(bytes(cfs[14]["data"])[0] & 0x0F, 15, "CF #15 → SN 15")
+        self.assertEqual(bytes(cfs[15]["data"])[0] & 0x0F, 0, "CF #16 → SN 0")
+        self.assertEqual(bytes(cfs[16]["data"])[0] & 0x0F, 1, "CF #17 → SN 1")
+        self.assertEqual(bytes(cfs[17]["data"])[0] & 0x0F, 2, "CF #18 → SN 2")
+
+    def test_max_frames_per_case_is_exact_at_the_envelope(self) -> None:
+        frames = self.encode(_mf_payload(uds_corpus.MAX_MF_UDS_REQUEST_LEN))
+
+        self.assertEqual(len(frames), uds_corpus.MAX_FRAMES_PER_CASE)
+        self.assertEqual(uds_corpus.MAX_FRAMES_PER_CASE, 19)
+
+    def test_rejects_empty_and_over_envelope(self) -> None:
+        with self.assertRaises(uds_corpus.UdsEncodeError):
+            self.encode(b"")
+
+        for length in (uds_corpus.MAX_MF_UDS_REQUEST_LEN + 1, 256, 4095):
+            with self.subTest(length=length):
+                with self.assertRaises(uds_corpus.UdsEncodeError):
+                    self.encode(_mf_payload(length))
+
+    def test_reject_is_not_truncation(self) -> None:
+        """129 字节必须**抛错**，而不是被截断成 128。"""
+        with self.assertRaises(uds_corpus.UdsEncodeError):
+            uds_corpus.encode_uds_request(_mf_payload(129))
+
+    def test_canonical_output_always_passes_framing_invariant(self) -> None:
+        for length in (1, 7, 8, 13, 14, 78, 128):
+            with self.subTest(length=length):
+                payload = _mf_payload(length)
+
+                self.assertTrue(
+                    uds_corpus.framing_invariant_ok(payload, self.encode(payload)))
+
+
+class TestUdsMfFramingInvariant(UdsFuzzOfflineTestCase):
+    """Layer A 判据必须能鉴别被破坏的分帧。"""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.payload = _mf_payload(14)
+        self.frames = self.encode(self.payload)
+
+    def test_accepts_canonical(self) -> None:
+        self.assertTrue(
+            uds_corpus.framing_invariant_ok(self.payload, self.frames))
+
+    def test_rejects_wrong_declared_length(self) -> None:
+        tampered = [dict(a) for a in self.frames]
+        first = bytes(tampered[0]["data"])
+        tampered[0] = dict(tampered[0], data=bytes([0x10, 99]) + first[2:])
+
+        self.assertFalse(
+            uds_corpus.framing_invariant_ok(self.payload, tampered))
+
+    def test_rejects_missing_cf(self) -> None:
+        self.assertFalse(
+            uds_corpus.framing_invariant_ok(self.payload, self.frames[:-1]))
+
+    def test_rejects_wrong_sn(self) -> None:
+        tampered = [dict(a) for a in self.frames]
+        cf = bytes(tampered[2]["data"])
+        tampered[2] = dict(tampered[2], data=bytes([(cf[0] & 0xF0) | 7]) + cf[1:])
+
+        self.assertFalse(
+            uds_corpus.framing_invariant_ok(self.payload, tampered))
+
+    def test_rejects_wrong_payload_byte(self) -> None:
+        tampered = [dict(a) for a in self.frames]
+        cf = bytes(tampered[1]["data"])
+        tampered[1] = dict(tampered[1], data=cf[:1] + bytes([cf[1] ^ 0xFF]) + cf[2:])
+
+        self.assertFalse(
+            uds_corpus.framing_invariant_ok(self.payload, tampered))
+
+
+class TestUdsMfMutations(UdsFuzzOfflineTestCase):
+    """OQ3 Phase 1-D：M1..M7 的**精确**预期偏离。"""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.seed = uds_corpus.seed_by_id("uds-mf-34-download")   # L=8, C=1
+        self.length = len(self.seed["uds_request"])
+        self.canonical = self.encode(self.seed["uds_request"])
+
+    def frames_for(self, op, **params):
+        spec = {"dimension": um.DIM_LEN, "params": {"op": op, **params},
+                "label": f"test-{op}"}
+        frames, reason = um.build_mutated_frames(self.seed, spec)
+
+        self.assertIsNone(reason, f"{op} 应当可生成：{reason}")
+
+        return frames
+
+    def declared_of(self, frames) -> int:
+        first = bytes(frames[0]["data"])
+
+        return ((first[0] & 0x0F) << 8) | first[1]
+
+    def test_m1_declared_zero(self) -> None:
+        frames = self.frames_for(um.MF_OP_FF_DECLARED_ZERO)
+
+        self.assertEqual(self.declared_of(frames), 0)
+        self.assertEqual(len(frames), len(self.canonical), "帧数不变")
+        self.assertEqual(bytes(frames[0]["data"])[2:],
+                         bytes(self.canonical[0]["data"])[2:], "payload 不变")
+        self.assertEqual(frames[1:], self.canonical[1:], "CF 逐字节不变")
+
+    def test_m2_declared_minus_one(self) -> None:
+        frames = self.frames_for(um.MF_OP_FF_DECLARED_MINUS_ONE)
+
+        self.assertEqual(self.declared_of(frames), self.length - 1)
+        self.assertEqual(frames[1:], self.canonical[1:])
+
+    def test_m3_declared_plus_one(self) -> None:
+        frames = self.frames_for(um.MF_OP_FF_DECLARED_PLUS_ONE)
+
+        self.assertEqual(self.declared_of(frames), self.length + 1)
+        self.assertEqual(len(frames), len(self.canonical), "帧数不变")
+        self.assertEqual(bytes(frames[0]["data"])[2:],
+                         bytes(self.canonical[0]["data"])[2:], "payload 不变")
+        self.assertEqual(frames[1:], self.canonical[1:])
+
+    def test_m4_declared_max(self) -> None:
+        frames = self.frames_for(um.MF_OP_FF_DECLARED_MAX)
+
+        self.assertEqual(self.declared_of(frames), um.FF_DECLARED_MAX)
+        self.assertEqual(self.declared_of(frames), 4095)
+
+    def test_m5_drop_last(self) -> None:
+        frames = self.frames_for(um.MF_OP_CF_DROP_LAST)
+
+        self.assertEqual(len(frames), len(self.canonical) - 1, "帧数 -1")
+        self.assertEqual(frames[0], self.canonical[0], "FF 逐字节不变")
+        self.assertEqual(frames[1:], self.canonical[1:-1], "其余 CF 逐字节不变")
+        self.assertEqual(self.declared_of(frames), self.length,
+                         "FF 声明仍是 L")
+
+    def test_m6_sn_zero_exact_target(self) -> None:
+        frames = self.frames_for(um.MF_OP_CF_SN_ZERO, cf=1)
+
+        self.assertEqual(bytes(frames[1]["data"])[0] & 0x0F, 0, "CF #1 → SN 0")
+        self.assertEqual(bytes(frames[1]["data"])[1:],
+                         bytes(self.canonical[1]["data"])[1:], "CF payload 不变")
+        self.assertEqual(frames[0], self.canonical[0], "FF 不变")
+
+    def test_m7_sn_off_by_one_exact_target(self) -> None:
+        frames = self.frames_for(um.MF_OP_CF_SN_OFF_BY_ONE, cf=1)
+
+        self.assertEqual(bytes(frames[1]["data"])[0] & 0x0F, 2,
+                         "CF #1: SN 1 → 2")
+        self.assertEqual(bytes(frames[1]["data"])[1:],
+                         bytes(self.canonical[1]["data"])[1:])
+
+    def test_all_ops_are_no_op_free_when_generated(self) -> None:
+        """每一个生成出来的 mf_* spec 都必须改变 frames_fingerprint。"""
+        canonical_fp = isotp_mutators.frames_fingerprint(self.canonical)
+        checked = 0
+
+        for spec in um.mutation_specs_for_seed(self.seed):
+            if spec["params"].get("op") not in um.MF_OPS:
+                continue
+
+            frames, reason = um.build_mutated_frames(self.seed, spec)
+
+            self.assertIsNone(reason, f"{spec['label']} 应当可生成：{reason}")
+            self.assertNotEqual(
+                isotp_mutators.frames_fingerprint(frames), canonical_fp,
+                f"{spec['label']} 是 no-op",
+            )
+            checked += 1
+
+        self.assertGreater(checked, 0)
+
+    def test_apply_mutation_refuses_mf_ops(self) -> None:
+        """payload 级 API 必须显式拒绝 mf_* op（避免误读为 no-op）。"""
+        mutated, reason = um.apply_mutation(
+            self.seed,
+            {"dimension": um.DIM_LEN,
+             "params": {"op": um.MF_OP_CF_DROP_LAST}, "label": "x"})
+
+        self.assertIsNone(mutated)
+        self.assertIn("build_mutated_frames", reason)
+
+
+class TestUdsMfSnTargets(UdsFuzzOfflineTestCase):
+    """M6/M7 的 target CF 选择规则（Frozen Contract "SN target selection"）。"""
+
+    def test_one_spec_per_applicable_cf_ascending(self) -> None:
+        seed = uds_corpus.seed_by_id("uds-mf-2e-16b-data")   # L=19 → C=2
+        cf_count = uds_corpus.framing_cf_count(len(seed["uds_request"]))
+
+        self.assertEqual(cf_count, 2)
+
+        specs = [s for s in um.mutation_specs_for_seed(seed)
+                 if s["params"].get("op") == um.MF_OP_CF_SN_OFF_BY_ONE]
+
+        self.assertEqual([s["params"]["cf"] for s in specs], [1, 2],
+                         "按 CF index 升序，每个 index 一条")
+
+    def test_sn_zero_excludes_cf_with_sn_zero(self) -> None:
+        """
+        **M6 + CF#16 必须是 no-op，因此不得生成 spec。**
+
+        CF #16 的规范 SN 就是 0；本测试用 128 字节 payload（C=18）覆盖到它。
+        """
+        length = uds_corpus.MAX_MF_UDS_REQUEST_LEN
+        seed = _synthetic_mf_seed(length)
+        cf_count = uds_corpus.framing_cf_count(length)
+
+        self.assertEqual(cf_count, 18)
+        self.assertEqual(uds_corpus.cf_sequence_number(16), 0, "CF#16 规范 SN 是 0")
+
+        specs = [s for s in um.mutation_specs_for_seed(seed)
+                 if s["params"].get("op") == um.MF_OP_CF_SN_ZERO]
+        targets = [s["params"]["cf"] for s in specs]
+
+        self.assertNotIn(16, targets, "CF#16 会产生 no-op，必须在生成期排除")
+        self.assertEqual(targets, [j for j in range(1, cf_count + 1) if j % 16 != 0])
+        self.assertEqual(len(targets), cf_count - 1)
+
+        # 被排除的那个索引即便手工构造也必须被 apply 期拒绝
+        frames, reason = um.build_mutated_frames(
+            seed, {"dimension": um.DIM_LEN,
+                   "params": {"op": um.MF_OP_CF_SN_ZERO, "cf": 16},
+                   "label": "hand"})
+
+        self.assertIsNone(frames)
+        self.assertIn("no-op", reason)
+
+    def test_target_index_reaches_provenance(self) -> None:
+        seed = uds_corpus.seed_by_id("uds-mf-2e-16b-data")
+        specs = [s for s in um.mutation_specs_for_seed(seed)
+                 if s["params"].get("op") in um.MF_OPS and "cf" in s["params"]]
+
+        self.assertTrue(specs)
+
+        case_ids = []
+        for spec in specs:
+            self.assertIn(f"@cf{spec['params']['cf']}", spec["label"])
+            case_ids.append(cs.make_case_id(seed["seed_id"], spec["dimension"],
+                                            spec["label"]))
+
+        self.assertEqual(len(case_ids), len(set(case_ids)),
+                         "每个 (op, target) 必须给出唯一 case_id")
+
+    def test_target_selection_is_deterministic(self) -> None:
+        """same seed + same spec ⇒ same target CF ⇒ same frames。"""
+        seed = uds_corpus.seed_by_id("uds-mf-2e-16b-data")
+
+        for spec in um.mutation_specs_for_seed(seed):
+            if spec["params"].get("op") not in um.MF_OPS:
+                continue
+
+            first, _ = um.build_mutated_frames(seed, spec)
+            second, _ = um.build_mutated_frames(seed, spec)
+
+            with self.subTest(label=spec["label"]):
+                self.assertEqual(first, second)
+
+
+class TestUdsMfAdmission(UdsFuzzOfflineTestCase):
+    """Layer C：malformed-transport case 仍必须 schema-valid / 可序列化 / 可指纹化。"""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.candidates, _ = uds_fuzz.build_candidates()
+        self.mf_cases = [c for c in self.candidates
+                         if (c["case"]["mutation"].get("params") or {})
+                         .get("op") in um.MF_OPS]
+
+    def test_mf_cases_exist(self) -> None:
+        self.assertTrue(self.mf_cases, "应当生成 mf_* cases")
+
+    def test_every_case_is_schema_valid(self) -> None:
+        for candidate in self.candidates:
+            with self.subTest(case=candidate["case"]["case_id"]):
+                cs.validate_case(candidate["case"])
+
+    def test_every_case_is_fingerprintable_and_serialisable(self) -> None:
+        for candidate in self.candidates:
+            case = candidate["case"]
+            restored = cs.from_jsonable(cs.to_jsonable(case))
+
+            with self.subTest(case=case["case_id"]):
+                self.assertTrue(isotp_mutators.frames_fingerprint(case["frames"]))
+                self.assertEqual(cs.canonical_identity(restored),
+                                 cs.canonical_identity(case))
+
+    def test_every_case_within_frame_bound(self) -> None:
+        for candidate in self.candidates:
+            with self.subTest(case=candidate["case"]["case_id"]):
+                self.assertLessEqual(len(candidate["case"]["frames"]),
+                                     uds_corpus.MAX_FRAMES_PER_CASE)
+
+    def test_malformed_transport_cases_are_admitted(self) -> None:
+        """malformed framing **不**要求 Layer A 一致——它们必须被准入。"""
+        for candidate in self.mf_cases:
+            with self.subTest(case=candidate["case"]["case_id"]):
+                payload = self._payload_of(candidate["case"]["frames"])
+
+                self.assertFalse(
+                    uds_corpus.framing_invariant_ok(
+                        payload, candidate["case"]["frames"]),
+                    "mf_* case 本应破坏 framing",
+                )
+
+    def test_drop_last_case_has_one_frame_fewer(self) -> None:
+        for candidate in self.mf_cases:
+            if (candidate["case"]["mutation"]["params"] or {}).get("op") != \
+                    um.MF_OP_CF_DROP_LAST:
+                continue
+
+            seed = uds_corpus.seed_by_id(candidate["seed_id"])
+            canonical = self.encode(seed["uds_request"])
+
+            with self.subTest(case=candidate["case"]["case_id"]):
+                self.assertEqual(len(candidate["case"]["frames"]),
+                                 len(canonical) - 1)
+
+
+class TestUdsV1GoldenCompatibility(UdsFuzzOfflineTestCase):
+    """
+    R5-a / R5-f：**v1 seed 生成的 frames / fingerprint 必须逐字节不变**。
+
+    两个 digest 是在 OQ3 改动**之前**于冻结基线（main = 30d2ca6）上采集的；
+    本测试把它们冻结成常量，因此任何对 v1 行为的偏移都会让本测试失败。
+    """
+
+    #: OQ3 前：全部 947 个 v1 case 的 (case_id, frames_fingerprint) 规范串摘要
+    V1_GOLDEN_DIGEST = (
+        "33030de782f28b4fde8cab4469a65edc1e42b56f051be57250ca73dd65f9b464"
+    )
+
+    #: OQ3 前：17 个 v1 seed_id（按 corpus 顺序）的摘要
+    V1_SEED_IDS_DIGEST = (
+        "5e1ac3419c78bd804bf413c14acb65c3644f29ec6b68ba5ce8ef51ef964cf993"
+    )
+
+    def v1_seed_ids(self):
+        return [s["seed_id"] for s in uds_corpus.CORPUS
+                if s.get("envelope") == V1_ENVELOPE]
+
+    def test_v1_seed_set_unchanged(self) -> None:
+        import hashlib
+
+        digest = hashlib.sha256(
+            "\n".join(self.v1_seed_ids()).encode("utf-8")).hexdigest()
+
+        self.assertEqual(digest, self.V1_SEED_IDS_DIGEST)
+
+    def test_v1_cases_bit_identical(self) -> None:
+        import hashlib
+
+        candidates, _ = uds_fuzz.build_candidates()
+        v1 = set(self.v1_seed_ids())
+        v1_cases = [c for c in candidates if c["seed_id"] in v1]
+
+        self.assertEqual(len(v1_cases), 947, "v1 case 数量必须不变")
+
+        entries = sorted(
+            (c["case"]["case_id"],
+             isotp_mutators.frames_fingerprint(c["case"]["frames"]))
+            for c in v1_cases
+        )
+        digest = hashlib.sha256(
+            "\n".join(f"{cid}|{fp}" for cid, fp in entries).encode("utf-8")
+        ).hexdigest()
+
+        self.assertEqual(digest, self.V1_GOLDEN_DIGEST,
+                         "v1 的 frames/fingerprint 发生了偏移（R5 违反）")
+
+    def test_v1_seeds_keep_the_seven_byte_envelope(self) -> None:
+        """R5-b：v1 seed 的 envelope 固定为 7，不被 128 覆盖。"""
+        for seed in uds_corpus.CORPUS:
+            if seed["seed_id"] not in self.v1_seed_ids():
+                continue
+
+            with self.subTest(seed=seed["seed_id"]):
+                self.assertEqual(seed["envelope"], 7)
+
+    def test_v1_seeds_never_get_mf_specs(self) -> None:
+        """R5-b：v1 seed 永远不产生 mf_* spec（它们出不了 7 字节）。"""
+        v1 = set(self.v1_seed_ids())
+
+        for seed in uds_corpus.CORPUS:
+            if seed["seed_id"] not in v1:
+                continue
+
+            ops = {s["params"].get("op")
+                   for s in um.mutation_specs_for_seed(seed)}
+
+            with self.subTest(seed=seed["seed_id"]):
+                self.assertFalse(ops & set(um.MF_OPS))
+
+    def test_v1_seeds_never_exceed_seven_bytes_after_mutation(self) -> None:
+        v1 = set(self.v1_seed_ids())
+
+        for seed in uds_corpus.CORPUS:
+            if seed["seed_id"] not in v1:
+                continue
+
+            for spec in um.mutation_specs_for_seed(seed):
+                mutated, _ = um.apply_mutation(seed, spec)
+
+                if mutated is None:
+                    continue
+
+                with self.subTest(seed=seed["seed_id"], label=spec["label"]):
+                    self.assertLessEqual(
+                        len(mutated), uds_corpus.MAX_UDS_REQUEST_LEN)
+
+    def test_mf_ops_are_exactly_the_frozen_seven(self) -> None:
+        self.assertEqual(len(um.MF_OPS), 7)
+        self.assertEqual(set(um.MF_OPS), {
+            "mf_ff_declared_zero", "mf_ff_declared_minus_one",
+            "mf_ff_declared_plus_one", "mf_ff_declared_max",
+            "mf_cf_drop_last", "mf_cf_sn_zero", "mf_cf_sn_off_by_one",
+        })
+        self.assertEqual(len(set(um.MF_OPS)), 7, "op 名必须唯一")
+
+    def test_mf_ops_all_live_under_uds_len(self) -> None:
+        """七个 mf_* op 全部位于 uds_len；维度集合仍然恰好四个。"""
+        self.assertEqual(um.ALL_DIMENSIONS,
+                         ("uds_len", "uds_sid", "uds_sub", "uds_payload"))
+
+        seen = set()
+        for seed in uds_corpus.CORPUS:
+            for spec in um.mutation_specs_for_seed(seed):
+                if spec["params"].get("op") in um.MF_OPS:
+                    seen.add(spec["dimension"])
+
+        self.assertEqual(seen, {"uds_len"})
+
+    def test_no_fifth_dimension_is_introduced(self) -> None:
+        observed = set()
+
+        for seed in uds_corpus.CORPUS:
+            for spec in um.mutation_specs_for_seed(seed):
+                observed.add(spec["dimension"])
+
+        self.assertEqual(observed, set(um.ALL_DIMENSIONS))
 
 
 if __name__ == "__main__":
