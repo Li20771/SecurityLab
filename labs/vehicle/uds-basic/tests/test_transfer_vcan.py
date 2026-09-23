@@ -14,7 +14,7 @@ UDS Basic —— 0x34/0x36/0x37 download transfer vcan0 端到端测试
 1. 0x34 RequestDownload：success / bad length / bad DFI / bad ALFID
 2. 0x36 TransferData：单块 / 多块 / 重复块幂等 / 错序 BSC / before 0x34
 3. 0x37：incomplete / complete / complete 后再 0x36 → 0x24
-4. hardReset abort（0x34 → 11 01 → 0x36 → 0x24）
+4. reset abort（0x34 → 11 01/02/03 → 0x36 → 0x24；三者状态等价）
 5. session 切换 mid-transfer（0x34 → 10 03 → 0x36 继续成功）
 
 重要：ISO-TP 的 FF/CF/FC 分段是**传输层信封**，与 UDS 的
@@ -364,6 +364,28 @@ class TestTransferE2E(TransferVcanTestCase):
             exchange(block(1, b"\x01")),
             bytes([0x7F, 0x36, NRC_REQUEST_SEQUENCE_ERROR]),
         )
+
+    def test_key_off_on_and_soft_reset_also_abort_download(self) -> None:
+        """
+        0x11 02 / 0x11 03 与 0x11 01 一样必须中止进行中的 download。
+
+        三者在本实验模型中状态等价（experiment-defined），因此对 transfer
+        的中止行为也必须一致。
+        """
+        for reset_type in (0x02, 0x03):
+            with self.subTest(reset_type=hex(reset_type)):
+                exchange(download(size=4))
+                exchange(block(1, b"\xAA\xBB"))
+
+                self.assertEqual(
+                    exchange(bytes([0x11, reset_type])),
+                    bytes([0x51, reset_type]),
+                )
+
+                self.assertEqual(
+                    exchange(block(1, b"\x01")),
+                    bytes([0x7F, 0x36, NRC_REQUEST_SEQUENCE_ERROR]),
+                )
 
     def test_session_switch_mid_transfer(self) -> None:
         exchange(download(size=4))

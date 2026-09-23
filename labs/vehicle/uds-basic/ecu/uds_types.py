@@ -33,6 +33,11 @@ __all__ = [
     # Security
     "SECURITY_LOCKED",
     "SECURITY_LEVEL1",
+    # Reset
+    "RESET_HARD",
+    "RESET_KEY_OFF_ON",
+    "RESET_SOFT",
+    "SUPPORTED_RESET_TYPES",
     # NRC
     "NRC_GENERAL_REJECT",
     "NRC_SERVICE_NOT_SUPPORTED",
@@ -79,6 +84,32 @@ SUPPORTED_SESSIONS: frozenset[int] = frozenset(
 
 SECURITY_LOCKED = 0x00
 SECURITY_LEVEL1 = 0x01
+
+
+# ======================================================================
+# B2. Reset 常量（ISO 14229-1 ECUReset resetType）
+# ======================================================================
+
+RESET_HARD = 0x01
+RESET_KEY_OFF_ON = 0x02
+RESET_SOFT = 0x03
+
+#: 本实验实现的 resetType 集合。
+#:
+#: ``0x04 enableRapidPowerShutDown`` / ``0x05 disableRapidPowerShutDown``
+#: 未实现（→ NRC 0x12）；suppressPosRspMsgIndicationBit 亦未实现。
+#:
+#: **experiment-defined**：本实验模型没有电源域、硬件复位、应用层重启或
+#: NVM controller，因此上面三个 resetType 在 :class:`EcuState` 的抽象层级上
+#: 采用**完全相同**的状态转换（见 ``_reset_volatile_state``）。
+#: 这不是 ISO 14229-1 的强制要求，而是本教学 ECU 的明确选择。
+SUPPORTED_RESET_TYPES: frozenset[int] = frozenset(
+    {
+        RESET_HARD,
+        RESET_KEY_OFF_ON,
+        RESET_SOFT,
+    }
+)
 
 
 # ======================================================================
