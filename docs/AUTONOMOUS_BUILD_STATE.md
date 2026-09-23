@@ -7,31 +7,43 @@
 ## CURRENT STATE — 2026-09-23
 
 **CURRENT_PHASE**:
-Phase 4 — Second-Round Planning / Post-OQ3 Baseline
+Phase 4 — Second-Round / Post-OQ5 Baseline
 
 **CURRENT_TASK**:
-OQ3 MF-v1 已合并，建立新的 main 基线并确定下一项第二轮能力
+OQ5 DTC severity 已合并，建立新的 main 基线并确定下一项第二轮能力
 
 **BRANCH**:
-`chore/post-merge-baseline-20260923`（本轮只做文档同步；
+`chore/docs-post-oq5-baseline-20260923`（本轮只做文档同步；
 第二轮能力一律新建独立 feature branch）
 
 **PR**:
-#10 MERGED / CLOSED
-merge commit `abcb8b4d21ac678fb6c86ec607c79e17e3177980`
+#13 MERGED / CLOSED
+merge commit `3349d79cac30b50593f6c826df8a1147fa9b4d34`
 
 **MAIN**:
-`abcb8b4d21ac678fb6c86ec607c79e17e3177980`（= PR #10 合并后的当前基线）
+`3349d79cac30b50593f6c826df8a1147fa9b4d34`（= PR #13 合并后的当前基线）
 
 **GitHub CI**:
 post-merge Fast QA = PASS
-Run = `35835334696`（event=push，branch=main）
+Run = `35851051243`（event=push，branch=main）
 
 **PREVIOUS BASELINE（历史，不再作为当前状态）**:
-PR #1 MERGED / CLOSED，main = `89a12a0cf43c6a23bf9cb5c6d393d1aa0198f87a`
-（第一轮正式基线；证据 run `35582069002`）
+PR #10 MERGED，main = `abcb8b4d21ac678fb6c86ec607c79e17e3177980`（OQ3 基线）
+PR #12 MERGED，main = `c96f858668d7fa6aa17bcafe4f9d920abe140d32`（OQ4 基线）
+PR #1 MERGED，main = `89a12a0cf43c6a23bf9cb5c6d393d1aa0198f87a`（第一轮正式基线）
 
-**OQ3 MF-v1 状态**: **MERGED**（PR #10）
+**OQ5 状态**: **MERGED / COMPLETED**（PR #13）
+新增 `0x19/07` reportNumberOfDTCBySeverityMaskRecord、
+`0x19/08` reportDTCBySeverityMaskRecord、`0x19/09` reportSeverityInformationOfDTC；
+severity metadata = 静态 `DTC_METADATA`（与运行时 status 正交）；
+`0x19/08` 3 DTC = 20 字节 → kernel ISO-TP MF（e2e 逐字节断言重组后 payload）；
+**SecurityLab 0x19 response profile 不变**（正响应不回显 reportType）。
+验证：UDS unit **581** / e2e **208** / all **789**；qa_fast PASS（**Local verified**）。
+
+**OQ4 状态**: **MERGED / COMPLETED**（PR #12）
+`0x11 02` keyOffOnReset、`0x11 03` softReset；三者状态等价（experiment-defined）。
+
+**OQ3 状态**: **MERGED**（PR #10）
 契约 SF ≤ 7B / MF 8–128B / >128B admission reject / max 19 frames / M1–M7；
 offline 120 passed / 23594 subtests；OQ3 smoke PASS 10 / FAIL 0；
 v1 golden 947 且两个 digest unchanged。
@@ -45,24 +57,25 @@ v1 golden 947 且两个 digest unchanged。
 不再把多个大型能力一次性堆进 main；每个能力单独 feature branch、
 单独 PR、单独审查与回滚。
 
-**POST-OQ3 COMPLETED（均已存在于当前 main 且已验证）**:
+**POST-OQ5 COMPLETED（均已存在于当前 main 且已验证）**:
 
-- UDS 0x19 ReadDTCInformation：已存在于当前 main，并已有 unit/e2e 验证
-- UDS 0x31 RoutineControl：已存在于当前 main，并已有 unit/e2e 验证
-- UDS 0x34/0x35/0x36/0x37 transfer：已存在于当前 main，并已有 unit/e2e 验证
-- UDS 0x38 FileTransfer：已存在于当前 main，并已有 unit/e2e 验证
-- OQ3 MF-v1：PR #10 已合入 main
+- UDS 服务：`0x10`、`0x11`（01/02/03）、`0x14`、`0x19`（01/02/07/08/09/0A）、
+  `0x22`、`0x27`、`0x2E`、`0x31`、`0x34`–`0x37`、`0x38`、`0x3E`
+  —— 均已存在于当前 main 并有 unit + e2e 验证
+- OQ3 MF-v1、OQ4 ECUReset 扩展、OQ5 DTC severity —— 均已合入 main
 
-> 已实现 ≠ 全部完成：0x19 仅覆盖 reportType 01/02/0A，其余 reportType、
-> suppressPosRspMsgIndicationBit 等仍在缺口清单内（见下）。
+> 已实现 ≠ 全部完成：`0x19` 仍缺 03/04/05/06/0B–0E/14/15/16/1A 等 reportType；
+> `0x11` 未实现 04/05；suppressPosRspMsgIndicationBit 未实现（见下）。
 
 **REMAINING GAPS（未实现，待重新盘点后排序）**:
 
 - 0x7DF 功能寻址**实时网关守护进程**
 - 真实 Flash / firmware flashing / 签名校验；0x39 / 0x06
 - Permission / session framework；0x28 / 0x85
-- 0x19 其余 reportType；0x31 的 option/status record
+- `0x19` 其余 reportType（03/04/05/06/0B–0E/14/15/16/1A…）；
+  `0x11` 04/05；0x31 的 option/status record
 - DTC 功能组与 DTC 产生 / 故障注入机制
+- suppressPosRspMsgIndicationBit（`0x19` / `0x11` 均未实现）
 
 **NEXT CANDIDATE**:
 待重新盘点当前 main 的真实能力与剩余缺口后确定。

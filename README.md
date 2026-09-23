@@ -101,7 +101,7 @@ SecurityLab/
 - python-can / cantools / DBC
 - can-isotp（内核模块 + Python 2.0.7）
 - udsoncan 1.26.1
-- UDS 虚拟 ECU：0x10 / 0x11 / 0x22 / 0x27 / 0x2E / 0x3E（服务注册表 + dispatcher）
+- UDS 虚拟 ECU：0x10 / 0x11 / 0x14 / 0x19 / 0x22 / 0x27 / 0x2E / 0x31 / 0x34-0x38 / 0x3E（服务注册表 + dispatcher）
 - 多 ECU / Gateway（`ecu/gateway.py`：物理寻址三 ECU + 功能寻址广播）
 - CAN / ISO-TP 状态机 fuzz + 精确 replay（`can-tools/fuzz/`，kernel oracle 三态）
 - CAN capture 三格式（CAN log / BLF / PCAP）
@@ -202,15 +202,15 @@ SecurityLab 主工作区：
 5. CAN 工具链 + DBC 基础环境
 6. ISO-TP 环境（内核 can_isotp + can-isotp 2.0.7）
 7. UDS Python 环境（udsoncan 1.26.1）
-8. UDS Basic 虚拟 ECU：0x10 / 0x11 / 0x22 / 0x27 / 0x2E / 0x3E
-   （服务注册表 + dispatcher，非 if/elif）
+8. UDS Basic 虚拟 ECU：0x10 / 0x11 / 0x14 / 0x19 / 0x22 / 0x27 / 0x2E /
+   0x31 / 0x34-0x38 / 0x3E（服务注册表 + dispatcher，非 if/elif）
 9. UDS SecurityAccess（0x27）：seed/key、失败计数、锁定、防重放
 10. 受保护/可写 DID 的 Session × Security 权限模型
 11. 多 ECU / Gateway（物理寻址 + 功能寻址广播）
 12. CAN / ISO-TP 状态机 fuzz + 精确 replay（kernel oracle 三态）
 13. CAN capture 三格式（CAN log / BLF / PCAP）
-14. 自动化测试：离线单元 168 + vcan0 端到端 91（UDS）+ can-tools
-    离线 183 + malformed 47（2026-09-21 实测）
+14. 自动化测试：UDS 离线单元 581 + vcan0 端到端 208（共 789）+
+    can-tools 离线 183 + malformed（2026-09-23 实测，**Local verified**）
 15. 质量门禁（qa_fast / qa_extended / healthcheck）+ CI workflow
 16. binfmt selfheal v2.3（additive-only，fail-closed，双端部署）
 17. 关键验证可复现入口（`scripts/repro/`：ARM / QEMU-GDB / Ghidra /
@@ -229,7 +229,8 @@ bash labs/vehicle/uds-basic/tests/run_tests.sh all    # UDS 全量（unit + e2e�
 
 后续方向（第二轮能力建设，见 `docs/SECURITY_LAB_STATUS.md` 路线图）：
 
-- UDS 扩展服务（0x19 DTC / 0x31 例程 / 0x34-0x37 刷写流程）
+- UDS 剩余扩展（`0x19` 其余 reportType、`0x11` 04/05、`0x28` / `0x85`、
+  Permission / session framework）
 - 0x7DF 功能寻址的用户态实时网关守护进程
 - JFFS2 / UBIFS 完整 extraction chain
 - Docker Security Lab / Obsidian 知识系统

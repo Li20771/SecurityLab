@@ -9,10 +9,12 @@
 > - **Environment audit reported**：来自 2026-09-20/21 审计窗口的既有实测记录
 >   （证据在 `tmp/audit/`，未版本化；本轮以 `scripts/repro/` 重新固化为可复现入口）；
 > - **GitHub CI verified**：真实 GitHub runner **实际运行通过**。
->   当前已验证（OQ3 MF-v1）：SecurityLab CI / Fast QA / run `35835334696` /
->   commit `abcb8b4d21ac678fb6c86ec607c79e17e3177980`（PR #10 merge），result = success；
->   PR #10 分支上 run `35834595473`（push）/ `35834682934`（pull_request）同为 success。
+>   当前已验证（OQ5 DTC severity）：SecurityLab CI / Fast QA / run `35851051243` /
+>   commit `3349d79cac30b50593f6c826df8a1147fa9b4d34`（PR #13 merge），result = success；
+>   PR #13 分支上 run `35849957710`（push）/ `35850109044`（pull_request）同为 success。
 >   Extended 尚未在真实 runner 验证（仅 workflow_dispatch），见 §8。
+>   **注意**：Fast CI 覆盖 ruff / mypy / UDS unit / can-tools offline ——
+>   **不含需要 vcan0 的 e2e**，故 e2e 数量一律为 Local verified。
 
 ## 1. 分层与入口
 
@@ -24,39 +26,39 @@
 | Fuzz | 需 vcan0，耗时长 | `scripts/qa_extended.sh --fuzz`；最小复现 `scripts/repro/verify_fuzz_smoke.sh`；AFL 见 labs/fuzzing | CAN/ISO-TP 变异、AFL 崩溃发现 |
 | Repro（可复现验证） | 部分需 vcan | `scripts/repro/verify_{arm,qemu_gdb,ghidra,fuzz_smoke}.sh` | ARM/QEMU-GDB/Ghidra headless/fuzz smoke 最小闭环 |
 | Health | 快速门否 / `--extended` 需 vcan | `scripts/healthcheck.sh [--extended]` | 环境/工具/服务/链路总检 |
-| CI | GitHub runner | `.github/workflows/ci.yml` | fast 自动、extended 手动；**fast 已由 run `35835334696`（main，PR #10 merge）在真实 GitHub runner 上验证通过** |
+| CI | GitHub runner | `.github/workflows/ci.yml` | fast 自动、extended 手动；**fast 已由 run `35851051243`（main，PR #13 merge）在真实 GitHub runner 上验证通过** |
 
 > 测试层级职责（pytest / run_tests.sh / qa_*）见 `docs/ARCHITECTURE.md` §5.1。
 
 ## 2. 车联网（uds-basic）测试明细
 
 入口：`labs/vehicle/uds-basic/tests/run_tests.sh [all|unit|e2e]`，自动选用 `~/.venvs/network/bin/python`。
-状态来源：**Local verified**（2026-09-21 本机实测）。
+状态来源：**Local verified**（2026-09-23 本机实测，OQ5 合并后）。
 
 | 测试文件 | 类型 | 用例数 | 覆盖 | 状态 |
 |----------|------|--------|------|------|
-| test_ecu_unit.py | unit | 106 | ECU 状态机、UDS 0x10/11/19/22/27/2E/3E、NRC、SecurityAccess 锁死/过期、hardReset 保留 DTC | Local verified |
+| test_ecu_unit.py | unit | 116 | ECU 状态机、UDS 0x10/11/19/22/27/2E/3E、NRC、SecurityAccess 锁死/过期、hardReset 保留 DTC；**OQ4**：`11 02`/`11 03` 正响应、`11 04`/`11 05` → 12、resetType 三态等价（26 字段快照互比） | Local verified |
 | test_keygen_unit.py | unit | 34 | seed/key 生成、derive/verify、可导入性（独立进程） | Local verified |
 | test_services_extra_unit.py | unit | 17 | 0x2E 门控链、0x3E 正响应/抑制/非法子功能、独立 EcuState | Local verified |
 | test_gateway_unit.py | unit | 13 | 多 ECU 拓扑、物理/功能寻址、状态隔离、广播不泄漏、构造护栏 | Local verified |
-| test_dtc_unit.py | unit | 30 | 0x19/01/02/0A 报文与 mask 过滤、NRC 12/13、DTC 静态库约束、运行时状态与实例隔离 | Local verified |
+| test_dtc_unit.py | unit | 76 | 0x19/01/02/0A 报文与 mask 过滤、NRC 12/13、DTC 静态库约束、运行时状态与实例隔离；**OQ5**：`DTC_METADATA` 完整性、0x19/07 双 mask 计数（16-bit BE、无 severity availability byte）、0x19/08 六字节记录与**字段顺序** `severity→functionalUnit→DTC→status`、0x19/09 单 DTC、severity 与 0x14/0x11 正交性、wire profile 冻结 | Local verified |
 | test_dtc_clear_unit.py | unit | 39 | 0x14 严格 4 字节（短/多余 → 13）、`0xFFFFFF` 全清与单清、**status 置零不删 key**（0x0A 成员保留）、未支持 DTC 与功能组取值 → 31、NRC 不改 state、幂等、24-bit big-endian、空库、hardReset 不恢复 status、实例隔离、静态库不变、不影响 DID/routine/transfer | Local verified |
 | test_routine_unit.py | unit | 25 | 0x31 Start/Stop/Results 状态机、NRC 12/13/22/31、hardReset 清 routine 保 DTC、session 保留、实例隔离 | Local verified |
 | test_transfer_unit.py | unit | 40 | 0x34/36/37 状态机、NRC 13/22/24/31/73、BSC 回绕与幂等重传、size accounting、hardReset/session 生命周期 | Local verified |
 | test_upload_unit.py | unit | 47 | 0x35 上传方向：固定块契约与上一块重建、duplicate 幂等、32130 边界（FF→00 护栏）、方向互斥与 NRC precedence | Local verified |
 | test_file_transfer_unit.py | unit | 174 | 0x38 五 mode 逐字节正响应（readDir 恰好 10 字节且不含 dirInfo 本体、readFile 16 字节、37 字节示例 `00 25`）、dirInfo 编码（count/nameLen/size、ASCII 排序、直接子项、隐式目录消失、255 边界）、九步 NRC precedence、readDir/readFile 完整 0x36/0x37（duplicate 逐字节一致、wrong BSC 73、初始 36 00→73）、addFile/replaceFile **仅 0x37 提交**（abort/incomplete/hardReset 不污染）、deleteFile one-shot、8 向互斥矩阵、hardReset 保留 files、三字段增量与禁止项(23→26) | Local verified |
-| test_e2e_vcan.py | e2e(vcan) | 66 | ECU 启动/请求响应/异常/超时/cleanup、SecurityAccess 全流程 | Local verified |
+| test_e2e_vcan.py | e2e(vcan) | 69 | ECU 启动/请求响应/异常/超时/cleanup、SecurityAccess 全流程；**OQ4**：`11 02`/`11 03` 正响应与 reset 后重新锁定、udsoncan 高层 API softReset | Local verified |
 | test_isotp_options_vcan.py | e2e(vcan) | 14（矩阵） | ISO-TP SF/FF/CF/FC、STmin/BS、超时、malformed PCI | Local verified |
 | test_write_did_vcan.py | e2e(vcan) | 8 | 真实解锁写 DID→读回、hardReset 恢复、3E 80 总线静默 | Local verified |
 | test_multi_ecu_vcan.py | e2e(vcan) | 4（5.2s） | 三 ECU 进程物理寻址、会话隔离、错误地址无应答 | Local verified |
-| test_dtc_vcan.py | e2e(vcan) | 8 | 0x19 正响应/NRC 真实链路、hardReset 前后 DTC 一致 | Local verified |
+| test_dtc_vcan.py | e2e(vcan) | 16 | 0x19 正响应/NRC 真实链路、hardReset 前后 DTC 一致；**OQ5**：0x19/07 正响应（5 字节，无 severity availability byte）、0x19/08 **20 字节 MF 响应逐字节断言**（重组后 payload，非帧数）、0x19/09 正响应与字段顺序、未知 DTC → 31 | Local verified |
 | test_dtc_clear_vcan.py | e2e(vcan) | 11 | 0x14 真实链路：**独立 ECU 进程**（清除在本进程内不可逆，0x11 不恢复 status）；核心顺序链路 19 0A→14(×2 幂等)→19 01 FF→19 02 FF→19 0A→14 单清已为 0→11 01→19 0A（status 全 0 且不被复位）；NRC 13/31（含字节序颠倒、功能组取值） | Local verified |
 | test_routine_vcan.py | e2e(vcan) | 11 | 0x31 状态机/NRC 真实链路、hardReset 清 routine（Start→11 01→Stop=0x22） | Local verified |
-| test_transfer_vcan.py | e2e(vcan) | 17 | 0x34/36/37 真实链路（含 126 字节 ISO-TP 多帧 vs UDS BSC 分层、幂等重传、hardReset abort、session mid-transfer） | Local verified |
+| test_transfer_vcan.py | e2e(vcan) | 18 | 0x34/36/37 真实链路（含 126 字节 ISO-TP 多帧 vs UDS BSC 分层、幂等重传、hardReset abort、session mid-transfer）；**OQ4**：`11 02`/`11 03` 同样中止 download | Local verified |
 | test_upload_vcan.py | e2e(vcan) | 16 | 0x35 真实链路：初始 00→73、幂等重发、多块（ISO-TP 多帧 ≠ BSC）、hardReset abort、session、34↔35 互斥 | Local verified |
 | test_file_transfer_vcan.py | e2e(vcan) | 41 | 0x38 真实链路：**readDir 完整传输**（38 05→78 05…→36 01→76 01 <dirInfo>→…→37→77，非只验响应）、readDir 10 字节且不含 dirInfo 本体、多块 dirInfo（242 字节 / 2 块）与尾块 duplicate、readFile 300 字节三块、addFile/replaceFile 提交点与 abort（复位）不污染、deleteFile one-shot 后 0x34/0x35 可用、NRC、8 向互斥、hardReset 保留 files、session 不终止 | Local verified |
 
-- 汇总：`run_tests.sh all` → **PASS 21 / WARN 0 / FAIL 0**（unit 525 + e2e 196，共 721）。
+- 汇总：`run_tests.sh all` → **PASS 21 / WARN 0 / FAIL 0**（unit **581** + e2e **208**，共 **789**；2026-09-23 本机实测，**Local verified**）。
 - 已知非致命：`test_isotp_options_vcan.py:186` ResourceWarning（子进程 BufferedReader 未关）。
 
 ## 3. 车联网（can-tools）测试明细
@@ -221,10 +223,20 @@ GitHub CI verified:
 - workflow：SecurityLab CI
 - event：push
 - branch：main
-- commit：`abcb8b4d21ac678fb6c86ec607c79e17e3177980`（PR #10 merge commit）
-- run：`35835334696`
+- commit：`3349d79cac30b50593f6c826df8a1147fa9b4d34`（PR #13 merge commit）
+- run：`35851051243`
 - result：**success**
-- 覆盖：ruff / mypy / UDS unit / can-tools offline
+- 覆盖：ruff / mypy / UDS unit / can-tools offline（**不含 e2e**）
+
+**Post-merge（main）历史证据（OQ3 基线）：**
+
+- commit：`abcb8b4d21ac678fb6c86ec607c79e17e3177980`（PR #10 merge commit）
+- run：`35835334696`，result：**success**——仅作历史记录，不作当前状态。
+
+**分支 CI 证据（PR #13 / OQ5）：**
+
+- commit：`5d3e43ae58ff8f9a83562c55ec6ca7995b141244`
+- run：`35849957710`（push）/ `35850109044`（pull_request），result：**success**
 
 **Post-merge（main）历史证据（第一轮基线）：**
 
