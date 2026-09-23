@@ -460,9 +460,21 @@ def service_ecu_reset(request: bytes, state: EcuState) -> bytes:
     请求：``11 <resetType>``
     响应：``51 <resetType>``
 
-    目前仅实现 hardReset (0x01)：会话复位为 defaultSession，
-    清除解锁状态与 seed 生命周期（保留失败计数与锁定）、清空
-    DID override 与 routine 状态（保留 DTC 故障记忆）。
+    本实验实现三个 resetType：
+
+        0x01 hardReset        ┐
+        0x02 keyOffOnReset    ├─ 本模型下三者状态转换**完全相同**
+        0x03 softReset        ┘
+
+    未实现（→ NRC 0x12）：``0x04 enableRapidPowerShutDown``、
+    ``0x05 disableRapidPowerShutDown``，以及带 suppressPosRspMsgIndicationBit
+    的请求（本实验不实现该位）。
+
+    **三个 resetType 状态等价（experiment-defined）**：区分 hardReset /
+    keyOffOnReset / softReset 需要电源域、硬件复位深度、应用层与固件层之分、
+    NVM controller 等语义，本教学模型一概不具备。因此它们共用
+    :func:`_reset_volatile_state`，**不制造人为差异**。这是本实验的明确选择，
+    不是 ISO 14229-1 的强制要求。
     """
     if len(request) != 2:
         return uds_types.negative_response(
@@ -471,16 +483,15 @@ def service_ecu_reset(request: bytes, state: EcuState) -> bytes:
 
     reset_type = request[1]
 
-    # hardReset
-    if reset_type == 0x01:
-        _reset_volatile_state(state)
+    if reset_type not in uds_types.SUPPORTED_RESET_TYPES:
+        # 未实现的 resetType（0x04 / 0x05 / 0xFF 等）
+        return uds_types.negative_response(
+            0x11, uds_types.NRC_SUBFUNCTION_NOT_SUPPORTED
+        )
 
-        return uds_types.positive_response(0x11, bytes([reset_type]))
+    _reset_volatile_state(state)
 
-    # unsupported reset type
-    return uds_types.negative_response(
-        0x11, uds_types.NRC_SUBFUNCTION_NOT_SUPPORTED
-    )
+    return uds_types.positive_response(0x11, bytes([reset_type]))
 
 
 # ======================================================================
