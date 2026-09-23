@@ -21,6 +21,7 @@ UDS Basic —— 虚拟 ECU 离线单元测试
     bash tests/run_tests.sh
 """
 
+import copy
 import os
 import sys
 import time
@@ -40,6 +41,7 @@ from ecu import (  # noqa: E402
     DEFAULT_SESSION,
     handle_uds_request,
 )
+from uds_types import SUPPORTED_RESET_TYPES  # noqa: E402
 
 # ----------------------------------------------------------------------
 # UDS 常量（ISO 14229-1）
@@ -267,17 +269,29 @@ class TestEcuReset(UdsTestCase):
             ecu.STATE.did_overrides.clear()
             ecu.STATE.did_overrides.update(original_overrides)
 
-    def test_unsupported_reset_type_key_off_on(self) -> None:
-        """11 02 -> 7F 11 12（keyOffOnReset 未实现）"""
+    def test_key_off_on_reset(self) -> None:
+        """11 02 -> 51 02（keyOffOnReset）"""
         response = handle_uds_request(bytes([0x11, 0x02]))
+
+        self.assertEqual(response, bytes([0x51, 0x02]))
+
+    def test_soft_reset(self) -> None:
+        """11 03 -> 51 03（softReset）"""
+        response = handle_uds_request(bytes([0x11, 0x03]))
+
+        self.assertEqual(response, bytes([0x51, 0x03]))
+
+    def test_unsupported_reset_type_enable_rapid_power_shutdown(self) -> None:
+        """11 04 -> 7F 11 12（enableRapidPowerShutDown 未实现）"""
+        response = handle_uds_request(bytes([0x11, 0x04]))
 
         self.assertNegativeResponse(
             response, SID_ECU_RESET, NRC_SUBFUNCTION_NOT_SUPPORTED
         )
 
-    def test_unsupported_reset_type_soft_reset(self) -> None:
-        """11 03 -> 7F 11 12（softReset 未实现）"""
-        response = handle_uds_request(bytes([0x11, 0x03]))
+    def test_unsupported_reset_type_disable_rapid_power_shutdown(self) -> None:
+        """11 05 -> 7F 11 12（disableRapidPowerShutDown 未实现）"""
+        response = handle_uds_request(bytes([0x11, 0x05]))
 
         self.assertNegativeResponse(
             response, SID_ECU_RESET, NRC_SUBFUNCTION_NOT_SUPPORTED
@@ -312,9 +326,286 @@ class TestEcuReset(UdsTestCase):
         import ecu
 
         handle_uds_request(bytes([0x10, 0x03]))
-        handle_uds_request(bytes([0x11, 0x02]))
+        handle_uds_request(bytes([0x11, 0xFF]))
 
         self.assertEqual(ecu.STATE.session, 0x03)
+
+
+#: 本实验实现的三个 resetType（显式顺序，供参数化使用）。
+#: frozenset 无序，故这里显式列出并与 ``SUPPORTED_RESET_TYPES`` 交叉校验。
+RESET_TYPES_UNDER_TEST: tuple = (0x01, 0x02, 0x03)
+
+#: EcuState 的全部字段（快照口径）。字段集变化时本表必须同步。
+#:
+#: 刻意放在**模块级**而非类体：类体内的推导式无法访问同级的类属性
+#: （推导式有自己的作用域，类体不是它的 enclosing scope）。
+_ECU_STATE_FIELDS: tuple = (
+    "session",
+    "security_level",
+    "pending_seed",
+    "seed_issued_at",
+    "seed_consumed",
+    "failed_attempts",
+    "lockout_until",
+    "seed_counter",
+    "did_overrides",
+    "dtc_records",
+    "active_routines",
+    "routine_start_counts",
+    "download_active",
+    "download_address",
+    "download_size",
+    "download_expected_block",
+    "download_buffer",
+    "download_last_block_request",
+    "upload_active",
+    "upload_address",
+    "upload_size",
+    "upload_expected_block",
+    "upload_sent",
+    "file_mode",
+    "file_path",
+    "files",
+)
+
+#: 复位必须**保留**的字段（故障记忆 / 非易失 / 防绕过）。
+_ECU_PRESERVED_FIELDS: tuple = (
+    "failed_attempts",
+    "lockout_until",
+    "seed_counter",
+    "dtc_records",
+    "files",
+)
+
+#: 复位必须**改变**的字段。
+_ECU_RESET_FIELDS: tuple = tuple(
+    f for f in _ECU_STATE_FIELDS if f not in _ECU_PRESERVED_FIELDS
+)
+
+
+class TestEcuResetEquivalence(UdsTestCase):
+    """
+    ``hardReset`` / ``keyOffOnReset`` / ``softReset`` 的状态转换必须**完全相同**。
+
+    这是本实验的 **experiment-defined** 契约：本模型没有电源域、没有硬件
+    复位深度、没有应用层与固件层之分，也没有 NVM controller，因此三个
+    resetType 之间不存在可观测的状态差异。
+
+    本测试把该契约固化为可执行断言 —— 一旦有人给某个 resetType 添加"人为
+    差异"，或者重构 helper 时漏掉某个字段，这里会立刻失败。
+    """
+
+    #: EcuState 的全部字段（快照口径）。定义在模块级，见上面的作用域说明。
+    STATE_FIELDS: tuple = _ECU_STATE_FIELDS
+
+    #: 复位必须**保留**的字段（故障记忆 / 非易失 / 防绕过）。
+    PRESERVED_FIELDS: tuple = _ECU_PRESERVED_FIELDS
+
+    #: 复位必须**改变**的字段。
+    RESET_FIELDS: tuple = _ECU_RESET_FIELDS
+
+    def setUp(self) -> None:
+        super().setUp()
+
+        import ecu
+
+        self.ecu = ecu
+        self._saved = self._snapshot(ecu.STATE)
+        self.addCleanup(self._restore, self._saved)
+
+    # ---- helpers --------------------------------------------------------
+
+    def _snapshot(self, state) -> dict:
+        """深拷贝全部字段，得到可比较的纯数据快照。"""
+        return {
+            field: copy.deepcopy(getattr(state, field))
+            for field in self.STATE_FIELDS
+        }
+
+    def _restore(self, saved: dict) -> None:
+        state = self.ecu.STATE
+
+        for field, value in saved.items():
+            setattr(state, field, copy.deepcopy(value))
+
+    def _dirty(self, state) -> None:
+        """把每个字段都推到**非默认**值，确保"没被复位"是可观测的。"""
+        state.session = 0x03                       # extended
+        state.security_level = 0x01                # unlocked
+        state.pending_seed = b"\xde\xad\xbe\xef"
+        state.seed_issued_at = 12345.0
+        state.seed_consumed = True
+        state.failed_attempts = 7
+        state.lockout_until = 99999.0
+        state.seed_counter = 42
+
+        state.did_overrides[0xF102] = b"DIRTY"
+        state.dtc_records[0x100009] = 0x09
+
+        state.active_routines.add(0x2001)
+        state.routine_start_counts[0x2001] = 5
+
+        # 业务上 download / upload 互斥；此处刻意同时置位，只为证明
+        # 复位会把两边的字段**都**清掉（测的是 reset，不是 transfer 逻辑）。
+        state.download_active = True
+        state.download_address = 0x112233
+        state.download_size = 100
+        state.download_expected_block = 3
+        state.download_buffer.extend(b"DIRTY-DL")
+        state.download_last_block_request = b"\x02dirty"
+
+        state.upload_active = True
+        state.upload_address = 0x445566
+        state.upload_size = 200
+        state.upload_expected_block = 4
+        state.upload_sent = 50
+
+        state.file_mode = 1                        # FILE_MODE_ADD_FILE
+        state.file_path = "/dirty"
+        state.files["/dirty.txt"] = b"DIRTY-FILE"
+
+    def _reset_and_snapshot(self, reset_type: int) -> dict:
+        response = handle_uds_request(bytes([SID_ECU_RESET, reset_type]))
+
+        self.assertEqual(
+            response, bytes([POS_ECU_RESET, reset_type]),
+            f"resetType 0x{reset_type:02X} 未返回肯定响应",
+        )
+
+        return self._snapshot(self.ecu.STATE)
+
+    def _dirty_snapshot_and_reset(self, reset_type: int):
+        self._restore(self._saved)
+        self._dirty(self.ecu.STATE)
+
+        before = self._snapshot(self.ecu.STATE)
+
+        return before, self._reset_and_snapshot(reset_type)
+
+    # ---- 契约 -----------------------------------------------------------
+
+    def test_reset_types_under_test_match_the_supported_set(self) -> None:
+        """本测试覆盖的 resetType 必须与生产常量一致。"""
+        self.assertEqual(
+            set(RESET_TYPES_UNDER_TEST), set(SUPPORTED_RESET_TYPES)
+        )
+
+    def test_field_inventory_matches_the_frozen_21_5_split(self) -> None:
+        """26 字段 = 21 复位 + 5 保留；字段集变化必须显式改这里。"""
+        self.assertEqual(len(self.STATE_FIELDS), 26)
+        self.assertEqual(len(self.RESET_FIELDS), 21)
+        self.assertEqual(len(self.PRESERVED_FIELDS), 5)
+
+    def test_three_reset_types_are_state_equivalent(self) -> None:
+        """01 / 02 / 03 必须产生逐字段相同的状态转换。"""
+        results = {
+            reset_type: self._dirty_snapshot_and_reset(reset_type)[1]
+            for reset_type in RESET_TYPES_UNDER_TEST
+        }
+
+        baseline_type = RESET_TYPES_UNDER_TEST[0]
+        baseline = results[baseline_type]
+
+        for reset_type in RESET_TYPES_UNDER_TEST[1:]:
+            for field in self.STATE_FIELDS:
+                with self.subTest(field=field, reset_type=hex(reset_type)):
+                    self.assertEqual(
+                        results[reset_type][field], baseline[field],
+                        f"{field} 在 0x{reset_type:02X} 与 "
+                        f"0x{baseline_type:02X} 之间不一致",
+                    )
+
+    def test_every_reset_type_changes_all_21_volatile_fields(self) -> None:
+        for reset_type in RESET_TYPES_UNDER_TEST:
+            before, after = self._dirty_snapshot_and_reset(reset_type)
+
+            for field in self.RESET_FIELDS:
+                with self.subTest(field=field, reset_type=hex(reset_type)):
+                    self.assertNotEqual(
+                        after[field], before[field],
+                        f"{field} 未被 0x{reset_type:02X} 改变",
+                    )
+
+    def test_every_reset_type_preserves_the_5_non_volatile_fields(self) -> None:
+        for reset_type in RESET_TYPES_UNDER_TEST:
+            before, after = self._dirty_snapshot_and_reset(reset_type)
+
+            for field in self.PRESERVED_FIELDS:
+                with self.subTest(field=field, reset_type=hex(reset_type)):
+                    self.assertEqual(
+                        after[field], before[field],
+                        f"{field} 不应被 0x{reset_type:02X} 清除",
+                    )
+
+    def test_reset_target_values(self) -> None:
+        """复位后的**具体取值**（不只是"变了"）。"""
+        for reset_type in RESET_TYPES_UNDER_TEST:
+            after = self._dirty_snapshot_and_reset(reset_type)[1]
+
+            with self.subTest(reset_type=hex(reset_type)):
+                # 会话与安全
+                self.assertEqual(after["session"], DEFAULT_SESSION)
+                self.assertEqual(after["security_level"], self.ecu.SECURITY_LOCKED)
+                self.assertIsNone(after["pending_seed"])
+                self.assertIsNone(after["seed_issued_at"])
+                self.assertFalse(after["seed_consumed"])
+                # DID / routine
+                self.assertEqual(after["did_overrides"], {})
+                self.assertEqual(after["active_routines"], set())
+                self.assertEqual(after["routine_start_counts"], {})
+                # download 6 字段
+                self.assertFalse(after["download_active"])
+                self.assertEqual(after["download_address"], 0)
+                self.assertEqual(after["download_size"], 0)
+                self.assertEqual(after["download_expected_block"], 0)
+                self.assertEqual(after["download_buffer"], bytearray())
+                self.assertIsNone(after["download_last_block_request"])
+                # upload 5 字段
+                self.assertFalse(after["upload_active"])
+                self.assertEqual(after["upload_address"], 0)
+                self.assertEqual(after["upload_size"], 0)
+                self.assertEqual(after["upload_expected_block"], 0)
+                self.assertEqual(after["upload_sent"], 0)
+                # file transfer 会话标识
+                self.assertEqual(after["file_mode"], 0)      # FILE_MODE_IDLE
+                self.assertEqual(after["file_path"], "")
+                # 保留项的具体取值（不只是"相等"）
+                self.assertEqual(after["failed_attempts"], 7)
+                self.assertEqual(after["lockout_until"], 99999.0)
+                self.assertEqual(after["seed_counter"], 42)
+                self.assertEqual(after["dtc_records"].get(0x100009), 0x09)
+                self.assertEqual(after["files"].get("/dirty.txt"), b"DIRTY-FILE")
+
+    def test_locked_out_state_survives_every_reset_type(self) -> None:
+        """防绕过：三种 reset 都不得清掉暴力破解惩罚状态。"""
+        for reset_type in RESET_TYPES_UNDER_TEST:
+            self._restore(self._saved)
+            self._dirty(self.ecu.STATE)
+
+            self.ecu.STATE.failed_attempts = 3
+            self.ecu.STATE.lockout_until = time.monotonic() + 3600
+
+            after = self._reset_and_snapshot(reset_type)
+
+            with self.subTest(reset_type=hex(reset_type)):
+                self.assertEqual(after["failed_attempts"], 3)
+                self.assertIsNotNone(after["lockout_until"])
+
+    def test_rejected_reset_types_are_not_applied(self) -> None:
+        """0x04 / 0x05 / 0xFF 必须拒绝，且**不得**触碰状态。"""
+        for reset_type in (0x04, 0x05, 0xFF):
+            self._restore(self._saved)
+            self._dirty(self.ecu.STATE)
+
+            before = self._snapshot(self.ecu.STATE)
+            response = handle_uds_request(bytes([SID_ECU_RESET, reset_type]))
+            after = self._snapshot(self.ecu.STATE)
+
+            with self.subTest(reset_type=hex(reset_type)):
+                self.assertNegativeResponse(
+                    response, SID_ECU_RESET, NRC_SUBFUNCTION_NOT_SUPPORTED
+                )
+                self.assertEqual(after, before, "被拒的 reset 改变了状态")
 
 
 # ======================================================================

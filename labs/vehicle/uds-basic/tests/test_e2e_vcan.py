@@ -843,11 +843,17 @@ class TestRawIsotp(VcanTestCase):
 
         self.assertNrc(response, 0x11, 0x13, "11 01 00（多余字节）")
 
-    def test_11_unsupported_reset_type(self) -> None:
-        """11 02 -> 7F 11 12"""
+    def test_11_key_off_on_reset(self) -> None:
+        """11 02 -> 51 02"""
         response = self.uds_exchange(bytes([0x11, 0x02]))
 
-        self.assertNrc(response, 0x11, 0x12, "11 02（keyOffOnReset 未实现）")
+        self.assertEqual(response, bytes([0x51, 0x02]))
+
+    def test_11_unsupported_reset_type(self) -> None:
+        """11 04 -> 7F 11 12（enableRapidPowerShutDown 未实现）"""
+        response = self.uds_exchange(bytes([0x11, 0x04]))
+
+        self.assertNrc(response, 0x11, 0x12, "11 04（未实现）")
 
     def test_11_unsupported_reset_type_ff(self) -> None:
         response = self.uds_exchange(bytes([0x11, 0xFF]))
@@ -1076,11 +1082,23 @@ class TestUdsoncanClient(VcanTestCase):
         self.assertTrue(response.positive, f"ecu_reset 返回否定响应：{response}")
         self.assertEqual(response.service_data.reset_type_echo, 0x01)
 
-    def test_ecu_reset_unsupported_type_returns_nrc(self) -> None:
-        """softReset 未实现，应返回 NRC 0x12。"""
+    def test_ecu_reset_soft_reset_positive(self) -> None:
+        """udsoncan 高层 API：softReset -> 51 03。"""
         client = self.new_client()
 
-        response = client.raw_request(bytes([0x11, 0x03]))
+        response = client.ecu_reset(
+            udsoncan.services.ECUReset.ResetType.softReset
+        )
+
+        self.assertIsNotNone(response, "ecu_reset 未收到响应")
+        self.assertTrue(response.positive, f"ecu_reset 返回否定响应：{response}")
+        self.assertEqual(response.service_data.reset_type_echo, 0x03)
+
+    def test_ecu_reset_unsupported_type_returns_nrc(self) -> None:
+        """enableRapidPowerShutDown 未实现，应返回 NRC 0x12。"""
+        client = self.new_client()
+
+        response = client.raw_request(bytes([0x11, 0x04]))
 
         self.assertIsNotNone(response, "未收到响应")
         self.assertFalse(response.positive, "期望否定响应")
@@ -1482,6 +1500,30 @@ class TestSecurityStateInteraction(VcanTestCase):
         self.assertNrc(
             response, 0x22, NRC_SECURITY_ACCESS_DENIED, "复位后受保护 DID"
         )
+
+    def test_key_off_on_and_soft_reset_relock(self) -> None:
+        """
+        解锁 -> 11 02 / 11 03 -> 受保护 DID 同样被拒绝。
+
+        三个 resetType 在本实验模型中状态等价（experiment-defined），
+        因此"复位必解除授权"这一安全姿态对三者必须一致。
+        """
+        for reset_type in (0x02, 0x03):
+            with self.subTest(reset_type=hex(reset_type)):
+                self.uds_exchange(bytes([0x10, 0x03]))
+                self._unlock()
+
+                self.assertEqual(
+                    self.uds_exchange(bytes([0x11, reset_type])),
+                    bytes([0x51, reset_type]),
+                )
+
+                response = self.uds_exchange(bytes([0x22, 0xF1, 0x87]))
+
+                self.assertNrc(
+                    response, 0x22, NRC_SECURITY_ACCESS_DENIED,
+                    f"0x{reset_type:02X} 复位后受保护 DID",
+                )
 
     def test_replay_after_session_switch_rejected(self) -> None:
         """解锁后切会话，重放原 key -> 7F 27 24"""
