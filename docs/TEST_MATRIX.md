@@ -9,8 +9,9 @@
 > - **Environment audit reported**：来自 2026-09-20/21 审计窗口的既有实测记录
 >   （证据在 `tmp/audit/`，未版本化；本轮以 `scripts/repro/` 重新固化为可复现入口）；
 > - **GitHub CI verified**：真实 GitHub runner **实际运行通过**。
->   当前已验证：SecurityLab CI / Fast QA / run `35576358620` /
->   commit `8bfd405bbbbfd215c7077bc208f0bccc64cfe6ec`，result = success。
+>   当前已验证（OQ3 MF-v1）：SecurityLab CI / Fast QA / run `35835334696` /
+>   commit `abcb8b4d21ac678fb6c86ec607c79e17e3177980`（PR #10 merge），result = success；
+>   PR #10 分支上 run `35834595473`（push）/ `35834682934`（pull_request）同为 success。
 >   Extended 尚未在真实 runner 验证（仅 workflow_dispatch），见 §8。
 
 ## 1. 分层与入口
@@ -23,7 +24,7 @@
 | Fuzz | 需 vcan0，耗时长 | `scripts/qa_extended.sh --fuzz`；最小复现 `scripts/repro/verify_fuzz_smoke.sh`；AFL 见 labs/fuzzing | CAN/ISO-TP 变异、AFL 崩溃发现 |
 | Repro（可复现验证） | 部分需 vcan | `scripts/repro/verify_{arm,qemu_gdb,ghidra,fuzz_smoke}.sh` | ARM/QEMU-GDB/Ghidra headless/fuzz smoke 最小闭环 |
 | Health | 快速门否 / `--extended` 需 vcan | `scripts/healthcheck.sh [--extended]` | 环境/工具/服务/链路总检 |
-| CI | GitHub runner | `.github/workflows/ci.yml` | fast 自动、extended 手动；**fast 已由 run 35576358620 在真实 GitHub runner 上验证通过** |
+| CI | GitHub runner | `.github/workflows/ci.yml` | fast 自动、extended 手动；**fast 已由 run `35835334696`（main，PR #10 merge）在真实 GitHub runner 上验证通过** |
 
 > 测试层级职责（pytest / run_tests.sh / qa_*）见 `docs/ARCHITECTURE.md` §5.1。
 
@@ -68,11 +69,14 @@
 | test_parsers（离线） | unit | 34 | testcase/summary/metadata 解析、**不误采 summary**、模块纯净度 | Local verified |
 | isotp options（离线部分） | unit | 50 | 选项/分类/变异纯函数 | Local verified |
 | fuzz harness（离线） | unit | 99 | smoke 选择、PCI/SN 变异、预算与 skip 语义、**kernel oracle 三态** | Local verified |
+| UDS fuzz（离线，OQ3） | unit | 120（23594 subtests） | UDS 单请求 SF/MF 编码、size-class 边界、M1–M7 传输语义、no-op/dedup、v1 golden 947 | Local verified（2026-09-23） |
 | malformed 系列 | e2e(vcan) | 47 | 畸形帧/ISO-TP 异常恢复（约 149.6s） | Local verified |
 | replay CLI | e2e(vcan) | — | 单/多/--all/--repeat，identity/classification/退出码/确定性 | Local verified |
 | capture_lab.sh | e2e(vcan) | — | 6 帧 → CAN log / BLF / PCAP 三格式保存→回放 diff 一致 | Local verified |
 
-- 汇总：offline **PASS 3**（34+50+99）；all（含 malformed）**PASS 4 / FAIL 0**；`CAPTURE_LAB=PASS`。
+- 汇总（2026-09-21 基线）：offline **PASS 3**（34+50+99）；all（含 malformed）**PASS 4 / FAIL 0**；`CAPTURE_LAB=PASS`。
+- OQ3 增量（2026-09-23）：离线组新增 `test_uds_fuzz_offline.py`（120 passed / 23594 subtests），
+  离线组计为 **PASS 4**；`malformed` 与 `all` 本轮未重跑，沿用 2026-09-21 结果。
 
 ## 4. CAN / ISO-TP Fuzz 阶梯
 
@@ -99,6 +103,47 @@ AVAILABLE / UNAVAILABLE / ERROR。只有 AVAILABLE 时 `kernel_events`
   （生成物，已 gitignore，**勿提交 Git**）。
 - 完整 campaign 仍是实验行为；默认门禁只跑 `scripts/repro/verify_fuzz_smoke.sh`
   与可选的 `qa_extended.sh --fuzz`（smoke 30）。
+
+### 4.1 UDS fuzz（请求层，OQ3 MF-v1 已合入）
+
+入口：`labs/vehicle/can-tools/fuzz/uds_fuzz.py`；
+最小可复现：`scripts/repro/verify_uds_fuzz_smoke.sh`（独占 vcan）。
+状态来源：**Local verified**（2026-09-23）；PR = **#10**；main merge = `abcb8b4`。
+
+冻结契约（OQ3 MF-v1）：
+
+| 项 | 契约 |
+|----|------|
+| SF | ≤ 7B（原 v1 路径，逐字节不变） |
+| MF | 8–128B（ISO-TP FF + CF） |
+| Oversize | > 128B **admission reject**（不生成、不截断） |
+| Max frames | 19 |
+| MF 变异 | M1–M7（冻结的七个 `mf_*`，全部位于 `uds_len` 维度） |
+| Stateful / 多请求序列 | **OUT OF SCOPE** |
+
+验证结果：
+
+| 检查 | 结果 |
+|------|------|
+| offline | **120 passed / 23594 subtests passed** |
+| OQ3 smoke | **PASS 10 / FAIL 0**（exit 0） |
+| v1 golden | **947** cases；`V1_GOLDEN_DIGEST` + `V1_SEED_IDS_DIGEST` **unchanged** |
+| MF 边界 | `7 → SF`；`8 → MF`；`128 → MF`；`129 → reject`；`200 → reject`；`300 → reject` |
+| max frames | 19 |
+| M1–M7 | PASS（逐项传输语义核对） |
+| no-op | PASS |
+| dedup | PASS |
+| MF basic | PASS（8B FF+CF 真打 vcan 虚拟 ECU → `UDS_RESPONSE`，recovery PASS） |
+| `git diff --check` | PASS |
+
+> 边界 reject 属 **admission reject**：发生在生成期、不产生任何帧，
+> 因此不可能被分类成 `ECU_CRASH` / `STATE_CORRUPTION` / `HANG` /
+> `TRANSPORT_ERROR`。完整 campaign 仍属实验行为，不进默认 CI。
+
+**CI 口径**：GitHub CI **Fast = SUCCESS**（PR #10 branch push run `35834595473` /
+pull_request run `35834682934`；post-merge main run `35835334696`）。
+**Extended = manual / skipped** —— 未在 GitHub runner 上实跑，
+不得写成 GitHub CI verified。
 
 ## 5. 固件 / 通用 Fuzz / YARA / 网络
 
@@ -171,15 +216,20 @@ GitHub CI verified:
     Extended = NO / NOT RUN（未在真实 runner 触发）
 ```
 
-**Post-merge（main）证据：**
+**Post-merge（main）证据（当前）：**
 
 - workflow：SecurityLab CI
 - event：push
 - branch：main
-- commit：`89a12a0cf43c6a23bf9cb5c6d393d1aa0198f87a`（PR #1 merge commit）
-- run：`35582069002`
+- commit：`abcb8b4d21ac678fb6c86ec607c79e17e3177980`（PR #10 merge commit）
+- run：`35835334696`
 - result：**success**
 - 覆盖：ruff / mypy / UDS unit / can-tools offline
+
+**Post-merge（main）历史证据（第一轮基线）：**
+
+- commit：`89a12a0cf43c6a23bf9cb5c6d393d1aa0198f87a`（PR #1 merge commit）
+- run：`35582069002`，result：**success**——仅作历史记录，不作当前状态。
 
 - Fuzz 不进 CI（耗时/不确定），归手动 extended/专项（`qa_extended.sh --fuzz` /
   `scripts/repro/verify_fuzz_smoke.sh`）。

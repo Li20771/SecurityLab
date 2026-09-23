@@ -1,20 +1,38 @@
 # SecurityLab 状态看板（SECURITY LAB STATUS）
 
-> 更新：2026-09-21（工程收口）。权威明细见 `FINAL_ENVIRONMENT_AUDIT_2026-09-20.md`（审计快照）、`ENGINEERING_CLOSE_2026-09-21.md`（本轮收口报告）与 `TEST_MATRIX.md`；断点过程见 `AUTONOMOUS_BUILD_STATE.md`。
+> 更新：2026-09-23（PR #10 合并后封存）。权威明细见 `FINAL_ENVIRONMENT_AUDIT_2026-09-20.md`（审计快照）、`ENGINEERING_CLOSE_2026-09-21.md`（第一轮收口报告）与 `TEST_MATRIX.md`；断点过程见 `AUTONOMOUS_BUILD_STATE.md`。
 
 ## 一句话现状
 
-SecurityLab 第一轮建设及工程收口已经完成，**PR #1 已合入 main**。
+SecurityLab 第一轮建设及工程收口已经完成；**第二轮第一项能力 OQ3 MF-v1 已通过 PR #10 合入 main**。
 
-第一轮正式基线：
+第一轮正式基线（历史）：
 
 - PR #1：**MERGED / CLOSED**
-- merge commit / main HEAD：`89a12a0cf43c6a23bf9cb5c6d393d1aa0198f87a`
-- post-merge GitHub Actions Fast QA：PASS（run `35582069002`，event=push，branch=main）
+- merge commit：`89a12a0cf43c6a23bf9cb5c6d393d1aa0198f87a`
 
-当前阶段：**Phase 4 — Second-Round Planning**——第一轮状态封存、
-第二轮缺口盘点与优先级设计；第二轮能力将按
+当前 main 基线：
+
+- PR #10（`feat(fuzz): add UDS MF-v1 fuzz support`）：**MERGED / CLOSED**
+- merge commit / main HEAD：`abcb8b4d21ac678fb6c86ec607c79e17e3177980`
+- post-merge GitHub Actions Fast QA：PASS（run `35835334696`，event=push，branch=main）
+
+当前阶段：**Phase 4 — Second-Round Planning / Post-OQ3 Baseline**——OQ3 MF-v1 已合入并封存，
+第二轮后续能力待重新盘点当前 main 真实状态后确定；仍按
 "小功能 → feature branch → 小 PR → 可验证 → 合入"节奏推进。
+
+## OQ3 MF-v1 状态
+
+| 项 | 值 |
+|----|----|
+| OQ3 MF-v1 | **MERGED** |
+| PR | #10 **MERGED / CLOSED** |
+| merge commit | `abcb8b4d21ac678fb6c86ec607c79e17e3177980` |
+| 契约 | SF ≤ 7B；MF 8–128B；>128B admission reject；max 19 frames |
+| 变异 | M1–M7（冻结的七个 `mf_*`，全部位于 `uds_len` 维度） |
+| 验证 | offline 120 passed / 23594 subtests；OQ3 smoke PASS 10 / FAIL 0 |
+| v1 golden | 947 cases；`V1_GOLDEN_DIGEST` + `V1_SEED_IDS_DIGEST` unchanged |
+| OUT OF SCOPE | stateful / multi-request sequences、多 ECU、CAN ID、coverage-guided、新 schema / oracle / action |
 
 ## 能力看板
 
@@ -23,9 +41,11 @@ SecurityLab 第一轮建设及工程收口已经完成，**PR #1 已合入 main*
 | SocketCAN / vcan0 | VERIFIED | 开机自启；`ip link show vcan0` |
 | can-utils | VERIFIED | `candump/cansend/canplayer/isotpsend ...` |
 | ISO-TP | VERIFIED | `run_tests.sh all`（uds-basic） |
-| UDS（10/11/14/19/22/27/2E/31/34/35/36/37/38/3E） | VERIFIED | `labs/vehicle/uds-basic`（ecu.py / isotp_client.py）；0x19 / 0x31 / 0x34-0x37（download + upload）为第二轮，0x38 file transfer 与 0x14 DTC runtime status 清除为后续（均已合入）；**0x14 是 synthetic DTC model 的 status 清除，本 ECU 无 DTC 产生/故障注入机制，功能组与 0x85 未实现** |
+| UDS（10/11/14/19/22/27/2E/31/34/35/36/37/38/3E） | VERIFIED | `labs/vehicle/uds-basic`（ecu.py / isotp_client.py）；0x19 / 0x31 / 0x34-0x37（download + upload）/ 0x38 file transfer **均已合入 main 并有 unit + e2e 验证**；**边界**：0x14 是 synthetic DTC model 的 status 清除，本 ECU 无 DTC 产生/故障注入机制；0x19 仅 reportType 01/02/0A；0x38 为 synthetic in-memory 文件模型（非真实文件系统）；功能组、0x28 / 0x85、0x39 / 0x06 未实现 |
 | 多 ECU / Gateway | VERIFIED + PARTIAL | `ecu/gateway.py`；实时 0x7DF 守护进程待建 |
 | CAN/ISO-TP fuzz | VERIFIED | `fuzz/isotp_fuzz.py --smoke ...`（见 TEST_MATRIX）；最小复现 `scripts/repro/verify_fuzz_smoke.sh` |
+| UDS fuzz v1（请求层 SF） | VERIFIED | `fuzz/uds_fuzz.py --seed 12345 --max-cases N --out-dir …`；单请求 UDS 变异（SF ≤ 7B）；最小复现 `scripts/repro/verify_uds_fuzz_smoke.sh` |
+| UDS MF-v1（OQ3，已合入） | VERIFIED / MERGED | 同 UDS fuzz 入口；MF 8–128B（FF + CF）、>128B admission reject、max 19 frames、M1–M7 传输变异；**stateful / multi-request sequences = OUT OF SCOPE** |
 | Replay | VERIFIED | `fuzz/replay.py <path> [--all] [--repeat N]` |
 | Kernel oracle（fuzz） | VERIFIED | 三态 AVAILABLE/UNAVAILABLE/ERROR；不可用 ≠ 0 events（收口新增） |
 | CAN capture 三格式 | VERIFIED | `can-tools/capture/capture_lab.sh`（CAN log/BLF/PCAP） |
@@ -39,7 +59,7 @@ SecurityLab 第一轮建设及工程收口已经完成，**PR #1 已合入 main*
 | 网络安全工具 | VERIFIED | nmap/tshark/tcpdump/ncat/socat/nft；`scripts/nettools_check.sh` |
 | Docker | VERIFIED（audit/local capability） | Ubuntu CLI → Docker Desktop E2E 已验证；当前 PR 不重新定义 Docker 当前运行态 |
 | 质量门禁 | VERIFIED | `scripts/qa_fast.sh`（离线）/ `qa_extended.sh`（vcan） |
-| CI | VERIFIED（Fast runner，branch + main 双证） | `.github/workflows/ci.yml`；Fast：branch 上 run 35576358620 = success（历史证据），main 上 post-merge run 35582069002 = success；Extended：仅 workflow_dispatch，目前不作为自动 PR 门禁 |
+| CI | VERIFIED（Fast runner，branch + main 双证） | `.github/workflows/ci.yml`；Fast：PR #10 branch push run `35834595473` / pull_request run `35834682934` = success，main post-merge run `35835334696` = success；Extended：仅 workflow_dispatch，目前不作为自动 PR 门禁 |
 | 统一健康检查 | VERIFIED | `scripts/healthcheck.sh [--extended]` |
 | DSH Agent Web GUI | VERIFIED | `systemctl --user status dsh-web`，http://127.0.0.1:8731 |
 | binfmt / WSL interop | REPO VERIFIED / SYSTEM DEPLOYMENT NOT REVERIFIED | `configs/binfmt/binfmt-selfheal.sh` v2.3 fail-closed（helper 缺失绝不回落 systemd-binfmt） |

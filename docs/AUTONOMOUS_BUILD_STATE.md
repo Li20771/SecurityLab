@@ -4,38 +4,86 @@
 >
 > 规则：只记录经实际命令验证的事实；状态取值 VERIFIED / PARTIAL / BLOCKED / NOT_APPLICABLE。
 
-## CURRENT STATE — 2026-09-21
+## CURRENT STATE — 2026-09-23
 
-**CURRENT_PHASE**: Phase 4 — Second-Round Planning
+**CURRENT_PHASE**:
+Phase 4 — Second-Round Planning / Post-OQ3 Baseline
 
 **CURRENT_TASK**:
-完成第一轮合入后的基线封存，盘点第二轮缺口并确定第一项实施任务
+OQ3 MF-v1 已合并，建立新的 main 基线并确定下一项第二轮能力
 
 **BRANCH**:
-`chore/engineering-close-20260921`（已合并，历史分支；
-第二轮能力一律新建 feature branch）
+`chore/post-merge-baseline-20260923`（本轮只做文档同步；
+第二轮能力一律新建独立 feature branch）
 
 **PR**:
-#1 MERGED / CLOSED
-merge commit `89a12a0cf43c6a23bf9cb5c6d393d1aa0198f87a`
+#10 MERGED / CLOSED
+merge commit `abcb8b4d21ac678fb6c86ec607c79e17e3177980`
 
 **MAIN**:
-`89a12a0cf43c6a23bf9cb5c6d393d1aa0198f87a`（= 第一轮正式基线）
+`abcb8b4d21ac678fb6c86ec607c79e17e3177980`（= PR #10 合并后的当前基线）
 
 **GitHub CI**:
 post-merge Fast QA = PASS
-Run = `35582069002`（event=push，branch=main）
+Run = `35835334696`（event=push，branch=main）
+
+**PREVIOUS BASELINE（历史，不再作为当前状态）**:
+PR #1 MERGED / CLOSED，main = `89a12a0cf43c6a23bf9cb5c6d393d1aa0198f87a`
+（第一轮正式基线；证据 run `35582069002`）
+
+**OQ3 MF-v1 状态**: **MERGED**（PR #10）
+契约 SF ≤ 7B / MF 8–128B / >128B admission reject / max 19 frames / M1–M7；
+offline 120 passed / 23594 subtests；OQ3 smoke PASS 10 / FAIL 0；
+v1 golden 947 且两个 digest unchanged。
+**stateful / multi-request sequences = OUT OF SCOPE**。
 
 **NEXT_STEP**:
-完成第二轮能力盘点与优先级设计 → 确定第一项能力 →
+重新检查当前 main 真实状态 → 确定下一项第二轮能力 →
 创建独立 feature branch 开发（小功能 → 小 PR → 可验证 → 合入）。
 
 **SECOND-ROUND MODE**:
 不再把多个大型能力一次性堆进 main；每个能力单独 feature branch、
 单独 PR、单独审查与回滚。
 
-**SECOND-ROUND FIRST TARGET — UDS 0x19 ReadDTCInformation
-（设计已修正 2026-09-21，按此执行，未实现）**:
+**POST-OQ3 COMPLETED（均已存在于当前 main 且已验证）**:
+
+- UDS 0x19 ReadDTCInformation：已存在于当前 main，并已有 unit/e2e 验证
+- UDS 0x31 RoutineControl：已存在于当前 main，并已有 unit/e2e 验证
+- UDS 0x34/0x35/0x36/0x37 transfer：已存在于当前 main，并已有 unit/e2e 验证
+- UDS 0x38 FileTransfer：已存在于当前 main，并已有 unit/e2e 验证
+- OQ3 MF-v1：PR #10 已合入 main
+
+> 已实现 ≠ 全部完成：0x19 仅覆盖 reportType 01/02/0A，其余 reportType、
+> suppressPosRspMsgIndicationBit 等仍在缺口清单内（见下）。
+
+**REMAINING GAPS（未实现，待重新盘点后排序）**:
+
+- 0x7DF 功能寻址**实时网关守护进程**
+- 真实 Flash / firmware flashing / 签名校验；0x39 / 0x06
+- Permission / session framework；0x28 / 0x85
+- 0x19 其余 reportType；0x31 的 option/status record
+- DTC 功能组与 DTC 产生 / 故障注入机制
+
+**NEXT CANDIDATE**:
+待重新盘点当前 main 的真实能力与剩余缺口后确定。
+当前不预设具体功能。
+
+> 以下各节为历史断点（Historical checkpoints），按当时状态记录，**不再回改**。
+> 其中的能力状态是**当时**的快照，可能与当前 main 不一致 ——
+> 例如多节写有 "0x19/0x31/0x34-37 未实现"，这些能力此后均已合入 main 并有验证
+> （见本文档 CURRENT STATE 的 POST-OQ3 COMPLETED 与 `TEST_MATRIX.md` §2）。
+> **判定当前状态一律以本文档顶部的 CURRENT STATE 为准。**
+
+---
+
+## Historical checkpoint — 2026-09-21 — UDS 0x19 ReadDTCInformation 设计
+
+> **HISTORICAL**：以下是 2026-09-21 的**规划**记录，**不是当前计划**。
+> 该能力**已实施并合入 main**（unit/e2e 见 `TEST_MATRIX.md` §2：
+> `test_dtc_unit.py`、`test_dtc_vcan.py`）。
+> 保留于此仅供追溯当时的验收设计意图。
+
+**当时定位**: SECOND-ROUND FIRST TARGET（规划，未实现）
 
 - 子功能与报文（教学实验统一 DTCFormatIdentifier = 0x01，
   ISO 14229-1 DTC format）:
@@ -68,8 +116,6 @@ Run = `35582069002`（event=push，branch=main）
   收录；feature branch 自己的 Fast CI = success；TEST_MATRIX / README 同步。
   实施时创建独立 feature branch（如 feat/uds-0x19-read-dtc），
   不在本规划分支上实现。
-
-> 以下各节为历史断点（Historical checkpoints），按当时状态记录，不再回改。
 
 ---
 
