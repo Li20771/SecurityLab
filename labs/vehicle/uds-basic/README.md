@@ -98,6 +98,7 @@ CF (连续帧): 21 ...  22 ...
 | `ecu/uds_server.py` | **UDS 协议层**：`EcuState`、服务 handler、registry、dispatcher |
 | `ecu/uds_types.py` | 协议常量与响应构造（零依赖） |
 | `ecu/did_database.py` | DID 数据库（DID → 数据字节）与受保护 DID 标记 |
+| `ecu/dtc_runtime.py` | DTC **运行时状态**写入原语（受校验入口；不新增 UDS 服务，见 3.5） |
 | `ecu/keygen.py` | 教学用 seed/key 算法（**不依赖 CAN / ISO-TP**） |
 
 各文件的完整职责边界与依赖方向见 **第 14 节 架构**。
@@ -167,6 +168,52 @@ UDS_INTERFACE=vcan1 UDS_RX_ID=0x7E1 UDS_TX_ID=0x7E9 \
 
 > 端到端测试使用 `UDS_LOCKOUT_SECONDS=2` 缩短锁定窗口，
 > 因为锁定无法通过协议提前解除，测试只能等它自然到期。
+
+### 3.5 DTC 运行时状态模型（`ecu/dtc_runtime.py`）
+
+DTC 的三层职责**刻意分离**，互不越界：
+
+| 层 | 位置 | 内容 | 谁能改 |
+|---|---|---|---|
+| 定义 | `dtc_database.DTC_DATABASE` | 出厂默认 `statusOfDTC` | 静态常量，运行时**从不**被写入 |
+| 定义属性 | `dtc_database.DTC_METADATA` | `severity` / `functional_unit` | 静态常量，**没有任何服务会改它** |
+| 运行时状态 | `EcuState.dtc_records` | 当前 `statusOfDTC` | 经 `dtc_runtime` 的写入原语 |
+
+`dtc_runtime` 是**运行时 DTC 状态的唯一受校验入口**，且**不新增任何 UDS 服务**
+（故障产生只经 Python API / test seam，不把它做成协议能力）：
+
+```python
+import dtc_runtime
+
+dtc_runtime.is_registered_dtc(0x100001)            # True
+dtc_runtime.set_dtc_status(state, 0x100001, 0x09)  # 产生 / 更新（受校验）
+dtc_runtime.get_dtc_status(state, 0x100001)        # 读回
+dtc_runtime.clear_dtc_status(state, 0x100001)      # 清除（即 0x14 的写入落点）
+```
+
+| 函数 | 校验 | 用途 |
+|---|---|---|
+| `set_dtc_status(state, dtc, status)` | 已注册 DTC + `status ∈ [0x00, 0xFF]` | 产生 / 更新 |
+| `clear_dtc_status(state, dtc)` | **不做注册校验** | 0x14 的写入落点 |
+| `get_dtc_status(state, dtc)` | 已注册 DTC | 读取 |
+
+**两个写入入口的契约差异是刻意的**：`0x14` 接受 `dtc_records` 中实际存在的
+任何 key（含运行时 / 测试注入的 DTC），给它加注册校验会**改变 0x14 行为**，
+故 `clear_dtc_status` 不校验；而 `set_dtc_status` 是"产生故障"的入口，必须
+拒绝未注册 DTC —— **不静默创建没有 metadata 的新 DTC**。
+
+失败语义：未注册 → `UnknownDtcError`；status 越界 → `DtcStateError`；
+**两项校验都发生在任何写入之前**，被拒的调用不触碰 state。
+
+闭环（fault generation 只经该 Python API，不经协议）：
+
+```text
+set_dtc_status(dtc, 非零)   → DTC active
+        ↓  0x19/01、02、07、08、09 观察到变化
+0x14（→ clear_dtc_status）  → status 0x00，key 保留
+        ↓  各报告反映清除结果（0x09 仍返回该 DTC，severity 不变）
+0x11 01/02/03               → DTC 保持（故障记忆，不复位清除）
+```
 
 ---
 
@@ -371,7 +418,7 @@ SecurityLab : 59 <DTCStatusAvailabilityMask> ...
 
 | 存放位置 | 内容 | 谁改它 |
 |---|---|---|
-| `EcuState.dtc_records` | 运行时 `statusOfDTC` | `0x14` 置 `0x00`（key 保留） |
+| `EcuState.dtc_records` | 运行时 `statusOfDTC` | `dtc_runtime` 的写入原语；`0x14` 置 `0x00`（key 保留） |
 | `ecu/dtc_database.py` → `DTC_METADATA` | **定义属性** `severity` / `functional_unit` | **没有任何服务会改它** |
 
 `severity` / `functional_unit` 是 **DTC 的定义属性**，与故障状态正交：
@@ -1116,7 +1163,7 @@ bash tests/run_tests.sh e2e    # 只跑 vcan0 端到端测试
 | `tests/test_keygen_unit.py` | 34 | 否 |
 | `tests/test_services_extra_unit.py` | 17 | 否 |
 | `tests/test_gateway_unit.py` | 13 | 否 |
-| `tests/test_dtc_unit.py` | 76 | 否 |
+| `tests/test_dtc_unit.py` | 98 | 否 |
 | `tests/test_dtc_clear_unit.py` | 39 | 否 |
 | `tests/test_routine_unit.py` | 25 | 否 |
 | `tests/test_transfer_unit.py` | 40 | 否 |
@@ -1132,7 +1179,7 @@ bash tests/run_tests.sh e2e    # 只跑 vcan0 端到端测试
 | `tests/test_transfer_vcan.py` | 18 | 是 |
 | `tests/test_upload_vcan.py` | 16 | 是 |
 | `tests/test_file_transfer_vcan.py` | 41 | 是 |
-| **合计** | **789**（unit 581 + e2e 208） | — |
+| **合计** | **811**（unit 603 + e2e 208） | — |
 
 > 表中数字为 **Local verified**（本机 `run_tests.sh all` 实测）。
 > GitHub CI 的 fast job 只覆盖 ruff / mypy / **unit** / can-tools offline；
@@ -1515,6 +1562,7 @@ uds-basic/
 │   ├── uds_types.py         # 协议常量 + 响应构造（零依赖）
 │   ├── did_database.py      # DID 数据库（受保护/可写 DID 标记）
 │   ├── dtc_database.py      # DTC 静态数据库（合成 DTC + mask/format 常量 + DTC_METADATA）
+│   ├── dtc_runtime.py       # DTC 运行时状态写入原语（受校验入口）
 │   ├── file_database.py     # 0x38 文件模型（FILE_MODE_*/出厂文件/dirInfo 编码）
 │   ├── routine_database.py   # Routine 静态数据库（0x2001/0x2002 定义）
 │   ├── transfer_database.py   # Download/Upload 静态配置（DFI/ALFID/上限/上传源）

@@ -47,6 +47,7 @@ UDS Basic —— ECU 运行时状态与服务处理
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
+import dtc_runtime
 import keygen
 import uds_types
 from did_database import (
@@ -873,7 +874,7 @@ def service_clear_diagnostic_information(request: bytes, state: EcuState) -> byt
         # 取 list() 快照以避免"边遍历边写"的歧义读法（值写回既有 key，
         # dict 大小不变，但显式快照让意图无歧义）。
         for dtc in list(state.dtc_records):
-            state.dtc_records[dtc] = 0x00
+            dtc_runtime.clear_dtc_status(state, dtc)
 
         return uds_types.positive_response(0x14)
 
@@ -882,7 +883,7 @@ def service_clear_diagnostic_information(request: bytes, state: EcuState) -> byt
             0x14, uds_types.NRC_REQUEST_OUT_OF_RANGE
         )
 
-    state.dtc_records[group_of_dtc] = 0x00
+    dtc_runtime.clear_dtc_status(state, group_of_dtc)
 
     return uds_types.positive_response(0x14)
 

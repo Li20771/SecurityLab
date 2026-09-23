@@ -55,6 +55,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _ECU_DIR = os.path.join(os.path.dirname(_HERE), "ecu")
 sys.path.insert(0, _ECU_DIR)
 
+import dtc_runtime  # noqa: E402
 import uds_server  # noqa: E402
 from dtc_database import (  # noqa: E402
     DTC_DATABASE,
@@ -1036,6 +1037,241 @@ class TestReadDtcWireProfile(DtcTestCase):
                 self.assertEqual(response[0], POS_READ_DTC)
                 self.assertEqual(response[1], DTC_STATUS_AVAILABILITY_MASK)
                 self.assertNotEqual(response[1], report_type)
+
+
+# ======================================================================
+# OQ6-A：DTC runtime state（mutate → 0x19 → 0x14 → cleared 闭环）
+# ======================================================================
+
+
+class TestDtcRuntimeRegistration(DtcTestCase):
+    """已知 / 未知 DTC 的判定边界。"""
+
+    def test_every_database_key_is_registered(self) -> None:
+        for dtc in DTC_DATABASE:
+            with self.subTest(dtc=hex(dtc)):
+                self.assertTrue(dtc_runtime.is_registered_dtc(dtc))
+
+    def test_dtc_outside_the_database_is_not_registered(self) -> None:
+        for dtc in (0x000000, 0x100009, 0x300003, 0xFFFFFF):
+            with self.subTest(dtc=hex(dtc)):
+                self.assertFalse(dtc_runtime.is_registered_dtc(dtc))
+
+
+class TestDtcRuntimeMutation(DtcTestCase):
+    """set / get 的语义与校验（全部在写入前拒绝）。"""
+
+    def test_initial_status_comes_from_the_database(self) -> None:
+        for dtc, status in DTC_DATABASE.items():
+            with self.subTest(dtc=hex(dtc)):
+                self.assertEqual(dtc_runtime.get_dtc_status(self.state, dtc), status)
+
+    def test_set_then_get_roundtrip(self) -> None:
+        dtc_runtime.set_dtc_status(self.state, 0x100001, 0x09)
+
+        self.assertEqual(dtc_runtime.get_dtc_status(self.state, 0x100001), 0x09)
+
+    def test_status_zero_means_inactive(self) -> None:
+        dtc_runtime.set_dtc_status(self.state, 0x100001, 0x00)
+
+        self.assertEqual(dtc_runtime.get_dtc_status(self.state, 0x100001), 0x00)
+
+    def test_status_boundaries_are_accepted(self) -> None:
+        for status in (0x00, 0x01, 0x7F, 0x80, 0xFF):
+            with self.subTest(status=hex(status)):
+                dtc_runtime.set_dtc_status(self.state, 0x100001, status)
+
+                self.assertEqual(
+                    dtc_runtime.get_dtc_status(self.state, 0x100001), status
+                )
+
+    def test_repeat_set_is_idempotent(self) -> None:
+        dtc_runtime.set_dtc_status(self.state, 0x100002, 0x04)
+        once = dict(self.state.dtc_records)
+
+        dtc_runtime.set_dtc_status(self.state, 0x100002, 0x04)
+
+        self.assertEqual(self.state.dtc_records, once)
+
+    def test_set_does_not_touch_other_dtc(self) -> None:
+        before = dict(self.state.dtc_records)
+
+        dtc_runtime.set_dtc_status(self.state, 0x100001, 0x0F)
+
+        for dtc, status in before.items():
+            if dtc == 0x100001:
+                continue
+
+            with self.subTest(dtc=hex(dtc)):
+                self.assertEqual(self.state.dtc_records[dtc], status)
+
+    def test_set_does_not_touch_metadata(self) -> None:
+        """severity / functionalUnit 是定义属性，不随 runtime status 改变。"""
+        before = dict(DTC_METADATA)
+
+        dtc_runtime.set_dtc_status(self.state, 0x100001, 0xFF)
+
+        self.assertEqual(dict(DTC_METADATA), before)
+
+    def test_invalid_status_is_rejected_without_write(self) -> None:
+        snap = dict(self.state.dtc_records)
+
+        for bad in (-1, 0x100, 0xFFFF):
+            with self.subTest(status=bad):
+                with self.assertRaises(dtc_runtime.DtcStateError):
+                    dtc_runtime.set_dtc_status(self.state, 0x100001, bad)
+
+        self.assertEqual(self.state.dtc_records, snap, "被拒的写入不得触碰 state")
+
+    def test_unknown_dtc_is_rejected_and_not_created(self) -> None:
+        """不静默创建没有 metadata 的新 DTC。"""
+        unknown = 0x100009
+
+        with self.assertRaises(dtc_runtime.UnknownDtcError):
+            dtc_runtime.set_dtc_status(self.state, unknown, 0x01)
+
+        self.assertNotIn(unknown, self.state.dtc_records, "不得凭空多出一个 DTC")
+
+    def test_unknown_dtc_read_is_rejected(self) -> None:
+        with self.assertRaises(dtc_runtime.UnknownDtcError):
+            dtc_runtime.get_dtc_status(self.state, 0x100009)
+
+
+class TestDtcRuntimeVisibleThrough0x19(DtcTestCase):
+    """
+    runtime mutation 必须能被**现有** 0x19 报告观察到
+    —— 这是 "mutate → runtime state → 0x19" 这一段的闭环。
+    """
+
+    def test_01_count_reflects_mutation(self) -> None:
+        dtc_runtime.set_dtc_status(self.state, 0x100001, 0x09)
+
+        response = handle_uds_request(bytes([0x19, 0x01, 0x09]), self.state)
+
+        self.assertEqual(response[-2:], bytes([0x00, 0x01]), "只有 0x100001 命中")
+
+    def test_02_record_reflects_mutation(self) -> None:
+        dtc_runtime.set_dtc_status(self.state, 0x100001, 0x09)
+
+        response = handle_uds_request(bytes([0x19, 0x02, 0x09]), self.state)
+
+        self.assertEqual(response, bytes.fromhex("59 FF 10 00 01 09"))
+
+    def test_07_count_reflects_mutation(self) -> None:
+        """
+        severity(0x80) + status(0x08) 双 mask：mutation 前 0，后 1。
+
+        statusMask 必须选默认 status 不匹配的位：0x100001 出厂 status 为
+        0x01，``0x01 & 0x08 == 0`` → 变异前不命中；写入 0x08 后命中。
+        （severityMask 0x80 只有 0x100001 具备，因此计数即它一个。）
+        """
+        before = handle_uds_request(bytes([0x19, 0x07, 0x80, 0x08]), self.state)
+
+        self.assertEqual(before[-2:], bytes([0x00, 0x00]))
+
+        dtc_runtime.set_dtc_status(self.state, 0x100001, 0x08)
+
+        after = handle_uds_request(bytes([0x19, 0x07, 0x80, 0x08]), self.state)
+
+        self.assertEqual(after[-2:], bytes([0x00, 0x01]))
+
+    def test_08_record_reflects_mutation(self) -> None:
+        dtc_runtime.set_dtc_status(self.state, 0x100001, 0x09)
+
+        response = handle_uds_request(bytes([0x19, 0x08, 0x80, 0x09]), self.state)
+
+        self.assertEqual(response, bytes.fromhex("59 FF 80 01 10 00 01 09"))
+
+    def test_09_severity_stays_correct_after_mutation(self) -> None:
+        """mutation 只改 status；severity / functionalUnit 必须保持定义值。"""
+        dtc_runtime.set_dtc_status(self.state, 0x100001, 0x09)
+
+        response = handle_uds_request(
+            bytes([0x19, 0x09, 0x10, 0x00, 0x01]), self.state
+        )
+
+        self.assertEqual(response, bytes.fromhex("59 FF 80 01 10 00 01 09"))
+
+    def test_0a_still_reports_every_supported_dtc(self) -> None:
+        dtc_runtime.set_dtc_status(self.state, 0x100001, 0x09)
+
+        response = handle_uds_request(bytes([0x19, 0x0A]), self.state)
+
+        self.assertEqual(len(response), 2 + 4 * len(DTC_DATABASE))
+
+
+class TestDtcRuntimeClearInteraction(DtcTestCase):
+    """
+    "0x19 → 0x14 → cleared" 这一段的闭环：0x14 清除后所有报告都反映清除结果。
+    """
+
+    def test_single_clear_reverts_every_report(self) -> None:
+        dtc_runtime.set_dtc_status(self.state, 0x100001, 0x09)
+
+        self.assertEqual(
+            handle_uds_request(bytes([0x14, 0x10, 0x00, 0x01]), self.state),
+            bytes([0x54]),
+        )
+
+        # 01：mask 0x09 不再命中
+        self.assertEqual(
+            handle_uds_request(bytes([0x19, 0x01, 0x09]), self.state)[-2:],
+            bytes([0x00, 0x00]),
+        )
+        # 02：mask 0x09 无记录
+        self.assertEqual(
+            handle_uds_request(bytes([0x19, 0x02, 0x09]), self.state),
+            bytes.fromhex("59 FF"),
+        )
+        # 07 / 08：severity 仍匹配但 status 已归零 → 不再命中
+        self.assertEqual(
+            handle_uds_request(bytes([0x19, 0x07, 0x80, 0x09]), self.state)[-2:],
+            bytes([0x00, 0x00]),
+        )
+        self.assertEqual(
+            handle_uds_request(bytes([0x19, 0x08, 0x80, 0x09]), self.state),
+            bytes.fromhex("59 FF"),
+        )
+        # 09：DTC 仍在，status 归零，severity 不变
+        self.assertEqual(
+            handle_uds_request(bytes([0x19, 0x09, 0x10, 0x00, 0x01]), self.state),
+            bytes.fromhex("59 FF 80 01 10 00 01 00"),
+        )
+
+    def test_all_clear_zeroes_a_mutated_status(self) -> None:
+        dtc_runtime.set_dtc_status(self.state, 0x100002, 0x0F)
+
+        self.assertEqual(
+            handle_uds_request(bytes([0x14, 0xFF, 0xFF, 0xFF]), self.state),
+            bytes([0x54]),
+        )
+        self.assertEqual(dtc_runtime.get_dtc_status(self.state, 0x100002), 0x00)
+        self.assertEqual(len(self.state.dtc_records), len(DTC_DATABASE), "key 保留")
+
+    def test_mutation_after_clear_is_normal(self) -> None:
+        handle_uds_request(bytes([0x14, 0xFF, 0xFF, 0xFF]), self.state)
+
+        dtc_runtime.set_dtc_status(self.state, 0x100003, 0x04)
+
+        self.assertEqual(
+            handle_uds_request(bytes([0x19, 0x01, 0x04]), self.state)[-2:],
+            bytes([0x00, 0x01]),
+        )
+
+
+class TestDtcRuntimeResetInteraction(DtcTestCase):
+    """0x11 01/02/03 都不清 DTC —— 与既有语义一致（DTC 是故障记忆）。"""
+
+    def test_mutation_survives_every_reset_type(self) -> None:
+        dtc_runtime.set_dtc_status(self.state, 0x100001, 0x02)
+
+        for reset_type in (0x01, 0x02, 0x03):
+            with self.subTest(reset_type=hex(reset_type)):
+                handle_uds_request(bytes([SID_ECU_RESET, reset_type]), self.state)
+
+                self.assertEqual(
+                    dtc_runtime.get_dtc_status(self.state, 0x100001), 0x02
+                )
 
 
 if __name__ == "__main__":
