@@ -18,6 +18,15 @@ UDS Basic —— 0x19 ReadDTCInformation vcan0 端到端测试
 5. 长度错误（缺 mask / 多余数据）→ 7F 19 13
 6. hardReset 保留 DTC：11 01 前后 19 02 FF 响应一致
 
+OQ5 severity 家族:
+
+7. 0x19/07 reportNumberOfDTCBySeverityMaskRecord 正响应
+8. 0x19/08 reportDTCBySeverityMaskRecord 正响应 —— **天然 MF**：
+   3 DTC × 6 字节 + 3 字节头 = 21 字节 > 7，必须走 ISO-TP FF/CF。
+   本测试断言**内核 ISO-TP 重组后的完整 payload**，不断言 CAN 帧数
+   （帧数是传输层细节，不属 UDS 层契约）。
+9. 0x19/09 reportSeverityInformationOfDTC 正响应 / 未知 DTC → NRC 0x31
+
 明确**不测**：其他 0x19 reportType、suppressPosRspMsgIndicationBit。
 
 前置：vcan0 已存在并 UP；本测试**独占总线**，勿与其它 CAN 测试并行。
@@ -55,6 +64,7 @@ RECV_TIMEOUT = 1.5
 
 NRC_SUBFUNCTION_NOT_SUPPORTED = 0x12
 NRC_INCORRECT_MESSAGE_LENGTH = 0x13
+NRC_REQUEST_OUT_OF_RANGE = 0x31
 
 #: 出厂默认 DTC 状态（与 ecu/dtc_database.py 保持一致，用于 byte-level 断言）。
 DEFAULT_DTC_RECORDS = {
@@ -63,8 +73,19 @@ DEFAULT_DTC_RECORDS = {
     0x100003: 0x04,
 }
 
+#: DTC → (severity, functionalUnit)（与 ecu/dtc_database.py 保持一致）。
+DEFAULT_DTC_METADATA = {
+    0x100001: (0x80, 0x01),
+    0x100002: (0x40, 0x02),
+    0x100003: (0x20, 0x03),
+}
+
 DTC_STATUS_AVAILABILITY_MASK = 0xFF
+DTC_SEVERITY_AVAILABILITY_MASK = 0xE0
 DTC_FORMAT_IDENTIFIER = 0x01
+
+#: 单帧上限（经典 CAN 的 SF 最多 1 PCI + 7 payload）。
+SINGLE_FRAME_MAX = 7
 
 
 def exchange(payload: bytes, timeout: float = RECV_TIMEOUT):
@@ -269,6 +290,78 @@ class TestDtcE2E(DtcVcanTestCase):
             ])
 
         self.assertEqual(response, expected)
+
+    # -- OQ5 severity 家族 ------------------------------------------------
+
+    def test_09_severity_information_positive(self) -> None:
+        """19 09 <DTC:3> → 59 <availMask> <DTC:3> <status> <severity> <funcUnit>"""
+        response = exchange(bytes([0x19, 0x09, 0x10, 0x00, 0x01]))
+
+        severity, functional_unit = DEFAULT_DTC_METADATA[0x100001]
+
+        self.assertEqual(
+            response,
+            bytes([
+                0x59, DTC_STATUS_AVAILABILITY_MASK,
+                0x10, 0x00, 0x01,
+                DEFAULT_DTC_RECORDS[0x100001],
+                severity, functional_unit,
+            ]),
+        )
+
+    def test_09_unknown_dtc_out_of_range(self) -> None:
+        self.assertNegative(
+            exchange(bytes([0x19, 0x09, 0x10, 0x00, 0x09])),
+            NRC_REQUEST_OUT_OF_RANGE,
+        )
+
+    def test_07_severity_count_positive(self) -> None:
+        response = exchange(bytes([0x19, 0x07, 0xE0, 0xFF]))
+
+        self.assertEqual(
+            response,
+            bytes([
+                0x59,
+                DTC_STATUS_AVAILABILITY_MASK,
+                DTC_SEVERITY_AVAILABILITY_MASK,
+                DTC_FORMAT_IDENTIFIER,
+                0x00,
+                len(DEFAULT_DTC_RECORDS),
+            ]),
+        )
+
+    def test_07_each_severity_bit_selects_one_dtc(self) -> None:
+        for bit in (0x80, 0x40, 0x20):
+            with self.subTest(severity_mask=hex(bit)):
+                response = exchange(bytes([0x19, 0x07, bit, 0xFF]))
+
+                self.assertEqual(response[-2:], bytes([0x00, 0x01]))
+
+    def test_08_severity_records_via_multi_frame(self) -> None:
+        """
+        3 DTC × 6 字节 + 3 字节头 = 21 字节，**必然超过单帧**。
+
+        断言内核 ISO-TP **重组后的完整 payload**；不断言 CAN FF/CF 帧数
+        （帧数是传输层细节，不属 UDS 层契约）。
+        """
+        response = exchange(bytes([0x19, 0x08, 0xE0, 0xFF]))
+
+        expected = bytes([
+            0x59, DTC_STATUS_AVAILABILITY_MASK, DTC_SEVERITY_AVAILABILITY_MASK,
+        ])
+
+        for dtc in sorted(DEFAULT_DTC_RECORDS):
+            severity, functional_unit = DEFAULT_DTC_METADATA[dtc]
+            expected += bytes([
+                (dtc >> 16) & 0xFF, (dtc >> 8) & 0xFF, dtc & 0xFF,
+                DEFAULT_DTC_RECORDS[dtc], severity, functional_unit,
+            ])
+
+        self.assertEqual(response, expected)
+        self.assertGreater(
+            len(response), SINGLE_FRAME_MAX,
+            "本用例必须覆盖 MF：响应长度需超过单帧上限",
+        )
 
     def test_invalid_report_type(self) -> None:
         for report_type in (0x03, 0x7F):
