@@ -58,7 +58,11 @@ from did_database import (
 from dtc_database import (
     DTC_DATABASE,
     DTC_FORMAT_IDENTIFIER,
+    DTC_METADATA,
+    DTC_SEVERITY_AVAILABILITY_MASK,
+    DTC_SEVERITY_NO_SEVERITY_AVAILABLE,
     DTC_STATUS_AVAILABILITY_MASK,
+    DtcMetadata,
 )
 from file_database import (
     FILE_MODE_ADD_FILE,
@@ -891,7 +895,20 @@ def service_clear_diagnostic_information(request: bytes, state: EcuState) -> byt
 #: 本 feature 实现的 0x19 reportType 子功能。
 REPORT_NUMBER_OF_DTC = 0x01
 REPORT_DTC_BY_STATUS_MASK = 0x02
+REPORT_NUMBER_OF_DTC_BY_SEVERITY = 0x07
+REPORT_DTC_BY_SEVERITY = 0x08
+REPORT_SEVERITY_INFORMATION = 0x09
 REPORT_SUPPORTED_DTC = 0x0A
+
+#: 运行时出现**未声明 metadata** 的 DTC 时的回退值。
+#:
+#: 正常路径下 ``DTC_METADATA`` 覆盖 ``DTC_DATABASE`` 全部条目（导入期护栏
+#: 保证），但 ``EcuState.dtc_records`` 允许被运行时/测试注入额外 DTC
+#: （如 ``test_hard_reset_preserves_dtc_records`` 注入 0x100009）。
+#: 此时按 ISO 语义回退为 ``noSeverityAvailable``：severity=0x00 不匹配
+#: 任何非零 severityMask（因此不会出现在 0x07/0x08 结果里），而 0x09
+#: 仍能为该 DTC 返回确定记录而不是抛 KeyError。
+_NO_METADATA = DtcMetadata(DTC_SEVERITY_NO_SEVERITY_AVAILABLE, 0x00)
 
 
 def _matching_dtcs(state: EcuState, status_mask: int) -> list[tuple[int, int]]:
@@ -905,25 +922,85 @@ def _matching_dtcs(state: EcuState, status_mask: int) -> list[tuple[int, int]]:
     )
 
 
+def _matching_dtcs_by_severity(
+    state: EcuState, severity_mask: int, status_mask: int
+) -> list[tuple[int, int, int, int]]:
+    """
+    返回**同时**满足两个 mask 的 ``(DTC, status, severity, functional_unit)``。
+
+    匹配条件（两个条件为**逻辑与**）::
+
+        (severity & severity_mask) != 0
+        AND
+        (status   & status_mask)   != 0
+
+    按 DTC 升序输出，保证响应字节顺序稳定（0x19/08 教学要求）。
+
+    severity / functional_unit 一律取自静态 ``DTC_METADATA`` —— 它们是
+    **DTC 定义属性**，与 ``state.dtc_records`` 的运行时 status 正交：
+    0x14 清零 status 会改变本函数的**匹配结果**，但不会改变 severity
+    取值本身。
+    """
+    matched = []
+
+    for dtc, status in state.dtc_records.items():
+        metadata = DTC_METADATA.get(dtc, _NO_METADATA)
+
+        if (metadata.severity & severity_mask) == 0:
+            continue
+
+        if (status & status_mask) == 0:
+            continue
+
+        matched.append(
+            (dtc, status, metadata.severity, metadata.functional_unit)
+        )
+
+    return sorted(matched)
+
+
 def service_read_dtc_information(request: bytes, state: EcuState) -> bytes:
     """
     处理 0x19 ReadDTCInformation。
 
-    本 feature 只实现三个 reportType（其余 → NRC 0x12）：
+    本 feature 实现六个 reportType（其余 → NRC 0x12）。
 
-    - ``19 01 <DTCStatusMask>`` → ``59 01 <DTCStatusAvailabilityMask>
-      <DTCFormatIdentifier> <DTCCount_H> <DTCCount_L>``，
-      计数 = ``(statusOfDTC & mask) != 0`` 的 DTC 数（16-bit big-endian）。
-    - ``19 02 <DTCStatusMask>`` → ``59 02 <DTCStatusAvailabilityMask>
-      [(DTC_H DTC_M DTC_L) <statusOfDTC>]*``，只含匹配项、**不含
-      DTCCount**，按 DTC 升序。
-    - ``19 0A`` → ``59 0A <DTCStatusAvailabilityMask>
-      [(DTC_H DTC_M DTC_L) <statusOfDTC>]*``，报告全部支持 DTC
-      （不受 status 过滤），按 DTC 升序。
+    **status 家族**（OQ3 之前即在 main，wire format 冻结不变）：
 
-    长度规则：01/02 严格 3 字节，0A 严格 2 字节，否则 NRC 0x13。
-    运行时 DTC 状态只从 ``state.dtc_records`` 读取；本 handler
-    **不修改任何状态**（本 PR 不提供"设置 DTC 状态"的服务）。
+    - ``19 01 <DTCStatusMask>`` → ``59 <availMask> <DTCFormatIdentifier>
+      <DTCCount_H> <DTCCount_L>``；计数 = ``(statusOfDTC & mask) != 0``。
+    - ``19 02 <DTCStatusMask>`` → ``59 <availMask> [(DTC:3)(status:1)]*``，
+      只含匹配项、**不含 DTCCount**，按 DTC 升序。
+    - ``19 0A`` → ``59 <availMask> [(DTC:3)(status:1)]*``，报告全部支持
+      DTC（不受 status 过滤），按 DTC 升序。
+
+    **severity 家族**（OQ5 新增，沿用同一 profile）：
+
+    - ``19 07 <DTCSeverityMask> <DTCStatusMask>`` → ``59 <availMask>
+      <severityAvailMask> <DTCFormatIdentifier> <DTCCount_H> <DTCCount_L>``；
+      两个 mask 为**逻辑与**。
+    - ``19 08 <DTCSeverityMask> <DTCStatusMask>`` → ``59 <availMask>
+      <severityAvailMask> [(DTC:3)(status:1)(severity:1)(funcUnit:1)]*``。
+    - ``19 09 <DTC:3>`` → ``59 <availMask>
+      [(DTC:3)(status:1)(severity:1)(funcUnit:1)]``；未知 DTC → NRC 0x31。
+
+    **本实验的 wire profile（刻意区别于 ISO 14229-1）**：正响应第 2 字节
+    **不是 reportType 回显**，而是 ``DTCStatusAvailabilityMask``::
+
+        ISO 14229-1 : 59 <reportType> <availMask> ...
+        SecurityLab : 59 <availMask> ...
+
+    这是本实验**既有的 wire contract**（01/02/0A 自 OQ3 之前即如此，且被
+    unit + e2e 逐字节固化）。OQ5 的 07/08/09 **沿用同一 profile**：既不因
+    "标准如此"回头改动既有三个类型，也不在新类型上单独引入回显——否则
+    同一个服务会出现两套响应解析约定。
+
+    长度规则（含 reportType 字节）：01/02 为 3，07/08 为 4，09 为 5，
+    0A 为 2；不符 → NRC 0x13。
+
+    数据来源：运行时 status 只从 ``state.dtc_records`` 读取；
+    severity / functional_unit 只从静态 ``dtc_database.DTC_METADATA``
+    读取（**不复制**进运行时状态）。本 handler **不修改任何状态**。
     suppressPosRspMsgIndicationBit 不在本 feature 范围（后续统一处理）。
     """
     if len(request) < 2:
@@ -986,6 +1063,89 @@ def service_read_dtc_information(request: bytes, state: EcuState) -> bytes:
                 dtc & 0xFF,
                 status,
             ])
+
+        return uds_types.positive_response(0x19, payload)
+
+    if report_type == REPORT_NUMBER_OF_DTC_BY_SEVERITY:
+        if len(request) != 4:
+            return uds_types.negative_response(
+                0x19, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+            )
+
+        severity_mask = request[2]
+        status_mask = request[3]
+        count = len(
+            _matching_dtcs_by_severity(state, severity_mask, status_mask)
+        )
+
+        payload = bytes([
+            DTC_STATUS_AVAILABILITY_MASK,
+            DTC_SEVERITY_AVAILABILITY_MASK,
+            DTC_FORMAT_IDENTIFIER,
+            (count >> 8) & 0xFF,
+            count & 0xFF,
+        ])
+
+        return uds_types.positive_response(0x19, payload)
+
+    if report_type == REPORT_DTC_BY_SEVERITY:
+        if len(request) != 4:
+            return uds_types.negative_response(
+                0x19, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+            )
+
+        severity_mask = request[2]
+        status_mask = request[3]
+        payload = bytes([
+            DTC_STATUS_AVAILABILITY_MASK,
+            DTC_SEVERITY_AVAILABILITY_MASK,
+        ])
+
+        matched = _matching_dtcs_by_severity(
+            state, severity_mask, status_mask
+        )
+
+        # 每条记录 6 字节：DTC(3) + status(1) + severity(1) + functionalUnit(1)。
+        # 记录内字段顺序与 0x08 保持一致（ISO 14229-1 的记录布局）。
+        for dtc, status, severity, functional_unit in matched:
+            payload += bytes([
+                (dtc >> 16) & 0xFF,
+                (dtc >> 8) & 0xFF,
+                dtc & 0xFF,
+                status,
+                severity,
+                functional_unit,
+            ])
+
+        return uds_types.positive_response(0x19, payload)
+
+    if report_type == REPORT_SEVERITY_INFORMATION:
+        if len(request) != 5:
+            return uds_types.negative_response(
+                0x19, uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+            )
+
+        dtc = (request[2] << 16) | (request[3] << 8) | request[4]
+
+        # 与项目既有惯例一致："未知 DID / 未知 RID / 未知 DTC → 0x31"
+        if dtc not in state.dtc_records:
+            return uds_types.negative_response(
+                0x19, uds_types.NRC_REQUEST_OUT_OF_RANGE
+            )
+
+        metadata = DTC_METADATA.get(dtc, _NO_METADATA)
+
+        # status 取自运行时；severity / functionalUnit 取自静态 metadata，
+        # 二者**不合并存储**（0x14 只动前者）。
+        payload = bytes([
+            DTC_STATUS_AVAILABILITY_MASK,
+            (dtc >> 16) & 0xFF,
+            (dtc >> 8) & 0xFF,
+            dtc & 0xFF,
+            state.dtc_records[dtc],
+            metadata.severity,
+            metadata.functional_unit,
+        ])
 
         return uds_types.positive_response(0x19, payload)
 
