@@ -114,8 +114,10 @@ vcan0
   ▼
 Gateway Runtime（独立进程，单进程内实例化三个 VirtualEcu）
   ├── IsotpTransport：每个请求 ID 一个 CAN_ISOTP socket
-  │     0x7E0→tx 0x7E8   0x7E1→tx 0x7E9   0x7E2→tx 0x7EA
-  │     0x7DF→tx 占位（按定义"广播不回帧"，该 txid 永不使用）
+  │     rx 0x7E0 → tx 0x7E8   (ECU_A；单向一对，不跨接线)
+  │     rx 0x7E1 → tx 0x7E9   (ECU_B)
+  │     rx 0x7E2 → tx 0x7EA   (ECU_C)
+  │     rx 0x7DF → tx 0x7FF   (占位：按定义"广播不回帧"，该 txid 永不使用)
   ├── select() → (request_id, payload)
   ▼
 DiagnosticGateway.route()          ← 全部寻址语义仍只定义在这一层
@@ -137,8 +139,12 @@ DiagnosticGateway.route()          ← 全部寻址语义仍只定义在这一�
 - **生命周期**：SIGINT/SIGTERM → 退出码 0 + socket 清理（`--wait-timeout` 同时作为
   select 与 socket 超时，决定退出延迟上限），**不需要 `kill -9`**。
 - **服务集 = `VirtualEcu` 的静态表**（0x10/0x11/0x14/0x19/0x22/0x2E/0x31/0x34–0x38/
-  0x3E/0x85），**不含 0x27 SecurityAccess**：0x27 需要请求时依赖注入，归属 `ecu.py`
-  入口层，这是 `gateway.py` 既有的分层边界，OQ7 **未**改动（由 e2e 用例显式固化）。
+  0x3E/0x85），**不含 0x27 SecurityAccess**。这不是 runtime 的能力缺陷：0x27 需要
+  **请求时依赖注入**（时间快照 + 安全配置），按既有分层归属 `ecu.py` 入口层，而
+  `gateway.py` 的 `VirtualEcu` 用的是 uds_server 静态 SERVICE 表 —— 这是 OQ7 之前
+  就存在的分层边界，OQ7 **未**改动它（由 e2e 用例显式固化，避免被误读为漏接）。
+  让网关透传 0x27 需同时解决"每 ECU 独立注入"与"注入语义只定义一处"，属**后续独立
+  OQ**，不在 OQ7 范围内。
 - 入口：`python3 labs/vehicle/uds-basic/ecu/gateway_runtime.py --interface vcan0`
   （`ecu/` 不是 package，故不走 `python -m`；与 `ecu.py` 的启动方式一致）。
 - 可复现验证：`bash scripts/repro/verify_gateway_runtime.sh`（独占 vcan0）。

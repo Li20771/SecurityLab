@@ -65,7 +65,8 @@ OQ7（Gateway Runtime v1）已在 feature branch 上完成实现 + 测试 + 文�
 | 传输实现 | 每请求 ID 一个 CAN_ISOTP socket（与 `ecu.py` 同一种 ISO-TP 用法）；内核按 rxid 过滤 + 内核实重组/分帧，runtime 不解析 PCI |
 | 错误遏制 | 沿用 `ecu.py` 既有策略：EILSEQ/ECOMM/EMSGSIZE 丢弃当前传输继续运行；其它 OSError 向上抛不静默；畸形请求回 NRC 而**不使守护进程崩溃** |
 | 安全默认值 | `--interface` 默认 **vcan0**；非 `vcan*` 接口启动时打印显式警告 |
-| 边界（**未做**，禁写成已完成） | 真实 CAN / 真实 ECU、DoIP、多进程 ECU orchestration、gateway security policy / 高级过滤、真实固件刷写；**0x27 不经 gateway 层**（既有分层边界，见 ARCHITECTURE 3.1.1） |
+| 边界（**未做**，禁写成已完成） | 真实 CAN / 真实 ECU、DoIP、多进程 ECU orchestration、gateway security policy / 高级过滤、真实固件刷写 —— 均为**本轮之外**的能力，不是 OQ7 的未完成项 |
+| 不属于本轮（**非 OQ7 缺陷**） | **0x27 不经 gateway 层**：OQ7 runtime 的 transport/routing 能力已完整；0x27 需要请求时依赖注入（时间快照 + 安全配置），按既有分层归属 `ecu.py` 入口层，`gateway.py` 用静态 SERVICE 表 —— 这是 OQ7 **之前就存在**的分层边界。让网关透传 0x27 属**后续独立 OQ**（需同时解决每 ECU 独立注入与注入语义只定义一处） |
 | 验证（**Local verified**，2026-09-24 本机实测） | uds-basic `run_tests.sh all` → PASS 23 / WARN 0 / FAIL 0（unit **668** + e2e **233** = **901**）；`qa_fast.sh` PASS；`verify_gateway_runtime.sh` PASS 7 / FAIL 0（13 项端到端断言全过）；can-tools offline PASS 4 |
 | 回归 | OQ1–OQ6 全部既有 unit / e2e 用例保持通过（未改动任何 UDS 服务语义） |
 | CI 证据 | **无**（尚未提 PR，GitHub Actions 未运行） |
