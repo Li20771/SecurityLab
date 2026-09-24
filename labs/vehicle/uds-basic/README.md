@@ -1203,7 +1203,7 @@ bash tests/run_tests.sh unit   # 只跑离线单元测试
 bash tests/run_tests.sh e2e    # 只跑 vcan0 端到端测试
 ```
 
-当前测试规模（2026-09-23 实测，`bash tests/run_tests.sh all`；**Local verified**）：
+当前测试规模（2026-09-24 实测，OQ7 已并入 main；`bash tests/run_tests.sh all`；**Local verified**）：
 
 | 测试 | 数量 | 需要 vcan0 |
 |---|---|---|
@@ -1211,6 +1211,7 @@ bash tests/run_tests.sh e2e    # 只跑 vcan0 端到端测试
 | `tests/test_keygen_unit.py` | 34 | 否 |
 | `tests/test_services_extra_unit.py` | 17 | 否 |
 | `tests/test_gateway_unit.py` | 13 | 否 |
+| `tests/test_gateway_runtime_unit.py` | 53 | 否 |
 | `tests/test_dtc_unit.py` | 115 | 否 |
 | `tests/test_dtc_clear_unit.py` | 39 | 否 |
 | `tests/test_routine_unit.py` | 25 | 否 |
@@ -1221,17 +1222,19 @@ bash tests/run_tests.sh e2e    # 只跑 vcan0 端到端测试
 | `tests/test_isotp_options_vcan.py` | 14 | 是 |
 | `tests/test_write_did_vcan.py` | 8 | 是 |
 | `tests/test_multi_ecu_vcan.py` | 4 | 是 |
+| `tests/test_gateway_runtime_vcan.py` | 21 | 是 |
 | `tests/test_dtc_vcan.py` | 21 | 是 |
 | `tests/test_dtc_clear_vcan.py` | 11 | 是 |
 | `tests/test_routine_vcan.py` | 11 | 是 |
 | `tests/test_transfer_vcan.py` | 18 | 是 |
 | `tests/test_upload_vcan.py` | 16 | 是 |
 | `tests/test_file_transfer_vcan.py` | 41 | 是 |
-| **合计** | **833**（unit 620 + e2e 213） | — |
+| **合计** | **907**（unit 673 + e2e 234） | — |
 
 > 表中数字为 **Local verified**（本机 `run_tests.sh all` 实测）。
 > GitHub CI 的 fast job 只覆盖 ruff / mypy / **unit** / can-tools offline；
-> **e2e（需 vcan0）不在 CI 内**，因此 213 / 833 不能标为 CI verified。
+> **e2e（需 vcan0）不在 CI 内**，因此 234 / 907 不能整体标为 CI verified
+> （unit 部分已由 Fast QA 覆盖：OQ7 post-merge run #79 = success）。
 
 ### 8.2 离线单元测试（不需要 CAN）
 
@@ -1989,7 +1992,7 @@ qa_fast.sh（ruff + mypy + unit + can-tools offline）= PASS
 GitHub CI Fast（main post-merge run #65）= success；Extended 未在 runner 实跑
 ```
 
-OQ7 分支基线（`feat/oq7-gateway-runtime-v1`，实测；**尚未 merge**）：
+OQ7 合并后基线（**已进入 main**：PR #21，merge commit `ae22a556…`；实测）：
 
 ```text
 UDS Unit       673 PASS   （620 + 53 gateway-runtime）
@@ -1999,7 +2002,10 @@ qa_fast.sh（ruff + mypy + unit + can-tools offline）= PASS
 can-tools 离线 303 PASS
 scripts/repro/verify_gateway_runtime.sh = PASS 7 / FAIL 0（13 项端到端断言）
 OQ1–OQ6 既有用例文件与数量均未变动（无 UDS 服务语义改动）
-GitHub CI：**未运行**（尚未提 PR）
+GitHub CI Fast：PR #21 分支 run #77 / #78 = success；
+                main post-merge run #79 / 36008461688 = success
+Extended：NOT RUN（仅 workflow_dispatch，未在 runner 实跑）
+qa_extended.sh / healthcheck.sh：本轮 NOT RUN（本次为文档 checkpoint）
 ```
 
 运行方式：
