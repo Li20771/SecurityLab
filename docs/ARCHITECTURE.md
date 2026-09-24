@@ -32,7 +32,7 @@ SecurityLab/
 │   ├── vehicle/
 │   │   ├── can-basic/           # CAN 基础练习
 │   │   ├── can-tools/           # CAN/ISO-TP 工具链：收发/捕获/fuzz/replay
-│   │   └── uds-basic/           # UDS 服务端/客户端/网关 + 测试（本任务重点）
+│   │   └── uds-basic/           # UDS 服务端/客户端/网关（协议层 + 实时 runtime）+ 测试
 │   ├── firmware/                # binwalk-basic、synthetic-ecu（合成固件）、samples（样本管理）
 │   ├── reverse/{arm64,hello}/   # 逆向入门
 │   ├── fuzzing/afl-demo/        # AFL++ 通用 fuzz 靶场
@@ -44,7 +44,7 @@ SecurityLab/
 │   └── systemd/                 # vcan0、binfmt-selfheal、dsh-web 等单元
 ├── scripts/                     # healthcheck / qa_fast / qa_extended / nettools_check
 │   ├── repro/                   # 关键验证可复现入口（verify_arm / verify_qemu_gdb /
-│   │                            #   verify_ghidra / verify_fuzz_smoke）
+│   │                            #   verify_ghidra / verify_fuzz_smoke / verify_gateway_runtime）
 │   └── tests/                   # shell 级回归（healthcheck fallback、binfmt fail-closed）
 ├── docs/                        # 审计报告、测试矩阵、状态看板、架构、断点文件
 ├── pyproject.toml conftest.py   # ruff/mypy/pytest 配置；vcan marker 自动打标
@@ -77,8 +77,8 @@ SecurityLab/
   │  - SERVICES 注册表         │   逻辑      │  ecu/keygen.py（0x27 seed/key）        │
   │ ecu/gateway.py            │            │  ecu/did_database.py（含可写 DID）      │
   │  - VirtualEcu/Diagnostic- │            └───────────────────────────────────────┘
-  │    Gateway（多 ECU 路由）   │
-  │ ecu/uds_types.py / did_*  │
+  │    Gateway（多 ECU 路由）   │            ▲ OQ7：gateway_runtime.py 把它接到 vcan0
+  │ ecu/uds_types.py / did_*  │            （同一个 DiagnosticGateway，零重复寻址）
   └───────────────────────────┘
 ```
 
@@ -96,8 +96,52 @@ Tester ──物理寻址──► ECU_A 0x7E0 / 应答 0x7E8
 
   - 每个 `VirtualEcu` 持有独立 `EcuState`（会话/安全等级/DID 覆盖互不影响，已由"只写 A 不影响 B/C"用例验证）。
   - 未知 CAN ID 返回 `[]`；空响应 `b""` 不发帧；空网关/重复 request_id 抛 `ValueError`。
-  - **当前 VERIFIED**：协议层路由（13 单元）+ 三 ECU 进程物理寻址实时（4 e2e，`ecu.py` 经 `UDS_INTERFACE/UDS_RX_ID/UDS_TX_ID` 起多实例）。
-  - **PARTIAL**：0x7DF 功能寻址的用户态实时网关守护进程（目标拓扑 `Tester→CAN→Gateway→ECU A/B/C`）待建。
+  - **当前 VERIFIED**：协议层路由（13 单元）+ 三 ECU 进程物理寻址实时（4 e2e，`ecu.py` 经 `UDS_INTERFACE/UDS_RX_ID/UDS_TX_ID` 起多实例）+ **Gateway Runtime v1**（OQ7，见 3.1.1）。
+  - **仍未做**：真实 CAN 总线 / 真实 ECU、DoIP、多进程 ECU orchestration、
+    gateway security policy 与高级过滤、真实刷写。
+
+#### 3.1.1 Gateway Runtime v1（OQ7）
+
+`ecu/gateway_runtime.py` 是**实时 transport adapter**，把 3.1 的协议层接到真实
+vcan0；它不重新实现任何寻址规则：
+
+```
+Tester
+  │  ISO-TP（Normal 11-bit）
+  ▼
+vcan0
+  │
+  ▼
+Gateway Runtime（独立进程，单进程内实例化三个 VirtualEcu）
+  ├── IsotpTransport：每个请求 ID 一个 CAN_ISOTP socket
+  │     0x7E0→tx 0x7E8   0x7E1→tx 0x7E9   0x7E2→tx 0x7EA
+  │     0x7DF→tx 占位（按定义"广播不回帧"，该 txid 永不使用）
+  ├── select() → (request_id, payload)
+  ▼
+DiagnosticGateway.route()          ← 全部寻址语义仍只定义在这一层
+  ├── ECU_A  request 0x7E0 / response 0x7E8
+  ├── ECU_B  request 0x7E1 / response 0x7E9
+  └── ECU_C  request 0x7E2 / response 0x7EA
+```
+
+- **分层边界**：`gateway.py` 保持纯协议（不 import isotp/socket，可离线单测）；
+  runtime 只做搬运 + 生命周期 + 错误遏制。协议层与 runtime 各自的测试也分离。
+- **一地址一 socket**：内核 CAN_ISOTP 的接收过滤本就按 rxid 进行（实测：0x7E0 帧
+  只被 rxid=0x7E0 的 socket 收到，0x7DF 只被 rxid=0x7DF 的收到，未绑定的 0x7E5
+  谁也收不到），因此"按 CAN ID 分发"由**内核**完成；ISO-TP 的单帧/首帧/连续帧/
+  流控帧重组与分帧也在内核，runtime **不解析 PCI**。这也是 `ecu.py` 单 ECU 场景
+  使用的同一种 ISO-TP 用法，未引入第二种。
+- **错误遏制**（沿用 `ecu.py` 的策略，未另立一套）：`EILSEQ`/`ECOMM`/`EMSGSIZE`
+  → 丢弃当前传输并继续运行；其它 `OSError`（接口被删 / socket 损坏）→ 向上抛，
+  不静默吞掉。功能寻址、未知 ID、服务抑制响应三种"不回帧"情形都**不是**错误。
+- **生命周期**：SIGINT/SIGTERM → 退出码 0 + socket 清理（`--wait-timeout` 同时作为
+  select 与 socket 超时，决定退出延迟上限），**不需要 `kill -9`**。
+- **服务集 = `VirtualEcu` 的静态表**（0x10/0x11/0x14/0x19/0x22/0x2E/0x31/0x34–0x38/
+  0x3E/0x85），**不含 0x27 SecurityAccess**：0x27 需要请求时依赖注入，归属 `ecu.py`
+  入口层，这是 `gateway.py` 既有的分层边界，OQ7 **未**改动（由 e2e 用例显式固化）。
+- 入口：`python3 labs/vehicle/uds-basic/ecu/gateway_runtime.py --interface vcan0`
+  （`ecu/` 不是 package，故不走 `python -m`；与 `ecu.py` 的启动方式一致）。
+- 可复现验证：`bash scripts/repro/verify_gateway_runtime.sh`（独占 vcan0）。
 
 ### 3.2 UDS 状态机与服务
 

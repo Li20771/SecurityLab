@@ -1,12 +1,17 @@
 # SecurityLab 状态看板（SECURITY LAB STATUS）
 
-> 更新：2026-09-24（OQ6 post-merge document checkpoint 同步）。权威明细见 `FINAL_ENVIRONMENT_AUDIT_2026-09-20.md`（审计快照）、`ENGINEERING_CLOSE_2026-09-21.md`（第一轮收口报告）与 `TEST_MATRIX.md`；断点过程见 `AUTONOMOUS_BUILD_STATE.md`。
+> 更新：2026-09-24（OQ7 Gateway Runtime v1）。权威明细见 `FINAL_ENVIRONMENT_AUDIT_2026-09-20.md`（审计快照）、`ENGINEERING_CLOSE_2026-09-21.md`（第一轮收口报告）与 `TEST_MATRIX.md`；断点过程见 `AUTONOMOUS_BUILD_STATE.md`。
 
 ## 一句话现状
 
-SecurityLab 第一轮建设及工程收口已经完成；第二轮已连续交付五项能力
+SecurityLab 第一轮建设及工程收口已经完成；第二轮已连续交付六项能力
 （OQ3 MF-v1、OQ4 ECUReset 扩展、OQ5 DTC severity、OQ6-A DTC runtime state、
-OQ6-B ControlDTCSetting 0x85）。
+OQ6-B ControlDTCSetting 0x85、**OQ7 Gateway Runtime v1**）。
+
+> **口径**：OQ6-B 及以前的状态指**已 merge 到 main**；**OQ7 目前处于
+> feature branch（`feat/oq7-gateway-runtime-v1`），尚未提 PR / 未 merge**——
+> 因此下文的 OQ7 记录**只有 Local verified，没有 merge commit，也没有 CI 证据**，
+> 不套用已合并能力的表述。
 
 第一轮正式基线（历史）：
 
@@ -36,14 +41,36 @@ OQ6-B ControlDTCSetting 0x85）。
 > OQ5 = `3349d79c…`（PR #13）、OQ4 = `c96f8586…`（PR #12）、OQ3 = `abcb8b4d…`（PR #10）。
 > 各能力现状见下方「第二轮已完成能力」。
 
-当前阶段：**Phase 4 — Second-Round / Post-OQ6 Baseline**——OQ6-A / OQ6-B 已合入并封存，
-OQ6 post-merge 文档 checkpoint 同步已完成（本 PR，仅文档）；
-下一项第二轮能力待**重新盘点当前 main 真实状态后确定**（不预设具体功能）；
+当前阶段：**Phase 4 — Second-Round / OQ7 Gateway Runtime v1**——OQ6-A / OQ6-B 已合入并封存；
+OQ7（Gateway Runtime v1）已在 feature branch 上完成实现 + 测试 + 文档 + 本地全量回归，
+**等待 PR / review**；
 仍按"小功能 → feature branch → 小 PR → 可验证 → 合入"节奏推进。
 
 ## 第二轮已完成能力
 
-### OQ6-B — 0x85 ControlDTCSetting（最新，PR #17）
+### OQ7 — Gateway Runtime v1（最新，feature branch，**未 merge**）
+
+| 项 | 值 |
+|----|----|
+| OQ7 | **IMPLEMENTED ON BRANCH / 待 PR** |
+| PR | **尚未创建** |
+| merge commit | **尚不存在**（未 merge） |
+| feature branch | `feat/oq7-gateway-runtime-v1` |
+| base | `535fb8e`（PR #20 merge 的 tree，本地等价提交 `2f75f28`） |
+| 新增 | `ecu/gateway_runtime.py`（实时 transport adapter / 守护进程） |
+| 新增测试 | `tests/test_gateway_runtime_unit.py`（48）、`tests/test_gateway_runtime_vcan.py`（20） |
+| 新增可复现入口 | `scripts/repro/verify_gateway_runtime.sh`（独占 vcan0） |
+| 内容 | vcan0 上的多 ECU 诊断网关守护进程：`SocketCAN/ISO-TP → Gateway Runtime → DiagnosticGateway → ECU_A/B/C → UdsHandler`；物理寻址 0x7E0/0x7E1/0x7E2 → 0x7E8/0x7E9/0x7EA、功能寻址 0x7DF 广播且**总线静默**、未知 ID 丢弃、ECU 状态隔离、SIGINT/SIGTERM 优雅退出 |
+| 分层 | `gateway.py` 保持**纯协议层**（不 import isotp/socket，13 单元离线单测不变）；runtime 只做搬运 + 生命周期 + 错误遏制，**寻址规则零重复** |
+| 传输实现 | 每请求 ID 一个 CAN_ISOTP socket（与 `ecu.py` 同一种 ISO-TP 用法）；内核按 rxid 过滤 + 内核实重组/分帧，runtime 不解析 PCI |
+| 错误遏制 | 沿用 `ecu.py` 既有策略：EILSEQ/ECOMM/EMSGSIZE 丢弃当前传输继续运行；其它 OSError 向上抛不静默；畸形请求回 NRC 而**不使守护进程崩溃** |
+| 安全默认值 | `--interface` 默认 **vcan0**；非 `vcan*` 接口启动时打印显式警告 |
+| 边界（**未做**，禁写成已完成） | 真实 CAN / 真实 ECU、DoIP、多进程 ECU orchestration、gateway security policy / 高级过滤、真实固件刷写；**0x27 不经 gateway 层**（既有分层边界，见 ARCHITECTURE 3.1.1） |
+| 验证（**Local verified**，2026-09-24 本机实测） | uds-basic `run_tests.sh all` → PASS 23 / WARN 0 / FAIL 0（unit **668** + e2e **233** = **901**）；`qa_fast.sh` PASS；`verify_gateway_runtime.sh` PASS 7 / FAIL 0（13 项端到端断言全过）；can-tools offline PASS 4 |
+| 回归 | OQ1–OQ6 全部既有 unit / e2e 用例保持通过（未改动任何 UDS 服务语义） |
+| CI 证据 | **无**（尚未提 PR，GitHub Actions 未运行） |
+
+### OQ6-B — 0x85 ControlDTCSetting（PR #17）
 
 | 项 | 值 |
 |----|----|
@@ -119,7 +146,7 @@ OQ6 post-merge 文档 checkpoint 同步已完成（本 PR，仅文档）；
 | can-utils | VERIFIED | `candump/cansend/canplayer/isotpsend ...` |
 | ISO-TP | VERIFIED | `run_tests.sh all`（uds-basic） |
 | UDS（10/11/14/19/22/27/2E/31/34/35/36/37/38/3E/85） | VERIFIED | `labs/vehicle/uds-basic`（ecu.py / isotp_client.py）；`0x11` 支持 01/02/03（三态等价）；**`0x19` 支持 01/02/07/08/09/0A**；**`0x85` 支持 01/02**（DTC setting ON/OFF：冻结/恢复 runtime mutation，**不**阻止 0x14）；0x31 / 0x34-0x37（download + upload）/ 0x38 file transfer 均已合入 main 并有 unit + e2e 验证；**边界**：0x14 是 synthetic DTC model 的 status 清除；DTC status 只能经进程内 `dtc_runtime` 变更，**无 UDS 故障注入命令**；`0x19` 其余 reportType（03/04/05/06/0B–0E/14/15/16/1A…）未实现；0x38 为 synthetic in-memory 文件模型（非真实文件系统）；功能组、0x28、0x39 / 0x06 未实现 |
-| 多 ECU / Gateway | VERIFIED + PARTIAL | `ecu/gateway.py`；实时 0x7DF 守护进程待建 |
+| 多 ECU / Gateway | VERIFIED | 协议层 `ecu/gateway.py`（离线单测）+ **Gateway Runtime v1** `ecu/gateway_runtime.py`（vcan0 实时守护进程，物理 / 功能寻址、状态隔离、SIGTERM 优雅退出）；入口 `python3 labs/vehicle/uds-basic/ecu/gateway_runtime.py --interface vcan0`；可复现 `bash scripts/repro/verify_gateway_runtime.sh`。**边界**：真实 CAN / 真实 ECU、DoIP、多进程 ECU orchestration、gateway security policy / 高级过滤均**未做**；0x27 不经 gateway 层（既有分层边界） |
 | CAN/ISO-TP fuzz | VERIFIED | `fuzz/isotp_fuzz.py --smoke ...`（见 TEST_MATRIX）；最小复现 `scripts/repro/verify_fuzz_smoke.sh` |
 | UDS fuzz v1（请求层 SF） | VERIFIED | `fuzz/uds_fuzz.py --seed 12345 --max-cases N --out-dir …`；单请求 UDS 变异（SF ≤ 7B）；最小复现 `scripts/repro/verify_uds_fuzz_smoke.sh` |
 | UDS MF-v1（OQ3，已合入） | VERIFIED / MERGED | 同 UDS fuzz 入口；MF 8–128B（FF + CF）、>128B admission reject、max 19 frames、M1–M7 传输变异；**stateful / multi-request sequences = OUT OF SCOPE** |
@@ -162,6 +189,7 @@ bash scripts/repro/verify_arm.sh
 bash scripts/repro/verify_qemu_gdb.sh
 bash scripts/repro/verify_ghidra.sh
 bash scripts/repro/verify_fuzz_smoke.sh   # 独占 vcan
+bash scripts/repro/verify_gateway_runtime.sh  # 独占 vcan（OQ7 网关守护进程）
 
 # DSH Web GUI（开机自启；仅本机回环）
 systemctl --user status dsh-web
@@ -192,7 +220,8 @@ Current deployed system:
 
 ## 明确的 PARTIAL / 路线图（非空壳，第二轮能力建设）
 
-- 0x7DF 功能寻址**实时网关守护进程**（协议层与多 ECU 物理寻址实时均已通过）。
+- ✅ 已交付（OQ7，待 PR）：0x7DF 功能寻址**实时网关守护进程**
+  （Gateway Runtime v1；协议层与多 ECU 物理寻址实时此前均已通过）。
 - 真实 Flash / firmware flashing / 签名校验、0x39 / 0x06、Permission /
   session framework、`0x19` 其余 reportType（03/04/05/06/0B–0E/14/15/16/1A…；
   07/08/09 已随 OQ5 落地）、0x31 的 option/status

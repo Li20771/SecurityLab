@@ -1614,7 +1614,8 @@ uds-basic/
 │   ├── file_database.py     # 0x38 文件模型（FILE_MODE_*/出厂文件/dirInfo 编码）
 │   ├── routine_database.py   # Routine 静态数据库（0x2001/0x2002 定义）
 │   ├── transfer_database.py   # Download/Upload 静态配置（DFI/ALFID/上限/上传源）
-│   ├── gateway.py           # 多 ECU 路由（VirtualEcu / DiagnosticGateway）
+│   ├── gateway.py           # 多 ECU 路由（VirtualEcu / DiagnosticGateway）—— 纯协议层
+│   ├── gateway_runtime.py   # OQ7：Gateway Runtime v1（vcan0 实时 transport adapter / 守护进程）
 │   └── keygen.py            # 教学用 seed/key 算法（无 CAN 依赖）
 └── tests/
     ├── run_tests.sh             # 测试入口（unit / e2e / all）
@@ -1622,6 +1623,7 @@ uds-basic/
     ├── test_keygen_unit.py      # keygen 算法测试（34 用例，无需 CAN）
     ├── test_services_extra_unit.py  # 0x2E/0x3E 单元测试（17 用例，无需 CAN）
     ├── test_gateway_unit.py     # 多 ECU 路由测试（13 用例，无需 CAN）
+    ├── test_gateway_runtime_unit.py # Gateway Runtime 测试（48 用例，无需 CAN）
     ├── test_dtc_unit.py         # 0x19 单元测试（30 用例，无需 CAN）
     ├── test_dtc_clear_unit.py   # 0x14 单元测试（39 用例，无需 CAN）
     ├── test_routine_unit.py     # 0x31 单元测试（25 用例，无需 CAN）
@@ -1632,6 +1634,7 @@ uds-basic/
     ├── test_isotp_options_vcan.py   # ISO-TP 传输参数矩阵（14 用例，需 vcan0）
     ├── test_write_did_vcan.py   # 0x2E/0x3E 真实解锁写入（8 用例，需 vcan0）
     ├── test_multi_ecu_vcan.py   # 三 ECU 物理寻址（4 用例，需 vcan0）
+    ├── test_gateway_runtime_vcan.py # Gateway Runtime 守护进程（20 用例，需 vcan0）
     ├── test_dtc_vcan.py         # 0x19 真实链路（8 用例，需 vcan0）
     ├── test_dtc_clear_vcan.py   # 0x14 真实链路（11 用例，需 vcan0）
     ├── test_routine_vcan.py     # 0x31 真实链路（11 用例，需 vcan0）
@@ -1710,12 +1713,18 @@ uds-basic/
 - [x] ISO-TP 单帧 / 多帧分帧验证
 - [x] 多 ECU 拓扑（`ecu/gateway.py`）：物理寻址三 ECU、功能寻址广播、
   状态隔离、构造护栏（13 单元 + 4 e2e）
+- [x] **OQ7 Gateway Runtime v1**（`ecu/gateway_runtime.py`）：vcan0 上的网关
+  守护进程 —— 物理寻址 0x7E0/0x7E1/0x7E2 → 0x7E8/0x7E9/0x7EA（原始 CAN
+  抓包证明应答不串号）、功能寻址 0x7DF 广播到三个 ECU 且**总线零响应帧**、
+  未知物理 ID 丢弃、多帧请求/响应双向经 FF+CF、畸形请求回 NRC 而守护进程
+  不崩溃、SIGINT/SIGTERM 优雅退出（退出码 0 + socket 清理）；每请求 ID 一个
+  CAN_ISOTP socket（内核按 rxid 过滤），寻址规则**零重复**（48 单元 + 20 e2e）
 - [x] 显式 `EcuState`（27 字段）与单一事实源 `STATE`
 - [x] 静态服务 registry + 协议层 dispatcher
 - [x] transport / protocol 分层与单向依赖（`uds_server` 不反向依赖 `ecu`）
-- [x] 离线单元测试 620 PASS（116 ECU + 34 keygen + 17 services-extra + 13 gateway + 115 dtc + 39 dtc-clear + 25 routine + 40 transfer + 47 upload + 174 file-transfer）
-- [x] vcan0 端到端测试 213 PASS（69 e2e + 14 isotp-matrix + 8 write-did + 4 multi-ecu + 21 dtc + 11 dtc-clear + 11 routine + 18 transfer + 16 upload + 41 file-transfer）
-- [x] **三轮连续稳定性验证全部通过**（见第 14.7 节）
+- [x] 离线单元测试 668 PASS（116 ECU + 34 keygen + 17 services-extra + 13 gateway + 48 gateway-runtime + 115 dtc + 39 dtc-clear + 25 routine + 40 transfer + 47 upload + 174 file-transfer）
+- [x] vcan0 端到端测试 233 PASS（69 e2e + 14 isotp-matrix + 8 write-did + 4 multi-ecu + 20 gateway-runtime + 21 dtc + 11 dtc-clear + 11 routine + 18 transfer + 16 upload + 41 file-transfer）
+- [x] **三轮连续稳定性验证全部通过**（见第 14.7 节；OQ7 分支上为单轮全量回归 PASS 23 / WARN 0 / FAIL 0）
 
 ---
 
@@ -1980,11 +1989,28 @@ qa_fast.sh（ruff + mypy + unit + can-tools offline）= PASS
 GitHub CI Fast（main post-merge run #65）= success；Extended 未在 runner 实跑
 ```
 
+OQ7 分支基线（`feat/oq7-gateway-runtime-v1`，实测；**尚未 merge**）：
+
+```text
+UDS Unit       668 PASS   （620 + 48 gateway-runtime）
+E2E（在网）     233 PASS  （213 + 20 gateway-runtime-vcan）
+run_tests.sh all = PASS 23 / WARN 0 / FAIL 0
+qa_fast.sh（ruff + mypy + unit + can-tools offline）= PASS
+can-tools 离线 303 PASS
+scripts/repro/verify_gateway_runtime.sh = PASS 7 / FAIL 0（13 项端到端断言）
+OQ1–OQ6 既有用例文件与数量均未变动（无 UDS 服务语义改动）
+GitHub CI：**未运行**（尚未提 PR）
+```
+
 运行方式：
 
 ```bash
-bash labs/vehicle/uds-basic/tests/run_tests.sh all   # 620 + 213
+bash labs/vehicle/uds-basic/tests/run_tests.sh all   # 668 + 233
 bash scripts/healthcheck.sh                          # 环境 + 离线测试
+
+# OQ7：网关守护进程（独占 vcan0）
+python3 labs/vehicle/uds-basic/ecu/gateway_runtime.py --interface vcan0
+bash scripts/repro/verify_gateway_runtime.sh
 ```
 
 ### 14.8 ISO-TP 传输参数（Phase 4-P2）
@@ -2268,8 +2294,11 @@ Phase 3 完成的是一次**结构性重构**（行为保持不变）：
 - `0x28` CommunicationControl
 - `0x78` ResponsePending 与 P2* 超时处理
 - `0x27` 多安全等级（Level 2：`0x03`/`0x04`，需位掩码式安全等级）
-- 功能寻址（`0x7DF`）的**用户态实时网关守护进程**
-  （协议层路由与三 ECU 物理寻址实时已通过，见 `ecu/gateway.py`）
+- ✅ 已完成（OQ7）：功能寻址（`0x7DF`）的**用户态实时网关守护进程**
+  （`ecu/gateway_runtime.py`；协议层路由见 `ecu/gateway.py`，见第 14.7 节基线）
+- 网关层**透传 0x27**：当前 `VirtualEcu` 用 uds_server 静态 SERVICE 表，
+  不含 0x27（0x27 需请求时依赖注入，归属 `ecu.py` 入口层）。若要透传，
+  需同时解决"每 ECU 独立注入"与"不重复定义注入语义"两点
 
 ### 15.2 状态机与架构
 
@@ -2281,6 +2310,9 @@ Phase 3 完成的是一次**结构性重构**（行为保持不变）：
   在 0x2E 门控链中生效（`0x7F`/`0x33`）
 - ✅ 已完成（Phase 4X）：多 ECU 拓扑（多对 CAN ID、`ecu/gateway.py`
   协议层网关，13 单元 + 4 e2e）
+- ✅ 已完成（OQ7）：**实时 transport adapter 与协议层分离** ——
+  `gateway_runtime.py` 只做收发/生命周期/错误遏制，`gateway.py` 保持
+  纯协议（不 import isotp/socket），寻址规则零重复（48 单元 + 20 e2e）
 - 服务 handler 增加**通用会话级权限前置检查**（0x2E 已内联实现，
   尚未抽象为 registry 级装饰器）
 - DID 数据库支持数据类型（ASCII / 数值 / 位域）与缩放
