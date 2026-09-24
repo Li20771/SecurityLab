@@ -135,6 +135,14 @@ run_unit() {
 
     echo
 
+    if "$PYTHON_BIN" "$TESTS_DIR/test_c1_service_spec_unit.py"; then
+        ok "C1 service specification model + conformance tests passed"
+    else
+        fail "C1 service specification tests failed"
+    fi
+
+    echo
+
     if "$PYTHON_BIN" "$TESTS_DIR/test_dtc_unit.py"; then
         ok "0x19 ReadDTCInformation unit tests passed"
     else
