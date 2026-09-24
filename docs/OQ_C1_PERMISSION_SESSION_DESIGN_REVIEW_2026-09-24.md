@@ -683,6 +683,42 @@ Phase 4:   移除派生视图（或保留为只读兼容别名）
 → **迁移验证不能只依赖 CI**：Phase 2 的字节对拍**必须本地跑 `run_tests.sh e2e`**，
 因为 234 个在网用例不在自动门禁内。
 
+### 15.7 冻结 pin 表（**已实现**于 `tests/test_c1_contract_pins.py`，29 例）
+
+所有 `Expected` 均为**对当前源码的实测值**（非推断）。`Context` 指发起请求前的 `EcuState` 设置。
+
+| Pin | Request | Context | Expected | Reason |
+|-----|---------|---------|----------|--------|
+| **N1** | `2E FF FF` + `X` | DEFAULT | `7F 2E 31` | 未知 DID 判定**先于**会话门控；防"授权统一前置"把 `31` 变 `7F` |
+| **N1** | `2E F1 02` + `X` | DEFAULT | `7F 2E 7F` | 越过 DID 判定后才撞会话门控（同状态对照） |
+| **N2** | `22 F1 87 FF FF` | LOCKED | `7F 22 33` | 受保护 DID 在前 → 安全拒绝（**顺序敏感**） |
+| **N2** | `22 FF FF F1 87` | LOCKED | `7F 22 31` | 未知 DID 在前 → 范围错误（**仅顺序不同**） |
+| **N2** | `22 F1 90 FF FF` | LOCKED | `7F 22 31` | 公开 DID 在前也因后续未知 DID 整体失败 |
+| **N3** | `14 FF FF FF` | DEFAULT / EXTENDED / PROGRAMMING | `54`（三者相同） | 冻结"**无会话门控**"；防 dispatcher 全局门控静默改变 |
+| **N3** | `19 0A` | 同上三者 | `59 FF 10 00 01 01 10 00 02 02 10 00 03 04` | 同上 |
+| **N3** | `85 01` | 同上三者 | `C5 01` | 同上 |
+| **N4** | `2E F1 90` + `X` | EXTENDED + LOCKED | `7F 2E 33` | 安全门控**先于**只读 DID 判定（既有测试只在 unlocked 下断言过） |
+| **N4** | `2E F1 90` + `X` | EXTENDED + LEVEL1 | `7F 2E 22` | 越过安全门控后才撞只读判定 |
+| **N5** | — | — | （**不加重复用例**） | seed 过期 / 锁定到期**已由 `test_ecu_unit.py:1142/1157/1242/1268` 覆盖**；仅保留"这些用例仍存在"的结构性断言 |
+| **N6** | 任意 4 条请求 | `services=dict(SERVICES)` | 与默认路径**逐字节相同** | 冻结 `services=` 缝的等价语义 |
+| **N6** | `22 F1 90` | `services={0x3E: …}` | `7F 22 11` | 覆盖表**取代**而非合并 |
+| **N6** | `3E 00` | `services={0x3E: custom}` | `7E 00` 且 handler 收到请求 | 冻结"覆盖可安装自定义 handler"（C1 迁移依赖它） |
+| **N7** | — | — | `SERVICES` key set = **恰好 14 个** | 防迁移时无意增删注册项 |
+| **N7** | — | — | `0x27 ∉ SERVICES` | 冻结"0x27 由入口层注入"的边界（C1/C3 都不得挪动） |
+| **N7** | — | — | `SERVICES` 的每个值都是 **callable** | 记录**迁移前**的表形状；改变形状必须是显式评审事件 |
+| **F-a** | `10 01/02/03` | 已解锁 | `security_level → LOCKED` | 切会话即重新锁定（三种会话全覆盖） |
+| **F-b/F-c** | `22 F1 90` / `22 F1 87` | 三种会话（各自同状态） | `62 …` / `7F 22 33` | **DID 级**（非服务级）权限；同状态对照 |
+| **F-c** | `22 F1 87` | EXTENDED + LEVEL1 | `62` + 出厂值 | 解锁后可读 |
+| **F-d** | `22 F1 90 F1 87` | LOCKED | `7F 22 33` 且**不含** F190 数据 | all-or-nothing 且**不泄漏部分数据** |
+| **F-d** | `22 F1 90 F1 87` | LEVEL1 | `62` + 两个 payload，且顺序保持 | 成功路径的载荷与顺序 |
+| **F-e** | `2E F1 02` / `2E F1 90` | 逐级越过 | `7F` → `33` → `22` → `6E` | `0x2E` 完整门控链顺序 |
+| **F-f** | `27 01` | 静态协议层 | `7F 27 11` | 冻结 0x27 的**注入边界**（状态机本身已由 unit 覆盖，不重复） |
+| **F-g** | `85 02` → `10 03` | — | `dtc_setting_enabled` 仍 `False` | 切会话**不得**重置非门控状态 |
+| **F-g** | `2E F1 02` → `10 01` | EXTENDED+LEVEL1 | DID override 仍在 | 同上（只有复位才清） |
+
+**数量核对**：本文件 29 例 = 上表 26 行 + 3 条结构性/对照断言
+（N1 的同状态对照、N2 的顺序对照、N5 的"既有用例仍存在"）。
+
 ---
 
 ## 16. Cross-OQ Dependencies
@@ -739,16 +775,140 @@ must remain separate: C2（gateway policy ≠ ECU authorization）
 
 ## 18. Open Decisions
 
-> 以下问题**无法仅凭当前证据决定**，需在实施前明确拍板。**不强行给答案。**
+> 本节记录**仍未决**的问题。OD-1 与 OD-2 已于 **2026-09-24 Preflight** 冻结，
+> 其完整讨论（Options considered / Decision / Rationale / Regression protection）
+> 见 §18.0，**历史讨论保留不删**。
+
+### 18.0 OD-1 与 OD-2 —— **DESIGN FROZEN**（2026-09-24 Preflight）
+
+#### OD-1 — `guards` 与 handler 的调用关系
+
+**Options considered**
+
+| 方案 | 形态 |
+|------|------|
+| **A（选定）** | dispatcher 解析出当前 service 的 `ServiceSpec`，**按声明顺序**求值该服务的 `guards`；**全部返回 `None` 后**才调用 handler |
+| **B** | handler 自己调用 guard 链 |
+| **C（明确拒绝）** | **全局** dispatcher 授权前置（对所有服务共享一条策略） |
+
+**Decision：选 A** —— 即
+
+```
+request → resolve ServiceSpec(当前 SID) → guard[0] → guard[1] → … → handler
+```
+
+**必须严格区分（本设计的核心边界）**：
+
+| | 全局 dispatcher precheck | per-service ordered guard evaluation |
+|---|---|---|
+| 策略条数 | 1 条，所有服务共享 | 每个 SID **各自一条有序链** |
+| 对 `2E FF FF` 的影响 | 由 `31` 变 `7F`（**行为变更**） | 不变（DID guard 仍在 session guard 之前） |
+| 对 `0x14/0x19/0x85` | 会被顺带门控（**行为变更**） | 不受影响（其 `guards = ()`） |
+| 本设计 | **禁止** | **即本方案** |
+
+**Rationale（逐项回答比较维度）**
+
+1. **NRC precedence 稳定表达**：A 把顺序放进**数据**（tuple）→ 可枚举、可断言、可对拍；B 把顺序留在 handler 代码里 → 与今天一样"只能靠读代码"。
+2. **`0x22` payload/DID 顺序**：A 用一个 guard **逐字复刻现有循环**（`uds_server.py:552-580`），顺序敏感性与 all-or-nothing 都保留；B 同样可行，但顺序不可枚举。
+3. **`0x2E` unknown-DID → session 顺序**：A 把 `31` guard 排在 `7F` guard **之前**，顺序由数据保证；B 同样可行。
+4. **guard 是否重复执行**：A 中每个 guard **恰好执行一次**，且**只在 handler 之前**；B 中 handler 可能调用多次或跳过 → A 更安全。
+5. **handler 仍能独立处理 malformed request**：A 不把 handler 变成"信任输入"——格式/长度 guard 先行，handler **保留自己的防御性解析**（如 `0x38` 的 per-mode 结构检查）。行为与今天一致。
+6. **测试如何锁定执行顺序**：A 可断言 **guard tuple 的顺序**与**由此产生的 NRC 序列**（本 Preflight 已建 pin）；B 只能做行为测试。
+7. **将来 C2/C3 是否复用**：A 的 spec/guard 词汇是**协议层资产**；C3 可复用"装配点"（注入 spec），C2 不参与（见 §13）。
+8. **metadata 与真实执行逻辑双写**：与 OD-2 联合解决 —— OD-2 选定"**只有 `guards` 执行**"，声明字段由防漂移测试校验（见下），因此**不存在双写执行**。
+9. **是否破坏现有 907 cases**：A 与 B 在"顺序保持"的前提下**都不破坏**；A 的价值在于**让"顺序是否保持"可被验证**（今天的 907 用例**无法**发现 NRC 优先级变化）。
+10. **是否破坏 `services=` override**：A 需要一个显式的**归一化规则**（见下），以保持今天的语义。
+
+**`services=` override 的归一化规则（FROZEN）**
+
+```
+services=None                     → 静态 SERVICES（各自 spec）
+services={sid: Callable}          → 归一化为 ServiceSpec(sid, handler=callable, guards=())
+```
+
+即：**覆盖一个服务 = 整体替换该服务（含其 guards）**。这与今天的语义**一致**
+（今天覆盖即替换整个 handler），因此 `ecu.py:386-389` 的 0x27 注入契约不变、
+既有调用方式不变 → **不构成接口变更**（OD-4 仍保持开放，见 §18.1）。
+
+**Regression protection（本次已建立）**
+
+`labs/vehicle/uds-basic/tests/test_c1_contract_pins.py`（29 例）：
+N1（`0x2E` DID 先于会话）、N2（`0x22` DID 顺序敏感性）、N4（`0x33` 先于 `0x22`）、
+N6（`services=` 缝的三条契约，含归一化相关语义）、N7（静态注册表 key set + 形状）、
+F-a..F-g。**迁移前后必须逐字节一致**，由这些 pin + Phase 2 的 golden 对拍共同保证。
+
+---
+
+#### OD-2 — 声明字段是否参与执行
+
+**Options considered**
+
+| 模式 | 形态 | 结论 |
+|------|------|------|
+| **A** | 声明字段**就是执行源**（框架由 `allowed_sessions`/`required_security` 自动生成 guard） | **拒绝** |
+| **B（选定）** | **`guards` 是唯一执行源**；`allowed_sessions`/`required_security`/`payload_scoped` 仅用于 capability matrix / audit / documentation / **静态一致性检查** | **选定** |
+| **C** | 声明字段 **+** custom guards **双重执行** | **拒绝** |
+
+**Decision：选 Mode B。**
+
+**Rationale**
+
+- **Mode A 无法表达现有真实行为**（这是拒绝它的硬理由）：
+  - `0x22` 的判定是 **per-DID**（同一状态下 `22 F1 87 → 33` 而 `22 F1 90 → 正响应`），
+    一个 SID 级 `required_security` **无法表达**；
+  - `0x2E` 的顺序是 `31`（业务）**先于** `7F`（授权），由 SID 级声明自动生成的
+    guard 只能给出"先会话后安全"，会**改变** `2E FF FF` 的 NRC；
+  - 若为迁就声明式而把 `0x22` 的 per-DID 语义降级为服务级，则**牺牲 0x22 的语义** ——
+    本设计明确不做此交换。
+- **Mode C 被拒绝**：双重执行源会产生 drift，且可能造成同一判定被执行两次
+  （顺序与副作用都难以保证）。
+- **Mode B 的代价**是"声明可能与 guard 漂移"，因此**必须配防漂移机制**（下）。
+
+**防漂移机制（FROZEN，必须实现）**
+
+1. **静态结构规则（可测试）**：
+
+   ```
+   payload_scoped is True   ⟺   required_security is None
+   ```
+
+   语义：`required_security = None` 表示"**该服务的授权依赖 payload，不可用单一等级概括**，
+   见 guards"。二者必须同时成立或同时不成立 → 由测试断言。
+
+2. **矩阵一致性测试（conformance test）**：
+   - 对**非** payload-scoped 的服务：遍历 `(session × security_level)` 的**全组合**，
+     执行其 guard 链，把结果的 allow/deny 与声明的 `allowed_sessions`/`required_security`
+     **逐格对比**；不一致即失败。
+   - 对 payload-scoped 的服务：不强行压成单格（那正是 Mode A 的错误），
+     只断言其**被显式标记**为 payload-scoped，且声明**没有**声称单一 session/security 规则。
+
+3. **`0x22` / `0x2E` 如何表达（FROZEN）**：
+
+   | 服务 | `guards` | `allowed_sessions` | `required_security` | `payload_scoped` |
+   |------|----------|--------------------|---------------------|------------------|
+   | `0x22` | 1 个 guard：**逐 DID 循环 + 短路**（复刻 `:552-580`） | `None`（无会话约束） | `None`（per-DID，见 guards） | **`True`** |
+   | `0x2E` | **6 个有序 guards**（`13→31→7F→33→22→13` 逐级） | `None`（**注意**：真实约束是"非 DEFAULT"，由 guard 表达；见 OD-5） | `SECURITY_LEVEL1`（声明级；执行仍由 guard） | **`True`**（因其顺序含 payload 判定） |
+
+   > `0x2E` 的 `required_security` 可安全声明为 `LEVEL1`，因为**它确实是一个单一等级**；
+   > 而 `0x2E` 仍标 `payload_scoped=True`，因为其**顺序**依赖 payload（未知 DID 先于会话）。
+   > 这一细节由 conformance test 的第 2 条覆盖。
+
+**Regression protection**：防漂移机制本身即是回归保护
+（一致性测试会在声明与 guard 分叉时失败）；叠加 §18.0 OD-1 的 29 个 pin。
+
+---
+
+### 18.1 仍未决（OPEN DECISION）
 
 | ID | 问题 | 为何未决 | 影响 |
 |----|------|----------|------|
-| **OD-1** | `guards` 与 handler 的**调用关系**：是 dispatcher 统一求值 `guards` 后再调 handler，还是 handler 内部按 spec 顺序调用 guards？ | 两者在 §9 的语义下**都能**保持顺序，但对"顺序由谁保证"与可测性有影响；需在实现前用一个小原型确认（尤其在 `0x22` 的"guard 内含循环"场景） | 决定 guards 迁移的具体形状 |
-| **OD-2** | 声明字段（`allowed_sessions`/`required_security`）**是否参与执行**？ | 若参与，则与 `guards` 形成双重表达（顺序风险）；若纯声明，则需靠测试保证一致（R5） | 决定 §7.4 的最终形态 |
 | **OD-3** | 是否要**强制**"新服务必须有 spec"（G4）？以何种机制？（拒绝加载 / 测试失败 / lint 规则） | 需要先确认对既有 14 个服务与 `0x27` 注入路径的兼容性 | 决定 G4 的落地方式 |
-| **OD-4** | `handle_uds_request(..., services=...)` 的**最终契约**：保留 `dict[int, Callable]`，还是改为 `dict[int, ServiceSpec]`？ | 直接影响 `ecu.py:386-389` 的注入与全部测试的调用方式；属**接口变更**，须单独评审 | 决定 Phase 3 的收敛方式 |
-| **OD-5** | `0x2E` 的会话判定**写法**：保留 `== DEFAULT`，还是改为 `allowed = {EXTENDED, PROGRAMMING}`？ | 当前在三个会话下二者等价，但前者与后者的**声明式表达**不同；改变写法虽等价，仍需对拍证明 | 决定 §11 的实现形式 |
+| **OD-4** | `handle_uds_request(..., services=...)` 的**最终契约**：保留 `dict[int, Callable]`，还是改为 `dict[int, ServiceSpec]`？ | OD-1 已冻结**归一化规则**（覆盖 = 整体替换，`guards=()`），因此**当前契约可原样保留**；是否需要最终改为 spec 形态，取决于 Phase 3 的收敛方式 | 决定 Phase 3 的收敛方式 |
+| **OD-5** | `0x2E` 的会话判定**写法**：保留 `== DEFAULT`，还是改为 `allowed = {EXTENDED, PROGRAMMING}`？ | 当前在三个会话下二者等价；OD-2 已确定"声明不执行"，故改写**只影响 guard 内部实现**，仍需对拍证明等价 | 决定 §11 的实现形式 |
 | **OD-6** | 是否把 `0x27` 也纳入 `ServiceSpec`（作为"动态注入的服务如何声明策略"）？ | `0x27` 不在静态表，其注入路径特殊；纳入方式需先解决 OD-4 | 决定矩阵的完整性（当前是**策略盲区**） |
+
+> **OD-1/OD-2 冻结后的连带结论**：OD-4 的**紧迫性下降**（当前契约可保留），
+> OD-5 的**影响面缩小**（只影响 guard 内部实现，不影响声明语义）。
 
 ---
 
@@ -771,9 +931,37 @@ must remain separate: C2（gateway policy ≠ ECU authorization）
 | 11 | **migration strategy** | 四阶段：①建模型（零行为变更）→ ②逐服务原子迁移（0x22、0x2E）→ ③其余服务纳入规格（仅声明）→ ④清理（单独评审）。每阶段退出条件都要求 **907 全绿 + 字节等价** | **DESIGN FROZEN** |
 | 12 | **test strategy** | 六主题新增测试 + NRC 优先级专项（§15.2 的 5 条锚点）+ 矩阵对拍 + 既有 907 作为回归网；**不修改任何既有测试** | **DESIGN FROZEN** |
 | 13 | **留给 C2 / C3 的问题** | **C2**：网关策略的求值位置/默认值/拒绝的总线表现/是否读 ECU 状态；**C3**：0x27 经网关的注入装配与"注入语义只定义一处" | **DESIGN FROZEN（边界）** |
+| 14 | **OD-1：guards 与 handler 的调用关系** | **per-service ordered guards → dispatcher 对当前已解析 service 求值 → 全部通过后才调 handler**。**明确 NOT a global authorization precheck**（§18.0 OD-1） | **DESIGN FROZEN** |
+| 15 | **OD-2：声明字段是否参与执行** | **`guards` 是唯一执行源**；声明字段仅用于 capability matrix / audit / 静态一致性检查；配**防漂移机制**（`payload_scoped ⟺ required_security is None` + 矩阵 conformance test）（§18.0 OD-2） | **DESIGN FROZEN** |
+| 16 | **`services=` 覆盖的归一化** | `services=None` → 静态 spec；`services={sid: Callable}` → `ServiceSpec(sid, handler, guards=())`（**覆盖 = 整体替换**，与今天语义一致） | **DESIGN FROZEN** |
 
-**未冻结项（OPEN DECISION）**：OD-1 ~ OD-6（§18）。
+**未冻结项（OPEN DECISION）**：**仅 OD-3 / OD-4 / OD-5 / OD-6**（§18.1）。
+（OD-1 与 OD-2 已于 2026-09-24 Preflight 冻结。）
 
-**本设计不实现任何代码。** 实施前需：(a) 解决 OD-1/OD-2（决定 `ServiceSpec` 的
-最终执行形态）；(b) 解决 OD-4（决定 `services=` 契约，它有接口变更含义）；
-(c) 建立 §15.2 的 NRC 优先级断言（作为迁移的前置安全网）。
+### 19.1 C1 实施边界（**再次冻结**，防止范围蔓延）
+
+```
+C1 implementation  =  Service Authorization  =  session / security evaluation（per-service，协议层）
+
+明确**不属于** C1（不得由 C1 顺手实现）：
+    Gateway routing / filtering / rate limiting / authorization policy   → C2
+    0x27 through Gateway（注入装配与"注入语义只定义一处"）              → C3
+```
+
+**边界理由**：C1 = "**ECU 是否允许这台 Tester 调用这个服务/子功能/DID**"（取决于 `EcuState`）；
+C2 = "**网关作为网络中间设备**的报文级策略"（与任何 ECU 的会话状态无关）。
+两者是**不同的决策点**，`gateway.py` 在 C1 中**零改动**（§13）。
+
+### 19.2 实施前置条件（Preflight 后的更新）
+
+**本设计仍不实现任何代码。** 实施前需：
+
+1. ~~解决 OD-1/OD-2~~ → **已于 2026-09-24 Preflight 冻结**（§18.0）；
+2. ~~建立 §15.2 的 NRC 优先级断言~~ → **已建立**
+   （`tests/test_c1_contract_pins.py`，29 例，覆盖 N1/N2/N4/N6/N7 + F-a..F-g）；
+3. **仍需**：解决 **OD-4**（`services=` 的最终契约形态）与 **OD-3**（G4 的落地机制）；
+4. **仍需**：实现 OD-2 要求的**防漂移机制**（静态结构规则 + 矩阵 conformance test）——
+   注意该机制**属于 C1 实施的第一阶段**，不在本 Preflight 范围内。
+
+> **Preflight 结论**：C1 的**执行模型已可实施**（OD-1/OD-2 冻结 + 契约 pin 就绪）；
+> 剩余的 OD-3/OD-4 可在 Phase 1 内解决，**不阻塞 Phase 1 的启动**。
