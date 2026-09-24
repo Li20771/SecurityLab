@@ -26,7 +26,9 @@ transport 替换真实 ISO-TP 层，因此不需要 vcan0、不需要 root。
     bash tests/run_tests.sh unit
 """
 
+import contextlib
 import errno
+import io
 import os
 import sys
 import unittest
@@ -236,6 +238,115 @@ class TestConstructionAndInterface(unittest.TestCase):
         ecus = build_runtime().gateway.ecus
         states = [id(e.state) for e in ecus]
         self.assertEqual(len(set(states)), 3)
+
+
+class TestInterfaceSafetyBoundary(unittest.TestCase):
+    """
+    入口安全边界：**只允许 vcan0**（fail-closed）。
+
+    与 ``TestConstructionAndInterface`` 的区别：那里测的是 parser 能否**解析**
+    ``--interface``（解析能力保留，参数值可为任意字符串）；这里测的是**入口**
+    是否**拒绝**非 vcan0，且拒绝必须发生在任何构造 / socket 绑定**之前**。
+
+    仅仅验证"返回码非 0"是不够的 —— 下面同时证明：
+    ``build_runtime()`` 未被调用、且**没有任何 CAN socket 被创建 / 绑定**。
+    """
+
+    def _fake_runtime(self) -> mock.MagicMock:
+        """
+        可安全跑完 main() 的 runtime 替身（不碰真实 socket、不阻塞）。
+
+        ``gateway.ecus`` 用空列表、``functional_address`` 用真实值，
+        以便 main() 的启动横幅能正常格式化。
+        """
+        fake = mock.MagicMock()
+        fake.gateway.ecus = []
+        fake.gateway.functional_address = FUNCTIONAL_ADDRESS
+        return fake
+
+    def _run_main(self, interface: str, wait_timeout: str = "0.1"):
+        """
+        以 mock 替换 runtime 与 socket，运行真实 ``main()``。
+
+        同时吞掉 main() 的启动横幅，避免污染测试输出。
+
+        :returns: ``(rc, build_mock, created_sockets, stderr_text)``
+        """
+        created: list = []
+
+        def socket_factory(*_args, **_kwargs):
+            created.append(True)
+            return mock.MagicMock()
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with (
+            mock.patch.object(gateway_runtime, "build_runtime") as build,
+            mock.patch.object(gateway_runtime.isotp, "socket", socket_factory),
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+        ):
+            build.return_value = self._fake_runtime()
+            rc = gateway_runtime.main(
+                ["--interface", interface, "--wait-timeout", wait_timeout]
+            )
+
+        return rc, build, created, stderr.getvalue()
+
+    def test_vcan0_is_accepted(self):
+        """允许的接口：正常走到 build_runtime / open / serve_forever。"""
+        rc, build, _, stderr = self._run_main("vcan0")
+
+        self.assertEqual(rc, 0)
+        build.assert_called_once()
+        self.assertEqual(build.call_args.args[0], "vcan0")
+        self.assertEqual(stderr, "", "合法接口不应产生任何安全告警")
+
+    def test_vcan0_is_the_only_allowed_interface(self):
+        self.assertEqual(gateway_runtime.ALLOWED_INTERFACES, ("vcan0",))
+
+    def test_non_vcan0_interfaces_are_rejected_without_binding(self):
+        """can0 / can1 / vcan1 等一律拒绝：非 0 退出、不构造、不建 socket。"""
+        for interface in ("can0", "can1", "vcan1", "vcan", "vcan0x", "", "VCAN0", "vcan0 "):
+            with self.subTest(interface=interface):
+                rc, build, created, _ = self._run_main(interface)
+
+                self.assertNotEqual(rc, 0, f"{interface!r} 必须被拒绝")
+                build.assert_not_called()
+                self.assertEqual(
+                    created, [], f"{interface!r} 被拒绝时不得创建任何 CAN socket"
+                )
+
+    def test_rejection_happens_before_runtime_construction(self):
+        """
+        拒绝必须发生在 ``build_runtime()`` **之前**。
+
+        ``build_runtime`` 被换成会抛异常的哨兵：若入口在拒绝前先构造 runtime，
+        这里会看到该异常而不是正常的非 0 返回码。
+        """
+        class _SentinelError(Exception):
+            pass
+
+        with mock.patch.object(
+            gateway_runtime, "build_runtime", side_effect=_SentinelError
+        ) as build:
+            rc = gateway_runtime.main(["--interface", "can0"])
+
+        self.assertEqual(rc, 2)
+        build.assert_not_called()
+
+    def test_rejection_message_is_explicit_on_stderr(self):
+        """错误信息必须明确指出"仅允许 vcan0"，且说明拒绝原因。"""
+        rc, build, created, message = self._run_main("can0")
+
+        self.assertEqual(rc, 2)
+        build.assert_not_called()
+        self.assertEqual(created, [])
+
+        self.assertIn("仅允许使用 vcan0", message)
+        self.assertIn("拒绝启动非虚拟/非允许接口", message)
+        self.assertIn("can0", message)
 
 
 class TestTransportConstructionGuards(unittest.TestCase):

@@ -731,6 +731,35 @@ class TestGatewayRuntimeLifecycle(unittest.TestCase):
         finally:
             second.stop()
 
+    def test_non_vcan_interfaces_are_refused_by_the_real_cli(self):
+        """
+        安全边界 fail-closed：真实进程必须**拒绝**非 vcan0 接口。
+
+        这条用例的价值在于它是**真进程**断言：若入口在拒绝前就绑定 socket 并
+        进入服务循环，进程会一直挂着，`subprocess.run` 会撞 30s 超时 —— 因此
+        "迅速以退出码 2 结束"本身就证明了**没有**建立 CAN 连接、也没有驻留服务。
+        """
+        for interface in ("can0", "can1", "vcan1"):
+            with self.subTest(interface=interface):
+                run = subprocess.run(
+                    [sys.executable, _RUNTIME_SCRIPT, "--interface", interface],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    cwd=_ECU_DIR,
+                    timeout=30,
+                )
+
+                self.assertEqual(run.returncode, 2, f"{interface} 必须被拒绝（非 0 退出）")
+                self.assertIn("仅允许使用 vcan0", run.stderr)
+                self.assertIn(interface, run.stderr)
+                self.assertNotIn(
+                    "已启动",
+                    run.stdout,
+                    f"{interface} 被拒绝时不得走到 runtime 启动流程",
+                )
+
     def test_help_and_bad_arguments(self):
         """--help 必须可用；非法 --wait-timeout 必须以非 0 退出且不常驻。"""
         help_run = subprocess.run(

@@ -1623,7 +1623,7 @@ uds-basic/
     ├── test_keygen_unit.py      # keygen 算法测试（34 用例，无需 CAN）
     ├── test_services_extra_unit.py  # 0x2E/0x3E 单元测试（17 用例，无需 CAN）
     ├── test_gateway_unit.py     # 多 ECU 路由测试（13 用例，无需 CAN）
-    ├── test_gateway_runtime_unit.py # Gateway Runtime 测试（48 用例，无需 CAN）
+    ├── test_gateway_runtime_unit.py # Gateway Runtime 测试（53 用例，无需 CAN）
     ├── test_dtc_unit.py         # 0x19 单元测试（30 用例，无需 CAN）
     ├── test_dtc_clear_unit.py   # 0x14 单元测试（39 用例，无需 CAN）
     ├── test_routine_unit.py     # 0x31 单元测试（25 用例，无需 CAN）
@@ -1634,7 +1634,7 @@ uds-basic/
     ├── test_isotp_options_vcan.py   # ISO-TP 传输参数矩阵（14 用例，需 vcan0）
     ├── test_write_did_vcan.py   # 0x2E/0x3E 真实解锁写入（8 用例，需 vcan0）
     ├── test_multi_ecu_vcan.py   # 三 ECU 物理寻址（4 用例，需 vcan0）
-    ├── test_gateway_runtime_vcan.py # Gateway Runtime 守护进程（20 用例，需 vcan0）
+    ├── test_gateway_runtime_vcan.py # Gateway Runtime 守护进程（21 用例，需 vcan0）
     ├── test_dtc_vcan.py         # 0x19 真实链路（8 用例，需 vcan0）
     ├── test_dtc_clear_vcan.py   # 0x14 真实链路（11 用例，需 vcan0）
     ├── test_routine_vcan.py     # 0x31 真实链路（11 用例，需 vcan0）
@@ -1722,8 +1722,8 @@ uds-basic/
 - [x] 显式 `EcuState`（27 字段）与单一事实源 `STATE`
 - [x] 静态服务 registry + 协议层 dispatcher
 - [x] transport / protocol 分层与单向依赖（`uds_server` 不反向依赖 `ecu`）
-- [x] 离线单元测试 668 PASS（116 ECU + 34 keygen + 17 services-extra + 13 gateway + 48 gateway-runtime + 115 dtc + 39 dtc-clear + 25 routine + 40 transfer + 47 upload + 174 file-transfer）
-- [x] vcan0 端到端测试 233 PASS（69 e2e + 14 isotp-matrix + 8 write-did + 4 multi-ecu + 20 gateway-runtime + 21 dtc + 11 dtc-clear + 11 routine + 18 transfer + 16 upload + 41 file-transfer）
+- [x] 离线单元测试 673 PASS（116 ECU + 34 keygen + 17 services-extra + 13 gateway + 53 gateway-runtime + 115 dtc + 39 dtc-clear + 25 routine + 40 transfer + 47 upload + 174 file-transfer）
+- [x] vcan0 端到端测试 234 PASS（69 e2e + 14 isotp-matrix + 8 write-did + 4 multi-ecu + 21 gateway-runtime + 21 dtc + 11 dtc-clear + 11 routine + 18 transfer + 16 upload + 41 file-transfer）
 - [x] **三轮连续稳定性验证全部通过**（见第 14.7 节；OQ7 分支上为单轮全量回归 PASS 23 / WARN 0 / FAIL 0）
 
 ---
@@ -1992,8 +1992,8 @@ GitHub CI Fast（main post-merge run #65）= success；Extended 未在 runner �
 OQ7 分支基线（`feat/oq7-gateway-runtime-v1`，实测；**尚未 merge**）：
 
 ```text
-UDS Unit       668 PASS   （620 + 48 gateway-runtime）
-E2E（在网）     233 PASS  （213 + 20 gateway-runtime-vcan）
+UDS Unit       673 PASS   （620 + 53 gateway-runtime）
+E2E（在网）     234 PASS  （213 + 21 gateway-runtime-vcan）
 run_tests.sh all = PASS 23 / WARN 0 / FAIL 0
 qa_fast.sh（ruff + mypy + unit + can-tools offline）= PASS
 can-tools 离线 303 PASS
@@ -2005,7 +2005,7 @@ GitHub CI：**未运行**（尚未提 PR）
 运行方式：
 
 ```bash
-bash labs/vehicle/uds-basic/tests/run_tests.sh all   # 668 + 233
+bash labs/vehicle/uds-basic/tests/run_tests.sh all   # 673 + 234
 bash scripts/healthcheck.sh                          # 环境 + 离线测试
 
 # OQ7：网关守护进程（独占 vcan0）

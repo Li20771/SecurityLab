@@ -49,7 +49,10 @@ OQ7 的价值是"既有协议模型 → 真实 vCAN runtime"，不是重做 ECU 
 的既有启动方式（``subprocess.Popen([sys.executable, "-u", "ecu/ecu.py"])``）
 保持一致。
 
-安全边界：只使用 vcan0 + 虚拟 ECU，不接触真实 CAN / ECU / 车辆。
+安全边界（fail-closed，见 ``ALLOWED_INTERFACES``）：本 Runtime v1 **只允许
+vcan0**，其它接口（``can0`` / ``can1`` / ``vcan1`` / …）一律**拒绝启动** ——
+不会构造 runtime，也不会创建或绑定任何 CAN socket。命令行入口不接受把真实
+CAN 接口当作实验目标；真实 CAN 总线 / 真实 ECU / 真实车辆不属于本实验运行范围。
 """
 
 import argparse
@@ -73,6 +76,14 @@ from gateway import (
 #: 默认 CAN 接口：**虚拟** CAN。刻意不是 can0 —— 网关守护进程绝不应把
 #: 默认值指向真实总线。
 DEFAULT_INTERFACE = "vcan0"
+
+#: 允许的 CAN 接口**白名单**（fail-closed 的安全边界，不是可配置项）。
+#:
+#: 本实验的运行范围只有 "vcan0 + VirtualEcu"：真实 CAN 接口不属于本实验，
+#: 因此即使**显式**指定也必须拒绝启动 —— 只打印警告然后继续绑定是不够的。
+#: 这里是精确匹配（不是前缀匹配）：`vcan1` / `can0` / `vcan0x` / `VCAN0` /
+#: 空串等一律拒绝，避免任何形式的"看起来像虚拟接口"绕过。
+ALLOWED_INTERFACES: tuple[str, ...] = ("vcan0",)
 
 #: 单次总线等待上限（秒），同时用作 select() 超时与 socket 超时。
 #:
@@ -129,6 +140,10 @@ class IsotpTransport:
     传输参数刻意保持内核默认（不启用 tx_pad / rx_pad / STmin / BS），与
     ``ecu.py`` 的默认行为一致 —— ``ecu.py`` 也只在对应环境变量被显式设置时
     才下发 ISO-TP 选项。
+
+    .. note::
+       接口白名单（只允许 vcan0）由**命令行入口** ``main()`` 强制；
+       本类只绑定调用方给出的接口名，自身不做策略判断。
     """
 
     def __init__(
@@ -484,6 +499,11 @@ def build_runtime(
 
     transport 的地址表直接取自协议的网关对象，因此**发送映射与路由表
     必然一致** —— 不会出现"路由到一个没有 socket 的应答地址"。
+
+    .. note::
+       本工厂**不做**接口策略判断；"只允许 vcan0"的 fail-closed 边界由命令行
+       入口 ``main()`` 在调用本函数**之前**强制。以编程方式直接调用本函数
+       （测试 / 实验脚本）时，调用方需自行遵守同一安全边界。
     """
     gateway = build_default_gateway()
 
@@ -518,14 +538,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "  0x7E2 -> ECU_C -> 0x7EA\n"
             "  0x7DF -> 功能寻址广播到 A/B/C（不回帧）\n"
             "\n"
-            "安全边界：只用于 vcan0 虚拟 CAN 实验，不要指向真实 CAN 总线、\n"
-            "真实 ECU 或真实车辆。"
+            "安全边界（fail-closed）：只允许 " + "/".join(ALLOWED_INTERFACES) + "。\n"
+            "其它接口（含 can0 / can1 / vcan1）一律拒绝启动，不会创建或绑定\n"
+            "任何 CAN socket。真实 CAN 总线 / 真实 ECU / 真实车辆不在本实验\n"
+            "运行范围内。"
         ),
     )
     parser.add_argument(
         "--interface",
         default=DEFAULT_INTERFACE,
-        help=f"CAN 接口名（默认 {DEFAULT_INTERFACE}；虚拟总线）",
+        help=(
+            f"CAN 接口名（默认 {DEFAULT_INTERFACE}）。"
+            f"**只允许 {'/'.join(ALLOWED_INTERFACES)}**：其它取值一律拒绝启动"
+            f"（fail-closed），因为真实 CAN 接口不在本实验运行范围内"
+        ),
     )
     parser.add_argument(
         "--wait-timeout",
@@ -548,19 +574,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     """
     args = parse_args(argv)
 
+    # ---- 安全边界（fail-closed）：先于任何构造 / socket 绑定 ----
+    #
+    # 刻意**不是**"只警告然后继续绑定"：本实验的运行范围只有
+    # "vcan0 + VirtualEcu"，真实 CAN 接口不在范围内，因此显式指定也必须拒绝。
+    # 拒绝发生在这里 —— 既不会调用 build_runtime()，也不会创建 / 绑定任何
+    # CAN socket。
+    if args.interface not in ALLOWED_INTERFACES:
+        print(
+            f"Gateway Runtime v1 仅允许使用 {'/'.join(ALLOWED_INTERFACES)}；"
+            f"拒绝启动非虚拟/非允许接口（收到 {args.interface!r}）。\n"
+            f"真实 CAN 接口 / 真实 ECU / 真实车辆不在本实验运行范围内。",
+            file=sys.stderr,
+        )
+        return 2
+
     if args.wait_timeout <= 0:
         print("--wait-timeout 必须为正数", file=sys.stderr)
         return 2
-
-    if not str(args.interface).startswith("vcan"):
-        # 安全边界：本实验框架只针对虚拟总线。接口允许被显式覆盖（实验需要），
-        # 但"我正在指向一条非虚拟接口"必须足够显眼。
-        print(
-            f"[WARN] 接口 {args.interface!r} 不是 vcan* 虚拟接口 —— 请确认你没有"
-            f"连接真实 CAN 总线 / 真实 ECU / 真实车辆。"
-            f"本框架默认且仅验证 {DEFAULT_INTERFACE}。",
-            file=sys.stderr,
-        )
 
     runtime = build_runtime(args.interface, wait_timeout=args.wait_timeout)
     runtime.install_signal_handlers()

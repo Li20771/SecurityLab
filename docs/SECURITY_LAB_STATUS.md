@@ -58,16 +58,16 @@ OQ7（Gateway Runtime v1）已在 feature branch 上完成实现 + 测试 + 文�
 | feature branch | `feat/oq7-gateway-runtime-v1` |
 | base | `535fb8e`（PR #20 merge 的 tree，本地等价提交 `2f75f28`） |
 | 新增 | `ecu/gateway_runtime.py`（实时 transport adapter / 守护进程） |
-| 新增测试 | `tests/test_gateway_runtime_unit.py`（48）、`tests/test_gateway_runtime_vcan.py`（20） |
+| 新增测试 | `tests/test_gateway_runtime_unit.py`（53）、`tests/test_gateway_runtime_vcan.py`（21） |
 | 新增可复现入口 | `scripts/repro/verify_gateway_runtime.sh`（独占 vcan0） |
 | 内容 | vcan0 上的多 ECU 诊断网关守护进程：`SocketCAN/ISO-TP → Gateway Runtime → DiagnosticGateway → ECU_A/B/C → UdsHandler`；物理寻址 0x7E0/0x7E1/0x7E2 → 0x7E8/0x7E9/0x7EA、功能寻址 0x7DF 广播且**总线静默**、未知 ID 丢弃、ECU 状态隔离、SIGINT/SIGTERM 优雅退出 |
 | 分层 | `gateway.py` 保持**纯协议层**（不 import isotp/socket，13 单元离线单测不变）；runtime 只做搬运 + 生命周期 + 错误遏制，**寻址规则零重复** |
 | 传输实现 | 每请求 ID 一个 CAN_ISOTP socket（与 `ecu.py` 同一种 ISO-TP 用法）；内核按 rxid 过滤 + 内核实重组/分帧，runtime 不解析 PCI |
 | 错误遏制 | 沿用 `ecu.py` 既有策略：EILSEQ/ECOMM/EMSGSIZE 丢弃当前传输继续运行；其它 OSError 向上抛不静默；畸形请求回 NRC 而**不使守护进程崩溃** |
-| 安全默认值 | `--interface` 默认 **vcan0**；非 `vcan*` 接口启动时打印显式警告 |
+| 接口安全边界（**fail-closed**） | 只允许 **vcan0**（`ALLOWED_INTERFACES`）。`--interface` 取任何其它值（`can0` / `can1` / `vcan1` / 空串 …）一律**拒绝启动**（退出码 2），且拒绝发生在构造 runtime 与绑定 socket **之前** —— 不会建立任何 CAN 连接。刻意**不是**"只警告然后继续绑定" |
 | 边界（**未做**，禁写成已完成） | 真实 CAN / 真实 ECU、DoIP、多进程 ECU orchestration、gateway security policy / 高级过滤、真实固件刷写 —— 均为**本轮之外**的能力，不是 OQ7 的未完成项 |
 | 不属于本轮（**非 OQ7 缺陷**） | **0x27 不经 gateway 层**：OQ7 runtime 的 transport/routing 能力已完整；0x27 需要请求时依赖注入（时间快照 + 安全配置），按既有分层归属 `ecu.py` 入口层，`gateway.py` 用静态 SERVICE 表 —— 这是 OQ7 **之前就存在**的分层边界。让网关透传 0x27 属**后续独立 OQ**（需同时解决每 ECU 独立注入与注入语义只定义一处） |
-| 验证（**Local verified**，2026-09-24 本机实测） | uds-basic `run_tests.sh all` → PASS 23 / WARN 0 / FAIL 0（unit **668** + e2e **233** = **901**）；`qa_fast.sh` PASS；`verify_gateway_runtime.sh` PASS 7 / FAIL 0（13 项端到端断言全过）；can-tools offline PASS 4 |
+| 验证（**Local verified**，2026-09-24 本机实测） | uds-basic `run_tests.sh all` → PASS 23 / WARN 0 / FAIL 0（unit **673** + e2e **234** = **907**）；`qa_fast.sh` PASS；`verify_gateway_runtime.sh` PASS 7 / FAIL 0（13 项端到端断言全过）；can-tools offline PASS 4 |
 | 回归 | OQ1–OQ6 全部既有 unit / e2e 用例保持通过（未改动任何 UDS 服务语义） |
 | CI 证据 | **无**（尚未提 PR，GitHub Actions 未运行） |
 

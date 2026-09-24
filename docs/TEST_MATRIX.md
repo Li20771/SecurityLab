@@ -46,7 +46,7 @@ OQ6 及以前的行仍为 2026-09-23 的实测记录，其用例文件在 OQ7 �
 | test_keygen_unit.py | unit | 34 | seed/key 生成、derive/verify、可导入性（独立进程） | Local verified |
 | test_services_extra_unit.py | unit | 17 | 0x2E 门控链、0x3E 正响应/抑制/非法子功能、独立 EcuState | Local verified |
 | test_gateway_unit.py | unit | 13 | 多 ECU 拓扑、物理/功能寻址、状态隔离、广播不泄漏、构造护栏 | Local verified |
-| test_gateway_runtime_unit.py | unit | 48 | **OQ7** Gateway Runtime：接口配置与安全默认值（vcan0）、IsotpTransport 构造护栏（空表/重复 response_id/与功能寻址占位 txid 冲突）、绑定中途失败**关闭已建 socket**（fake socket，不碰真实 CAN）、物理派发与应答路由、功能寻址执行但不回帧、未知 ID、畸形输入（含 0..255 单字节全扫）不抛异常、ECU 状态隔离、生命周期（open/close 幂等/stop/serve_forever）、传输错误遏制（EILSEQ/ECOMM/EMSGSIZE 遏制 vs ENODEV/EBADF/EPERM 上抛、收发双向超时、日志不静默） | Local verified |
+| test_gateway_runtime_unit.py | unit | 53 | **OQ7** Gateway Runtime：**入口安全边界 fail-closed**（vcan0 接受；can0/can1/vcan1/vcan/vcan0x/空串/VCAN0/尾随空格共 8 种取值拒绝 —— 断言非 0 退出 + `build_runtime()` 未被调用 + **未创建任何 CAN socket** + stderr 明确说明）、接口配置与解析、IsotpTransport 构造护栏（空表/重复 response_id/与功能寻址占位 txid 冲突）、绑定中途失败**关闭已建 socket**（fake socket，不碰真实 CAN）、物理派发与应答路由、功能寻址执行但不回帧、未知 ID、畸形输入（含 0..255 单字节全扫）不抛异常、ECU 状态隔离、生命周期（open/close 幂等/stop/serve_forever）、传输错误遏制（EILSEQ/ECOMM/EMSGSIZE 遏制 vs ENODEV/EBADF/EPERM 上抛、收发双向超时、日志不静默） | Local verified |
 | test_dtc_unit.py | unit | 115 | 0x19/01/02/0A 报文与 mask 过滤、NRC 12/13、DTC 静态库约束、运行时状态与实例隔离；**OQ5**：`DTC_METADATA` 完整性、0x19/07 双 mask 计数（16-bit BE、无 severity availability byte）、0x19/08 六字节记录与**字段顺序** `severity→functionalUnit→DTC→status`、0x19/09 单 DTC、severity 与 0x14/0x11 正交性、wire profile 冻结；**OQ6-A**：`dtc_runtime` 读写/校验/幂等、未知 DTC 不静默创建、mutation→0x19→0x14 闭环；**OQ6-B**：0x85 请求校验与 byte-exact 响应、DTC setting ON/OFF、OFF 冻结 mutation、OFF 不阻止 0x14、0x19 在 OFF 下的可见性、实例隔离、reset 恢复 ON | Local verified |
 | test_dtc_clear_unit.py | unit | 39 | 0x14 严格 4 字节（短/多余 → 13）、`0xFFFFFF` 全清与单清、**status 置零不删 key**（0x0A 成员保留）、未支持 DTC 与功能组取值 → 31、NRC 不改 state、幂等、24-bit big-endian、空库、hardReset 不恢复 status、实例隔离、静态库不变、不影响 DID/routine/transfer | Local verified |
 | test_routine_unit.py | unit | 25 | 0x31 Start/Stop/Results 状态机、NRC 12/13/22/31、hardReset 清 routine 保 DTC、session 保留、实例隔离 | Local verified |
@@ -57,7 +57,7 @@ OQ6 及以前的行仍为 2026-09-23 的实测记录，其用例文件在 OQ7 �
 | test_isotp_options_vcan.py | e2e(vcan) | 14（矩阵） | ISO-TP SF/FF/CF/FC、STmin/BS、超时、malformed PCI | Local verified |
 | test_write_did_vcan.py | e2e(vcan) | 8 | 真实解锁写 DID→读回、hardReset 恢复、3E 80 总线静默 | Local verified |
 | test_multi_ecu_vcan.py | e2e(vcan) | 4（5.2s） | 三 ECU 进程物理寻址、会话隔离、错误地址无应答 | Local verified |
-| test_gateway_runtime_vcan.py | e2e(vcan) | 20（22.4s） | **OQ7** Gateway Runtime 守护进程（独立子进程）真实链路：物理寻址 0x7E0/1/2→0x7E8/9/A 且**原始 CAN 抓包**证明应答不串号、功能寻址 0x7DF 三个 ECU 都执行而**总线零响应帧**（读 DID 也不泄漏）、多帧请求（FF+CF 送达并被完整重组）与多帧响应（FF+CF 分帧）双向、未知物理 ID 总线只出现 tester 自己的请求、畸形请求回 NRC 且守护进程存活（含 0x00–0xFF 高频垃圾流量）、会话状态按 ECU 独立且可逆、**0x27 不经 gateway 层**的边界固化、生命周期（SIGTERM/SIGINT → 退出码 0 + 清理信息 + 无残余进程 + 同接口可立即重新绑定）、`--help` 与非法参数退出码 | Local verified |
+| test_gateway_runtime_vcan.py | e2e(vcan) | 21（23.3s） | **OQ7** Gateway Runtime 守护进程（独立子进程）真实链路：物理寻址 0x7E0/1/2→0x7E8/9/A 且**原始 CAN 抓包**证明应答不串号、功能寻址 0x7DF 三个 ECU 都执行而**总线零响应帧**（读 DID 也不泄漏）、多帧请求（FF+CF 送达并被完整重组）与多帧响应（FF+CF 分帧）双向、未知物理 ID 总线只出现 tester 自己的请求、畸形请求回 NRC 且守护进程存活（含 0x00–0xFF 高频垃圾流量）、会话状态按 ECU 独立且可逆、**0x27 不经 gateway 层**的边界固化、生命周期（SIGTERM/SIGINT → 退出码 0 + 清理信息 + 无残余进程 + 同接口可立即重新绑定）、`--help` 与非法参数退出码、**真实进程拒绝 can0/can1/vcan1**（迅速 exit 2 即证明未建立 CAN 连接也未驻留服务） | Local verified |
 | test_dtc_vcan.py | e2e(vcan) | 21 | 0x19 正响应/NRC 真实链路、hardReset 前后 DTC 一致；**OQ5**：0x19/07 正响应（5 字节，无 severity availability byte）、0x19/08 **20 字节 MF 响应逐字节断言**（重组后 payload，非帧数）、0x19/09 正响应与字段顺序、未知 DTC → 31；**OQ6-B**：0x85 `C5 01`/`C5 02` 正响应、`7F 85 12`/`7F 85 13`、OFF 不阻止 0x14 且 0x19 反映清除结果 | Local verified |
 | test_dtc_clear_vcan.py | e2e(vcan) | 11 | 0x14 真实链路：**独立 ECU 进程**（清除在本进程内不可逆，0x11 不恢复 status）；核心顺序链路 19 0A→14(×2 幂等)→19 01 FF→19 02 FF→19 0A→14 单清已为 0→11 01→19 0A（status 全 0 且不被复位）；NRC 13/31（含字节序颠倒、功能组取值） | Local verified |
 | test_routine_vcan.py | e2e(vcan) | 11 | 0x31 状态机/NRC 真实链路、hardReset 清 routine（Start→11 01→Stop=0x22） | Local verified |
@@ -65,8 +65,8 @@ OQ6 及以前的行仍为 2026-09-23 的实测记录，其用例文件在 OQ7 �
 | test_upload_vcan.py | e2e(vcan) | 16 | 0x35 真实链路：初始 00→73、幂等重发、多块（ISO-TP 多帧 ≠ BSC）、hardReset abort、session、34↔35 互斥 | Local verified |
 | test_file_transfer_vcan.py | e2e(vcan) | 41 | 0x38 真实链路：**readDir 完整传输**（38 05→78 05…→36 01→76 01 <dirInfo>→…→37→77，非只验响应）、readDir 10 字节且不含 dirInfo 本体、多块 dirInfo（242 字节 / 2 块）与尾块 duplicate、readFile 300 字节三块、addFile/replaceFile 提交点与 abort（复位）不污染、deleteFile one-shot 后 0x34/0x35 可用、NRC、8 向互斥、hardReset 保留 files、session 不终止 | Local verified |
 
-- 汇总：`run_tests.sh all` → **PASS 23 / WARN 0 / FAIL 0**（unit **668** + e2e **233**，共 **901**；2026-09-24 本机实测，**Local verified**）。
-  OQ7 增量：unit **+48**（test_gateway_runtime_unit.py）+ e2e **+20**（test_gateway_runtime_vcan.py）；
+- 汇总：`run_tests.sh all` → **PASS 23 / WARN 0 / FAIL 0**（unit **673** + e2e **234**，共 **907**；2026-09-24 本机实测，**Local verified**）。
+  OQ7 增量：unit **+53**（test_gateway_runtime_unit.py）+ e2e **+21**（test_gateway_runtime_vcan.py）；
   OQ1–OQ6 的用例文件与数量**均未变动**。
 - 已知非致命：`test_isotp_options_vcan.py:186` ResourceWarning（子进程 BufferedReader 未关）。
 

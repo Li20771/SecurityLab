@@ -138,6 +138,11 @@ DiagnosticGateway.route()          ← 全部寻址语义仍只定义在这一�
   不静默吞掉。功能寻址、未知 ID、服务抑制响应三种"不回帧"情形都**不是**错误。
 - **生命周期**：SIGINT/SIGTERM → 退出码 0 + socket 清理（`--wait-timeout` 同时作为
   select 与 socket 超时，决定退出延迟上限），**不需要 `kill -9`**。
+- **接口安全边界（fail-closed）**：**只允许 `vcan0`**（`ALLOWED_INTERFACES`）。
+  `--interface` 取任何其它值（`can0` / `can1` / `vcan1` / `vcan0x` / 空串 …）
+  一律**拒绝启动**并返回非 0 —— 拒绝发生在构造 runtime 与绑定 socket **之前**，
+  因此不会建立任何 CAN 连接。刻意**不是**"只警告然后继续绑定"：真实 CAN 接口
+  不属于本实验运行范围，本层不提供把真实总线当作实验目标的入口。
 - **服务集 = `VirtualEcu` 的静态表**（0x10/0x11/0x14/0x19/0x22/0x2E/0x31/0x34–0x38/
   0x3E/0x85），**不含 0x27 SecurityAccess**。这不是 runtime 的能力缺陷：0x27 需要
   **请求时依赖注入**（时间快照 + 安全配置），按既有分层归属 `ecu.py` 入口层，而
