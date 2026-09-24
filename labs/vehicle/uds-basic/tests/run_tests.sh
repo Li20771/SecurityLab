@@ -11,6 +11,8 @@
 #      通过真实 ISO-TP / SocketCAN 链路与虚拟 ECU 子进程通信
 #      以及 test_isotp_options_vcan.py：ISO-TP 传输参数（padding /
 #      stmin / blocksize / timeout）的在网实验矩阵
+#      以及 test_gateway_runtime_vcan.py（OQ7）：gateway_runtime.py 守护进程
+#      的物理/功能寻址、总线静默、状态隔离、畸形请求与生命周期（SIGTERM）
 #
 # 用法：
 #
@@ -113,6 +115,14 @@ run_unit() {
         ok "multi-ECU gateway routing unit tests passed"
     else
         fail "multi-ECU gateway routing unit tests failed"
+    fi
+
+    echo
+
+    if "$PYTHON_BIN" "$TESTS_DIR/test_gateway_runtime_unit.py"; then
+        ok "gateway runtime (dispatch/lifecycle/error containment) unit tests passed"
+    else
+        fail "gateway runtime unit tests failed"
     fi
 
     echo
@@ -222,6 +232,16 @@ run_e2e() {
             ok "multi-ECU physical addressing e2e tests passed"
         else
             fail "multi-ECU physical addressing e2e tests failed"
+        fi
+
+        echo
+    fi
+
+    if [ -f "$TESTS_DIR/test_gateway_runtime_vcan.py" ]; then
+        if "$PYTHON_BIN" "$TESTS_DIR/test_gateway_runtime_vcan.py"; then
+            ok "gateway runtime daemon e2e tests passed"
+        else
+            fail "gateway runtime daemon e2e tests failed"
         fi
 
         echo
