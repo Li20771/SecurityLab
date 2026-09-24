@@ -4,34 +4,61 @@
 >
 > 规则：只记录经实际命令验证的事实；状态取值 VERIFIED / PARTIAL / BLOCKED / NOT_APPLICABLE。
 
-## CURRENT STATE — 2026-09-23
+## CURRENT STATE — 2026-09-24
 
 **CURRENT_PHASE**:
-Phase 4 — Second-Round / Post-OQ5 Baseline
+Phase 4 — Second-Round / Post-OQ6 Baseline
 
 **CURRENT_TASK**:
-OQ5 DTC severity 已合并；本轮为**文档基线清理**；下一项第二轮能力待重新盘点后确定
+OQ6-A / OQ6-B 已合并；OQ6 post-merge documentation checkpoint resync 已完成；
+下一项第二轮能力待重新盘点后确定
 
 **BRANCH**:
-`chore/docs-baseline-cleanup-20260923`（本轮只做文档基线清理；
+`chore/docs-checkpoint-resync-20260924`（本轮只做文档 checkpoint 同步；
 第二轮能力一律新建独立 feature branch）
 
 **PR**:
-#14 MERGED / CLOSED
-merge commit `dfe3ea79b625764cfd93c8d19d47eb868553e50a`（**仅文档变更**）
+#18 MERGED / CLOSED
+merge commit `62531bb70632def49250e997b9619de2a807aa1a`（**仅文档变更**）
 
 **MAIN**:
-`dfe3ea79b625764cfd93c8d19d47eb868553e50a`（= PR #14 docs merge 后的当前基线）
+- current main document checkpoint：`62531bb70632def49250e997b9619de2a807aa1a`（PR #18，**仅文档**）
+- latest production-code baseline：`c112f022a1da91000e27f524bacba836b2c81ac6`（PR #17 = OQ6-B merge）
+
+> 两者**刻意分开记录**：`62531bb` 只是文档 checkpoint，**不是**生产代码基线。
 
 **GitHub CI**:
 post-merge Fast QA = PASS
-Run = `35851993556`（event=push，branch=main）
+- 生产代码基线 `c112f022` → Run = `35859067322`（run **#65**，event=push，branch=main）
+- 文档 checkpoint `62531bb` → Run = `35944424974`（run #68，event=push，branch=main）= success
+
+Extended = 仅 workflow_dispatch，从未在真实 runner 实跑。
 
 **PREVIOUS BASELINE（历史，不再作为当前状态）**:
-PR #13 MERGED，main = `3349d79cac30b50593f6c826df8a1147fa9b4d34`（**OQ5 代码基线**）
-PR #12 MERGED，main = `c96f858668d7fa6aa17bcafe4f9d920abe140d32`（OQ4 基线）
-PR #10 MERGED，main = `abcb8b4d21ac678fb6c86ec607c79e17e3177980`（OQ3 基线）
-PR #1 MERGED，main = `89a12a0cf43c6a23bf9cb5c6d393d1aa0198f87a`（第一轮正式基线）
+PR #17 MERGED，生产代码基线 = `c112f022a1da91000e27f524bacba836b2c81ac6`（**OQ6-B**）
+PR #16 MERGED，生产代码基线 = `a0f6725a8006fb445d21485946034b4c66f20d5d`（**OQ6-A**）
+PR #13 MERGED，生产代码基线 = `3349d79cac30b50593f6c826df8a1147fa9b4d34`（OQ5）
+PR #12 MERGED，生产代码基线 = `c96f858668d7fa6aa17bcafe4f9d920abe140d32`（OQ4）
+PR #10 MERGED，生产代码基线 = `abcb8b4d21ac678fb6c86ec607c79e17e3177980`（OQ3）
+PR #1 MERGED，生产代码基线 = `89a12a0cf43c6a23bf9cb5c6d393d1aa0198f87a`（第一轮正式基线）
+
+**OQ6-B 状态**: **MERGED / COMPLETED**（PR #17）
+新增 `0x85 ControlDTCSetting`：`85 01 → C5 01` / `85 02 → C5 02`（byte-exact 回显）；
+`85 00/03/FF → 7F 85 12`；`85` / `85 01 00 → 7F 85 13`。
+`0x85 01`（ON）允许 `dtc_runtime.set_dtc_status()` 更新；`0x85 02`（OFF）**冻结**更新
+（返回 `False`，已有 status 不变）；**OFF 不阻止 `0x14` 清除**；
+`0x11 01/02/03` 恢复为上电默认 ON。
+边界：无 session / security 门控；不处理 suppressPosRspMsgIndicationBit；
+无 optional DTCSettingControlOptionRecord；**不新增 DTC mutation API**。
+
+**OQ6-A 状态**: **MERGED / COMPLETED**（PR #16）
+新增 `ecu/dtc_runtime.py`：DTC 运行时状态的**唯一受校验写入入口**
+（已注册 DTC + status 单字节范围校验；未知 DTC **不静默创建**；
+`get_dtc_status()` 对"已注册但未写入"返回 `0x00`）。
+架构：`DTC_DATABASE`（静态定义）→ `DTC_METADATA`（severity / functionalUnit，
+与 runtime status **正交**）→ `EcuState.dtc_records`（运行时 status）。
+**不新增 UDS 服务** —— `set_dtc_status()` 在 tracked 生产代码中无调用点，
+fault generation 只是进程内 test seam，**不是协议能力**。
 
 **OQ5 状态**: **MERGED / COMPLETED**（PR #13）
 新增 `0x19/07` reportNumberOfDTCBySeverityMaskRecord、
@@ -39,7 +66,8 @@ PR #1 MERGED，main = `89a12a0cf43c6a23bf9cb5c6d393d1aa0198f87a`（第一轮正�
 severity metadata = 静态 `DTC_METADATA`（与运行时 status 正交）；
 `0x19/08` 3 DTC = 20 字节 → kernel ISO-TP MF（e2e 逐字节断言重组后 payload）；
 **SecurityLab 0x19 response profile 不变**（正响应不回显 reportType）。
-验证：UDS unit **581** / e2e **208** / all **789**；qa_fast PASS（**Local verified**）。
+验证（OQ5 当时）：UDS unit **581** / e2e **208** / all **789**（**Local verified**；
+已被下方「当前测试基线」取代）。
 
 **OQ4 状态**: **MERGED / COMPLETED**（PR #12）
 `0x11 02` keyOffOnReset、`0x11 03` softReset；三者状态等价（experiment-defined）。
@@ -50,20 +78,27 @@ offline 120 passed / 23594 subtests；OQ3 smoke PASS 10 / FAIL 0；
 v1 golden 947 且两个 digest unchanged。
 **stateful / multi-request sequences = OUT OF SCOPE**。
 
+**当前测试基线（Local verified，2026-09-24 本机实测，OQ6 合并后）**:
+UDS unit **620** / e2e **213** / all **833**（PASS 21 / WARN 0 / FAIL 0）；
+can-tools offline **303**；`qa_fast.sh` PASS。
+**e2e 不在 GitHub Fast CI 内** —— 需 vcan0，故 213 只能是 Local verified，
+**不得标为 GitHub CI verified**。
+
 **NEXT_STEP**:
-重新检查当前 main 真实状态 → 确定下一项第二轮能力 →
+重新盘点当前 main 的真实能力与剩余缺口 → 确定下一项第二轮能力 →
 创建独立 feature branch 开发（小功能 → 小 PR → 可验证 → 合入）。
 
 **SECOND-ROUND MODE**:
 不再把多个大型能力一次性堆进 main；每个能力单独 feature branch、
 单独 PR、单独审查与回滚。
 
-**POST-OQ5 COMPLETED（均已存在于当前 main 且已验证）**:
+**POST-OQ6 COMPLETED（均已存在于当前 main 且已验证）**:
 
 - UDS 服务：`0x10`、`0x11`（01/02/03）、`0x14`、`0x19`（01/02/07/08/09/0A）、
-  `0x22`、`0x27`、`0x2E`、`0x31`、`0x34`–`0x37`、`0x38`、`0x3E`
+  `0x22`、`0x27`、`0x2E`、`0x31`、`0x34`–`0x37`、`0x38`、`0x3E`、`0x85`（01/02）
   —— 均已存在于当前 main 并有 unit + e2e 验证
-- OQ3 MF-v1、OQ4 ECUReset 扩展、OQ5 DTC severity —— 均已合入 main
+- OQ3 MF-v1、OQ4 ECUReset 扩展、OQ5 DTC severity、OQ6-A DTC runtime state、
+  OQ6-B ControlDTCSetting —— 均已合入 main
 
 > 已实现 ≠ 全部完成：`0x19` 仍缺 03/04/05/06/0B–0E/14/15/16/1A 等 reportType；
 > `0x11` 未实现 04/05；suppressPosRspMsgIndicationBit 未实现（见下）。
@@ -72,11 +107,12 @@ v1 golden 947 且两个 digest unchanged。
 
 - 0x7DF 功能寻址**实时网关守护进程**
 - 真实 Flash / firmware flashing / 签名校验；0x39 / 0x06
-- Permission / session framework；0x28 / 0x85
+- Permission / session framework；0x28
 - `0x19` 其余 reportType（03/04/05/06/0B–0E/14/15/16/1A…）；
   `0x11` 04/05；0x31 的 option/status record
-- DTC 功能组与 DTC 产生 / 故障注入机制
-- suppressPosRspMsgIndicationBit（`0x19` / `0x11` 均未实现）
+- DTC 功能组；DTC **产生 / 故障注入**仍只是进程内 seam
+  （`0x85` 只开关"是否允许继续更新"，本身不产生故障）
+- suppressPosRspMsgIndicationBit（`0x19` / `0x11` / `0x85` 均未实现）
 
 **NEXT CANDIDATE**:
 待重新盘点当前 main 的真实能力与剩余缺口后确定。
@@ -85,7 +121,7 @@ v1 golden 947 且两个 digest unchanged。
 > 以下各节为历史断点（Historical checkpoints），按当时状态记录，**不再回改**。
 > 其中的能力状态是**当时**的快照，可能与当前 main 不一致 ——
 > 例如多节写有 "0x19/0x31/0x34-37 未实现"，这些能力此后均已合入 main 并有验证
-> （见本文档 CURRENT STATE 的 POST-OQ3 COMPLETED 与 `TEST_MATRIX.md` §2）。
+> （见本文档 CURRENT STATE 的 POST-OQ6 COMPLETED 与 `TEST_MATRIX.md` §2）。
 > **判定当前状态一律以本文档顶部的 CURRENT STATE 为准。**
 
 ---
