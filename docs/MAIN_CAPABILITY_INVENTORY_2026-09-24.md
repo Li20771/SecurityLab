@@ -180,12 +180,26 @@ OQ7 的 CAN ID 映射（本轮未重新验证，引用 OQ7 已固化证据：
 | `0x34` RequestDownload | `VERIFIED` | DFI `00` / ALFID `23` | 是（`download_*` 6 字段） | `13` `22` `24` `31` `73` | 是 | 是 | **是（纯内存）** | **不接触 Flash / 文件系统**；无会话门控 |
 | `0x35` RequestUpload | `VERIFIED` | DFI `00` / ALFID `23` | 是（`upload_*` 5 字段） | `13` `22` `24` `31` `73` | 是 | 是 | **是**（源为 256 字节纯函数） | 32130 上限；与 `0x34` 方向互斥 |
 | `0x36` TransferData | `VERIFIED` | BSC 块序 + 幂等重传 + 回绕 | 是 | `13` `24` `31` `73` | 是 | 是 | **是（纯内存）** | 数据源三分支（download / readFile / dirInfo） |
-| `0x37` RequestTransferExit | `VERIFIED` | 完整性检查后清理/提交 | 是 | `13` `24` `31` `71`?/`73` | 是 | 是 | **是** | addFile/replaceFile **仅在此时提交**；plain `0x34` 不提交任何东西 |
-| `0x38` RequestFileTransfer | `VERIFIED` | mode `01`–`05`：addFile / deleteFile / replaceFile / readFile / readDir | 是（`file_mode` / `file_path` / `files`） | `13` `22` `31` | 是 | 是 | **是（synthetic in-memory 文件模型）** | 非真实文件系统；`0x39` / `0x06` 未实现；仅 DFI `00` |
+| `0x37` RequestTransferExit | `VERIFIED` | 完整性检查后清理/提交 | 是 | `13` `24` `31` `73` | 是 | 是 | **是** | addFile/replaceFile **仅在此时提交**；plain `0x34` 不提交任何东西 |
+| `0x38` RequestFileTransfer | `VERIFIED` | mode `01`–`05`：addFile / deleteFile / replaceFile / readFile / readDir | 是（`file_mode` / `file_path` / `files`） | `13` `22` `31` | 是 | 是 | **是（synthetic in-memory 文件模型）** | 非真实文件系统；**modeOfOperation `0x06`（ResumeFile）未实现**（已实现 `0x01`–`0x05`）；仅 DFI `00` |
 | `0x3E` TesterPresent | `VERIFIED` | `00`（含 suppress `80`） | 否 | `12` `13` | 是 | 是 | 否 | **唯一处理 suppressPosRspMsgIndicationBit 的服务** |
 | `0x85` ControlDTCSetting | `VERIFIED` | `01` ON / `02` OFF | 是（`dtc_setting_enabled`） | `12` `13` | 是 | 是 | **是** | 只开关"是否允许继续更新"，**本身不产生故障**；不处理 suppress bit；无会话/安全门控 |
 
-未在表中出现的 SID（如 `0x28`、`0x39`、`0x06`）→ `NOT_IMPLEMENTED`（见 §13 G1）。
+未在表中出现的 SID（如 `0x28`、`0x39`）→ `NOT_IMPLEMENTED`（见 §13 G1）。
+
+> **术语纠正（本项目既有文档中存在误称，本报告不沿用）**：
+>
+> | 标识 | 正确含义 | 本项目状态 |
+> |------|----------|-----------|
+> | `0x37` | **RequestTransferExit** | **已实现**（见上表；**不是缺口**） |
+> | `0x38` | **RequestFileTransfer** | 已实现，`modeOfOperation` `0x01`–`0x05` |
+> | `0x38` / `modeOfOperation = 0x06` | **ResumeFile** | **未实现** |
+> | `0x39`–`0x3C` | 保留范围（本项目未使用） | `NOT_IMPLEMENTED` |
+>
+> 即：**ResumeFile 不是独立 SID**，而是 `0x38` 的一个 `modeOfOperation` 取值；
+> **不存在**"`0x39` RequestFileTransferExit"这一服务。
+> 注意 `modeOfOperation` 不是 UDS 子功能字节（非法 mode → `NRC 0x31`，
+> 见 `file_database.py:55-56`）。
 
 ### 4.3 `0x27` 的两条通路（重要区分）
 
@@ -758,7 +772,7 @@ G5 Firmware·Embedded / G6 Fuzz·Testing / G7 Infrastructure·Automation / G8 Do
 | ID | 缺口 | 证据 | 当前影响 | 与已有架构关系 | 是否适合独立 OQ |
 |----|------|------|----------|----------------|-----------------|
 | G1-1 | `0x28` CommunicationControl | 不在 `SERVICES`（`uds_server.py:2130-2145`） | 无通信控制能力 | 纯新增 handler + 状态字段 | 是（小） |
-| G1-2 | `0x39` RequestFileTransferExit / `0x06` ResumeFile | 不在 `SERVICES`；`test_file_transfer_unit.py:25` 明列为 out of scope | `0x38` 传输无正式收尾/续传 | 需扩展 `file_database` + `state` | 是（中） |
+| G1-2 | `0x38` RequestFileTransfer 的 **ResumeFile（`modeOfOperation = 0x06`）尚未实现**（`0x37` RequestTransferExit **已存在，不是缺口**） | 已实现 mode 仅 `0x01`–`0x05`（`file_database.py:62-78`、`SUPPORTED_FILE_MODES`）；`test_file_transfer_unit.py:25` 明列 out of scope | 被中断的文件传输无法续传 | 需在 `file_database` 新增 mode `0x06` + 扩展 `EcuState` 传输状态 | 是（中） |
 | G1-3 | `0x19` 其余 reportType（`03/04/05/06/0B–0E/14/15/16/1A…`） | 仅 6 个 reportType 有分支（`uds_server.py:1106-1215`） | DTC 报告面不完整 | 复用既有 DTC 模型 | 是（可分批） |
 | G1-4 | `0x11 04/05`、`0x31` 的 option/status record | `SUPPORTED_RESET_TYPES` 仅 3 值；`0x31` 无 record 处理（`uds_server.py:1284`） | 少量子功能缺失 | 局部扩展 | 是（小） |
 | G1-5 | DTC 功能组（`0x14` groupOfDTC） | `0x14` 仅 `0xFFFFFF` 或单个已存在 DTC | 无法按功能组清码 | 需定义功能组语义 | 是（中） |
@@ -781,7 +795,7 @@ G5 Firmware·Embedded / G6 Fuzz·Testing / G7 Infrastructure·Automation / G8 Do
 | G6-2 | CAN 层 fuzz（CAN ID / 任意原始帧） | 仅 `padding`/DLC 一维；README 明示"不做 CAN ID fuzzing" | 无 CAN 层攻击面覆盖 | 复用既有 harness | 是（中） |
 | G6-3 | Coverage-guided fuzz | 无 instrumentation | 无覆盖率反馈 | 需引入工具链 | 是（大） |
 | G6-4 | 0x27 seed→key 正流程作为 fuzz 路径 | `uds_corpus.py:382` 标为 NEXT DESIGN | 安全流程未被 fuzz | 依赖 G6-1 | 是 |
-| G7-1 | e2e 不在自动 CI | `ci.yml` fast job 不含 vcan0 e2e | 全部在网行为仅 Local verified | 可用 hosted runner + `modprobe vcan` | 是（中） |
+| G7-1 | e2e 不在自动 CI | `ci.yml` fast job 不含 vcan0 e2e | 全部在网行为仅 Local verified | **需先验证 runner 的 vcan / `CAN_ISOTP` 支持与权限**（未验证，不在本盘点范围） | 是（中） |
 | G7-2 | 六个 repro 脚本 + AFL + 固件脚本均不在门禁 | 无 workflow/`qa_*` 调用 | 无自动回归保护 | 需权衡运行时长 | 是（中） |
 | G7-3 | `healthcheck.sh` 无 CI 证据 | 本轮 NOT RUN | 环境健康无自动证据 | 可加入 CI | 是（小） |
 | G8-1 | **当前状态文档低估实际能力**：`0x7DF` 网关守护进程（D1/D13）、`0x85`（D12/D14）被列为未实现/缺失 | §12.1 A/C | 读者会以为 OQ6-B/OQ7 未交付 | 纯文档 | 是（小，纯文档） |
@@ -802,15 +816,15 @@ G5 Firmware·Embedded / G6 Fuzz·Testing / G7 Infrastructure·Automation / G8 Do
 | OQ-C1 Permission / Session Framework | 引入 registry 级 session→permission→service 前置检查抽象 | 需先确认"门控加入后既有服务语义不变"的迁移策略 | `uds_server.py` dispatcher + 全部 handler；`EcuState` 可能新增字段 | 无（G2-1/G2-2） | **高**：会改变多个既有服务的可调用条件，牵动大量既有测试 | 高 | 是（架构级，需谨慎设计） |
 | OQ-C2 Gateway Security Policy | 网关层报文级策略（ID 过滤/授权/限速） | 需先定义策略模型与配置载体 | `gateway_runtime.py` + 新策略模块 | G2-2 可选 | 中：易与"纯路由"职责混淆 | 中 | 是 |
 | OQ-C3 `0x27` 经 Gateway 透传 | 让 runtime 提供每 ECU 独立的安全访问注入 | 需解决"每 ECU 独立注入"与"注入语义只定义一处" | `gateway.py` 工厂 / `gateway_runtime.py` | G4-1 | 中：可能触碰 `gateway.py` 既有边界 | 中 | 是 |
-| OQ-C4 DTC Fault Injection Model | 让故障"产生"成为受控能力（协议或明确 seam 化） | 需决定是 UDS 服务还是仅进程内 API | `dtc_runtime` + 可能新增 SID（如 `0x2F`/`0x31` routine） | 无 | 中：容易越界成"新增 UDS 服务" | 中 | 是 |
+| OQ-C4 DTC Fault Injection Model | 让故障"产生"成为受控的 fault-injection seam，或在既有 UDS 服务语义中定义明确扩展；**具体采用何种协议载体留待 design review 决定** | 需决定是 UDS 服务还是仅进程内 API | `dtc_runtime`（并视 design review 结论决定是否扩展状态/服务） | 无 | 中：容易越界成"新增 UDS 服务" | 中 | 是 |
 | OQ-C5 suppressPosRspMsgIndicationBit 统一化 | 把响应抑制提升为统一请求预处理 | 需保证 `0x3E` 既有行为逐字节不变 | `uds_server.py` dispatcher + 多服务 | G2-4 | 低-中 | 低-中 | 是 |
-| OQ-C6 Firmware Security / `0x39` | `0x39` + 传输完整性（摘要/签名） | 需先确定 synthetic 模型上的签名语义 | `file_database` / `transfer_database` / handlers | G5-2 | 中：易变成"空壳声明" | 中 | 是 |
+| OQ-C6 Firmware transfer security / ResumeFile + integrity | `0x38` 的 ResumeFile（`modeOfOperation = 0x06`）与传输完整性（摘要/签名） | 需先确定 synthetic 模型上的续传与签名语义 | `file_database` / `transfer_database` / handlers | G5-2、G1-2 | 中：易变成"空壳声明" | 中 | 是 |
 | OQ-C7 Stateful UDS Fuzz | 跨请求序列 fuzz（会话/安全/写入链） | 需新维度 + 跨请求状态模型 + 可重放 case schema | `uds_corpus` / `uds_mutators` / `uds_fuzz` / `case_schema` | G6-1 | **高**：会动 OQ3 冻结的 schema/golden | 高 | 是（需先 design review 冻结契约） |
 | OQ-C8 DoIP | 以太网诊断传输 | 全新传输栈 + 依赖 | 新 lab 目录 | 无 | 高（范围大） | 高 | 是（大） |
 | OQ-C9 真实 Flash 抽象 | 把 `0x34`–`0x38` 接到可插拔后端（如文件/块设备仿真） | 需定义后端接口与"真实"的判定标准 | `transfer_database` / handlers | G5-1 | 中-高 | 中-高 | 是 |
 | OQ-C10 `0x28` CommunicationControl | 通信控制服务 | 无 | `uds_server.py` + `EcuState` | 无 | 低 | 低 | 是（小） |
 | OQ-C11 `0x19` 其余 reportType 扩展 | 补齐 `03/04/05/06/0B–0E/14…` | 无 | `uds_server.py` + DTC 模型 | 无 | 低（逐条可验证） | 低-中 | 是（可分批） |
-| OQ-C12 e2e 进 CI | 让 vcan0 e2e 在 hosted runner 自动跑 | 需验证 runner 上 `modprobe vcan` 可用性与时长 | `.github/workflows/ci.yml` | G7-1 | 低-中（环境依赖） | 低 | 是 |
+| OQ-C12 e2e 进 CI | 让 vcan0 e2e 在 CI runner 自动跑 | **需先验证 runner 是否提供 vcan / `CAN_ISOTP` 所需的内核能力与权限**（能否建立 vcan0、能否绑定 ISO-TP socket 尚未验证）；另需评估运行时长 | `.github/workflows/ci.yml` | G7-1 | 低-中（**环境可行性未验证**） | 低 | 是 |
 
 ---
 
