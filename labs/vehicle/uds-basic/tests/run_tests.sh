@@ -127,6 +127,14 @@ run_unit() {
 
     echo
 
+    if "$PYTHON_BIN" "$TESTS_DIR/test_c1_contract_pins.py"; then
+        ok "C1 authorization / NRC contract pins passed"
+    else
+        fail "C1 contract pins failed"
+    fi
+
+    echo
+
     if "$PYTHON_BIN" "$TESTS_DIR/test_dtc_unit.py"; then
         ok "0x19 ReadDTCInformation unit tests passed"
     else
