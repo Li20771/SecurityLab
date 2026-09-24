@@ -641,13 +641,47 @@ Phase 4:   移除派生视图（或保留为只读兼容别名）
 > 该判据由 Phase 2 的 golden 对拍覆盖，而不是靠"测试全绿" —— 因为
 > §15.2 已证明**当前测试无法发现 NRC 优先级的变化**。
 
-### 15.4 已知的覆盖缺口（必须在 C1 中补上）
+### 15.4 已知的覆盖缺口（**必须在 C1 中补上**）
 
-| 缺口 | 证据 |
-|------|------|
-| "默认会话 + 未知 DID" on `0x2E` | 既有 0x2E 用例均在 extended(+unlocked) 下断言 `31`，或对**已知** DID 断言 `7F` |
-| `0x22` 的 DID 顺序敏感性 | 无任何多 DID 混合（未知/受保护）顺序用例 |
-| 非 `0x2E` 服务忽略会话 | 无显式断言（只有实测证据） |
+> 全部经独立测试审计确认（逐文件 grep + AST 复核）。
+
+| # | 缺口 | 证据 |
+|---|------|------|
+| N1 | **"默认会话 + 未知 DID" on `0x2E`（`31` vs `7F`）** | 唯一的 0x2E-未知 DID 用例是 `test_services_extra_unit.py:149`，但它**先在 `:150` 调 `unlock_extended`** → 只在 extended+LEVEL1 下固化 `31`。所有默认会话的 0x2E 用例都用**已知** DID |
+| N2 | **`0x22` 的 DID 顺序敏感性（`31` vs `33`）** | **没有任何测试把未知 DID 与受保护 DID 放进同一请求**。唯一的多 DID 混合用例是（公开+未知）`test_ecu_unit.py:698` 与（公开+受保护）`:1612/:1630`、`test_e2e_vcan.py:1598` —— 均**不含未知+受保护**的组合 |
+| N3 | **`0x14` / `0x19` / `0x85` 从未在非默认会话下被测试过** | `test_dtc_unit.py` / `test_dtc_clear_unit.py` / `test_dtc_vcan.py` / `test_dtc_clear_vcan.py` 中**没有任何会话切换**（vcan 文件里唯一的 `0x10` 是 `_wait_for_ecu_ready` 的就绪探测）→ 这三个服务**只在 DEFAULT 会话下被验证过**。**若将来把会话门控加到 dispatcher 而非 handler，它们会被静默回归，且现有测试抓不到** |
+| N4 | **`0x2E` 的 `0x33` 先于 `0x22`（只读 DID + LOCKED）** | 两个只读 DID 用例都在 `unlock_extended()` **之后**执行（`test_services_extra_unit.py:157`、`test_write_did_vcan.py:185`）→ 该顺序未被固化 |
+| N5 | **seed 过期 / 锁定到期无 e2e 覆盖** | 仅 `test_ecu_unit.py:1142/1157/1252/1259` 用 `mock.patch.object(ecu, "_now", …)` 覆盖；`test_e2e_vcan.py` 中检索 `expiry/expired/lockout_seconds/seed_expiry` **零命中**，e2e 的锁定用例从不让锁定自然到期 |
+| N6 | **`services=` 注入缝零测试覆盖** | 全仓库 `handle_uds_request(..., services=...)` 的**唯一使用者是 `ecu.py:386-389`**；**没有任何测试直接使用它**（仅 `test_gateway_runtime_vcan.py:648` 有一句 docstring 提及）→ **C1 若复用它（OD-4），该缝本身当前无回归网** |
+| N7 | **无任何测试断言 `SERVICES` 的键集或内容** | 全仓库对 `SERVICES` 的引用仅 `uds_server.py` 内部、`ecu.py:380/387`、`gateway.py:65` → 注册表重命名/删除只能被**间接**发现 |
+
+**N3 是本次审计中最重要的新发现**：它把 §7.3/§9.3 的结论从"设计偏好"提升为
+**可验证的风险** —— 一个"看起来更干净"的 dispatcher 全局会话门控，会**静默改变**
+`0x14`/`0x19`/`0x85` 的行为，而**现有 907 个用例不会发现**。
+
+### 15.5 必须声明为"冻结"的高价值既有 pin（设计不得回归）
+
+以下 7 组是当前**最强的既有保护**，C1 必须逐项保持不变：
+
+| # | 冻结项 | pin 位置 |
+|---|--------|----------|
+| F-a | **切会话把 `security_level` 归 LOCKED**（三种会话类型全覆盖） | `test_ecu_unit.py:1398/1409/1421`；e2e `test_e2e_vcan.py:1472` |
+| F-b | **受保护 DID 在 default / extended / programming 三种会话下均被拒** | `test_ecu_unit.py:1543/1551/1561`；e2e `test_e2e_vcan.py:1568/1576` |
+| F-c | **DID 级（而非服务级）权限** —— 同一状态下公开 DID 可读、受保护 DID 被拒 | `test_ecu_unit.py:877`（遍历全部非受保护 DID）+ `:1537` + `:1543` |
+| F-d | **`0x22` 多 DID all-or-nothing 且不泄漏部分数据** | `test_ecu_unit.py:1612/1630/1642`；e2e `test_e2e_vcan.py:1598/1611` |
+| F-e | **`0x2E` 的三级门控顺序 `7F` → `33` → `22`** | `test_services_extra_unit.py:124/130/156`；e2e `test_write_did_vcan.py:158/163/184` |
+| F-f | **`0x27` 的 35/35/36 序列、锁定阻断所有 0x27、且 `0x12` 优先级高于 `0x37`** | `test_ecu_unit.py:1175/1201/1227`；e2e `test_e2e_vcan.py:1649/1756` |
+| F-g | **切会话不得重置非门控服务的状态**（routine / download / upload / file 传输） | `test_routine_unit.py:350`、`test_transfer_unit.py:585`、`test_upload_unit.py:659`、`test_file_transfer_unit.py:1819/1831/2148` + 对应 e2e |
+
+### 15.6 回归保护的实际边界（如实说明）
+
+| 层 | 数量 | 在 GitHub Fast CI 内？ |
+|----|------|----------------------|
+| unit（11 文件） | **673** | **是**（`qa_fast.sh` → `run_tests.sh unit`） |
+| e2e / vcan（11 文件） | **234** | **否**（仅 `qa_extended.sh`；CI 里是 manual `workflow_dispatch` 的 extended job） |
+
+→ **迁移验证不能只依赖 CI**：Phase 2 的字节对拍**必须本地跑 `run_tests.sh e2e`**，
+因为 234 个在网用例不在自动门禁内。
 
 ---
 
@@ -655,8 +689,8 @@ Phase 4:   移除派生视图（或保留为只读兼容别名）
 
 | 候选 | 与 C1 的关系 | 代码依据 |
 |------|--------------|----------|
-| **C2** Gateway Security Policy | **independent**（可读 state 不需 C1）；但**语义一致性上 benefit from C1** | `gateway.py:43`/`:85` 已持有 `EcuState` → 网关今天就能读 session/security。C1 不为其前置 |
-| **C3** 0x27 经 Gateway | **independent**（与 C1 正交） | C3 改的是 gateway 装配点；C1 改的是协议层授权判定。**但 C2 的"授权维度"依赖 C3**（网关路径用静态表、无 0x27 → `security_level` 无法经网关合法提升） |
+| **C2** Gateway Security Policy | **independent**（可读 state 不需 C1）；但**语义一致性上 benefit from C1** | `gateway.py:43`/`:85` 已**持有** `EcuState`（对象在手，无需新增管线）；措辞精确化：**今天没有任何 gateway 模块读取任何 state 字段**（策略关键字在两个 gateway 模块中 0 匹配）。C1 不为其前置 |
+| **C3** 0x27 经 Gateway | **independent**（与 C1 正交） | C3 改的是 gateway 侧的 handler 装配（也可完全不改 `gateway.py`，见下）；C1 改的是协议层授权判定。**C2 的"基于安全等级的"授权维度依赖 C3**（精确化：仅安全等级维度被阻塞 —— 会话维度的授权**今天就能经网关端到端行使**，因为 `0x10` 在静态表内且能改变 per-ECU `state.session`，并由 `test_gateway_unit.py:107-113` 与 `test_gateway_runtime_vcan.py:583-621` 固化） |
 | **C4** DTC Fault Injection | **条件依赖 C1** | 若做成**协议能力**，"谁有权注入"是授权问题；若只做进程内 seam，则不需要 |
 | **C5** suppress 统一化 | **independent**（但**争用 dispatcher 同一修改点**） | 两者都改 `handle_uds_request` 区域 → 文件级冲突，非语义依赖 |
 | **C6** Firmware transfer security | **independent** | ResumeFile/integrity 都在 `0x38`/`0x36`/`0x37` 内；当前无授权门控 |
@@ -668,10 +702,23 @@ Phase 4:   移除派生视图（或保留为只读兼容别名）
 
 ```
 depends on C1   : （无硬依赖；C4(协议形态) 与 C10(视 G4) 为条件依赖）
-benefits from C1: C2（语义一致性）、C7（序列 fuzz）
-independent     : C3、C5、C6、C11
+benefits from C1: C2（语义一致性）、C4（"谁可注入"这一设计问题）
+independent     : C3、C5、C6、C7、C10、C11
 must remain separate: C2（gateway policy ≠ ECU authorization）
 ```
+
+**§16 的三处精确化（经独立代码复核修正）**：
+
+1. **C2 的依赖边**：只有**基于安全等级的**授权维度被 C3 阻塞；**会话维度**的授权
+   今天就能经网关端到端行使（`0x10` 在静态表内、能改 per-ECU `state.session`，
+   且 `0x2E` 的会话门控（`:758`）会读它）→ **不得**笼统写成"C2 的授权维度依赖 C3"。
+2. **C3 对 `gateway.py` 的改动不是必然**：`VirtualEcu.handler` 已是公开注入缝
+   （`gateway.py:86`），而装配点 `gateway_runtime.py:508` 已经 import `ecu`（`:68`）
+   → 可**完全不改 `gateway.py`**（该方案同时避免让纯协议层获得时钟/配置依赖）。
+3. **C1 的 方案 B（`SERVICES` 值类型变更）会外溢到 C3**：`ecu.py:386-389` 的
+   `{**uds_server.SERVICES, **_security_services()}` 是唯一的组合先例，
+   而 `_security_services()` 返回裸 callable（`ecu.py:366-371`）；若采用方案 B，
+   C3 的组合点也需同步适配 —— 这也是 OD-4 必须单独评审的原因。
 
 ---
 
