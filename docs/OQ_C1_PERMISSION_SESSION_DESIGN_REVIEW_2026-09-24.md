@@ -130,8 +130,18 @@ reset_security_state(state)          # ← 切会话即把 security_level 归 LO
 | `state.security_level` **写入** | `:346`（复位为 LOCKED）、`:710`（解锁为 LEVEL1） | —— |
 | `required_security_level(did)` | `uds_server.py:424-429` | `did in PROTECTED_DIDS → LEVEL1`，否则 `LOCKED` |
 
-**结论（`F2`）**：15 个已实现服务中，**只有 3 个**任何形式的授权判断 ——
-`0x22`（per-DID 安全）、`0x27`（自身状态机）、`0x2E`（会话 + 安全）。
+**结论（`F2`）** —— 本设计**区分两个口径**，二者数字不同，**不得混用**：
+
+| 口径 | 定义 | 计数 | 成员 |
+|------|------|------|------|
+| **authorization-logic consumers** | 任何读取 `session` / `security_level` 做判断的服务 | **3** | `0x22`（per-DID 安全）、`0x27`（**自身 SecurityAccess 状态机**）、`0x2E`（会话 + 安全） |
+| **session/security service gates** | 把 session/security 作为**普通服务前置门控**的服务 | **2** | `0x22`、`0x2E` |
+
+> **`0x27` 的不同之处**：它读取 `security_level` 是为了判断"已解锁时不得再要 seed"
+> （`uds_server.py:657`）—— 这是**它自身状态机的一部分**，而**不是**"某个服务被授权门控"。
+> 因此它计入"authorization-logic consumers"，**不计入**"service gates"。
+> 相应地，C1 的 **service authorization 框架不覆盖 `0x27` 的自身状态机**（§12）。
+
 **其余 12 个服务的 NRC 集合里完全没有授权类 NRC。**
 
 ### 2.5 完整的 NRC 生成点清单（机械提取，共 85 处）
@@ -180,7 +190,7 @@ reset_security_state(state)          # ← 切会话即把 security_level 归 LO
 
 | # | 问题 | 证据 |
 |---|------|------|
-| P1 | **无统一授权层**：授权判断散落在 3 个 handler 内部，其余 12 个服务完全没有 | §2.4/§2.5 |
+| P1 | **无统一授权层**：授权判断散落在 **3 个** authorization-logic consumers（`0x22`/`0x27`/`0x2E`，其中仅 **2 个**是普通服务门控）内部，其余 12 个服务完全没有 | §2.4/§2.5 |
 | P2 | **会话几乎是装饰性的**：`state.session` 全仓库只有 1 处读取（`0x2E`） | §2.4（实测：默认会话下 `0x31/0x34/0x35/0x14/0x19/0x85` 全部正响应） |
 | P3 | **授权矩阵不存在**，只能靠读源码推断"哪个服务在什么条件下被允许" | 无任何声明式载体 |
 | P4 | **NRC 优先级只存在于代码顺序中**，无文档、且**部分无测试保护** | §9、§13.4 |
@@ -325,18 +335,21 @@ class ServiceSpec:
     guards: tuple[Guard, ...] = ()
 
     # --- 声明部分：供矩阵生成/审计/文档；不参与执行顺序 ---
-    allowed_sessions: frozenset[int] | None = None      # None = 不限制
-    required_security: int = SECURITY_LOCKED
-    payload_scoped: bool = False     # True = 判定依赖 payload（如 0x22/0x2E）
+    allowed_sessions: frozenset[int] | None = None      # None = 该服务无会话约束
+    required_security: int | None = SECURITY_LOCKED     # None = 无法用单一等级概括（见 §18.0 OD-2）
+    payload_scoped: bool = False     # True = 单靠声明字段不足以完整描述其授权行为
 ```
 
 **设计要点**：
 
 1. **顺序在数据里**（`guards` 是 tuple）→ 可枚举、可测试、可对拍。
 2. `allowed_sessions` / `required_security` 是**声明**，用于生成 §8 的矩阵与审计；
-   **执行顺序由 `guards` 决定** —— 二者必须一致，由 §13 的"矩阵对拍测试"保证。
-3. `payload_scoped=True` 显式标记"该服务的判定不是 SID 级可概括的"，
-   防止读者误以为矩阵已完整描述该服务。
+   **执行顺序由 `guards` 决定**。二者的一致性**按服务类别**分别保证（§18.0 OD-2）：
+   非 payload-scoped 用矩阵逐格对拍；payload-scoped 只验证"声明没有假装完整"。
+3. `payload_scoped=True` 表示"**单靠声明字段不足以完整描述该服务的授权行为**"，
+   防止读者误以为矩阵已完整描述该服务。**它不蕴含 `required_security is None`**
+   —— 例如 `0x2E` 整体确实要求 `LEVEL1`（合法声明），但其完整授权链仍依赖
+   payload 与**顺序**，故同时也标 `payload_scoped=True`（§18.0 OD-2 有完整说明）。
 4. **不引入 `SessionRule`/`SecurityRule`/`PermissionRule` 等额外类型** ——
    它们是 A/B 粒度的产物，而 §7.2 已证明需要 payload 级表达，用 guard 函数统一即可。
 
@@ -365,7 +378,10 @@ class ServiceSpec:
 | `0x85` | ControlDTCSetting | 无 | 无 | 否 | — |
 
 **这张表本身就是 C1 的主要交付物之一**：它把"哪些服务有授权语义"从**读源码推断**
-变成**可枚举的事实**。它同时暴露出 P2 —— **15 个服务里只有 2 个有真正的会话/安全门控**。
+变成**可枚举的事实**。它同时暴露出 P2 —— 按 §2.4 的两个口径：
+**authorization-logic consumers = 3**（`0x22`/`0x27`/`0x2E`），
+其中真正构成**普通服务门控**的只有 **2** 个（`0x22`/`0x2E`；
+`0x27` 的读取属其自身状态机，见 §2.4 注）。
 
 ### 8.2 可执行部分（现有守卫的完整枚举）
 
@@ -439,7 +455,7 @@ class ServiceSpec:
 | 问题 | 决定 |
 |------|------|
 | `required_security_level(did)` 是否保留？ | **保留**，作为 `0x22` 的一个 guard 的实现细节（**不删除、不改变语义**） |
-| 是否迁移到统一 policy？ | **部分**：`0x22` 的服务级声明进入 `ServiceSpec`（`payload_scoped=True`、`required_security` 声明为"per-DID"），但**具体判定仍调用 `required_security_level(did)`** |
+| 是否迁移到统一 policy？ | **部分**：`0x22` 的服务级声明进入 `ServiceSpec`（`payload_scoped=True`、**`required_security=None`** —— per-DID 权限无法用单一等级概括），但**具体判定仍调用 `required_security_level(did)`** |
 | API 怎么变 | `required_security_level(did)` **签名与语义完全不变**；新增的只是"它被哪个 guard 调用" |
 | 行为怎么保持 | guard 内部**逐 DID 循环 + 短路返回**，与今天 `:552-580` 的顺序逐字节一致 |
 | 测试怎么迁移 | **不迁移、不修改**任何既有测试（G2）。新增对拍测试（§13）验证字节等价 |
@@ -602,17 +618,31 @@ Phase 4:   移除派生视图（或保留为只读兼容别名）
 
 ## 15. Test Strategy
 
-> 本 PR **不实现测试**，只设计测试矩阵。
+> **阶段划分（本文档跨越两个 PR，措辞必须区分）**：
+>
+> | 阶段 | 内容 | 是否改动测试 |
+> |------|------|--------------|
+> | **PR #25** = C1 Design Freeze | 设计冻结（本文档初版） | **否** —— 只设计测试矩阵 |
+> | **PR #26** = C1 Implementation Preflight / Contract Lock | 冻结 OD-1/OD-2 + **实际新增 29 个 contract pins** | **是** —— 新增 `tests/test_c1_contract_pins.py` 与 `run_tests.sh` 接入（+8 行） |
+> | **Phase 1**（未来）= C1 implementation | 真正的框架实现 | 将新增防漂移机制与框架测试 |
+>
+> 即：**PR #25 的设计阶段不改测试；PR #26 的 preflight 已按本文档所述新增了
+> contract-pin 测试**。下文 §15.1/§15.2 描述的是**测试设计**（PR #25 起即有），
+> 其**已落地的部分**见 §15.7 的 pin 表；尚未落地的部分属 **Phase 1**。
 
-### 15.1 必须新增的测试（按主题）
+### 15.1 测试矩阵（按主题）
 
-| 主题 | 用例 |
-|------|------|
-| **Session** | 三个会话各自 × {允许的服务、拒绝的服务}；`0x10` 切换后 `security_level` 归 LOCKED；复位后回 DEFAULT；per-ECU 隔离（多 ECU 各自会话） |
-| **Security** | `required level satisfied` / `insufficient`；`security_level` 提升后原被拒请求转为允许；切会话重新锁定后再次被拒 |
-| **Permission** | service allowed / denied；subfunction denied；**DID denied**（per-DID 粒度）；`payload_scoped` 服务的 payload 相关分支 |
-| **NRC priority** | 格式+会话、未知 DID+会话、安全+会话、未知服务+授权 —— **每组都必须断言"先发生的是哪一个"** |
-| **Matrix conformance** | spec 的声明字段 ↔ 实际行为对拍（遍历所有 SID × 会话 × 安全等级） |
+> **落地状态**：★ = **PR #26 已落地**（见 §15.7 的 29 例 pin 表）；
+> 其余条目属 **C1 Phase 1**（框架实现时随框架一并落地）。
+> 本表是**测试设计**，不是"尚未开始"的意思。
+
+| 主题 | 用例 | 状态 |
+|------|------|------|
+| **Session** | 三个会话各自 × {允许的服务、拒绝的服务}；`0x10` 切换后 `security_level` 归 LOCKED（★ F-a）；复位后回 DEFAULT；per-ECU 隔离（多 ECU 各自会话） | 部分 ★ |
+| **Security** | `required level satisfied` / `insufficient`；`security_level` 提升后原被拒请求转为允许；切会话重新锁定后再次被拒（★ F-a） | 部分 ★ |
+| **Permission** | service allowed / denied；subfunction denied；**DID denied**（per-DID 粒度，★ F-b/F-c）；`payload_scoped` 服务的 payload 相关分支 | 部分 ★ |
+| **NRC priority** | 格式+会话、未知 DID+会话（★ N1）、安全+会话、未知服务+授权、`0x33` 先于 `0x22`（★ N4）、`0x22` DID 顺序（★ N2） —— **每组都必须断言"先发生的是哪一个"** | 大部分 ★ |
+| **Matrix conformance** | spec 的声明字段 ↔ 实际行为对拍（按服务类别分别判据，见 §18.0 OD-2） | Phase 1 |
 
 ### 15.2 NRC 优先级专项（**最关键的回归网**）
 
@@ -864,34 +894,68 @@ F-a..F-g。**迁移前后必须逐字节一致**，由这些 pin + Phase 2 的 g
   （顺序与副作用都难以保证）。
 - **Mode B 的代价**是"声明可能与 guard 漂移"，因此**必须配防漂移机制**（下）。
 
+**`payload_scoped` 的精确定义（FROZEN）**
+
+> `payload_scoped = True` 表示：**该服务的完整授权行为不能仅由单一 SID-level
+> 声明字段完整描述** —— 至少存在 payload / DID / request-specific 的授权语义。
+
+**它并不意味着 `required_security` 必须为 `None`。** 两个字段回答的是**不同的问题**：
+
+| 字段 | 回答的问题 |
+|------|-----------|
+| `required_security` | 该服务**是否整体要求**某个安全等级？（若整体要求，就是一个合法声明） |
+| `payload_scoped` | 单靠声明字段**能否完整描述**该服务的授权行为？ |
+
+因此二者可以**同时成立**（`0x2E` 即如此）。
+
 **防漂移机制（FROZEN，必须实现）**
 
-1. **静态结构规则（可测试）**：
+> 原设计中"`payload_scoped ⟺ required_security is None`"的写法**已废弃** ——
+> 它与 `0x2E` 的实际情况冲突（`0x2E` 既是 payload-scoped、又确实整体要求 LEVEL1）。
+> 下列规则取代它，且**不引入任何与实际服务冲突的等价关系**。
+
+1. **静态结构规则（可测试，无虚假等价）**：
 
    ```
-   payload_scoped is True   ⟺   required_security is None
+   payload_scoped is True   →   guards 必须非空
    ```
 
-   语义：`required_security = None` 表示"**该服务的授权依赖 payload，不可用单一等级概括**，
-   见 guards"。二者必须同时成立或同时不成立 → 由测试断言。
+   理由（由 OD-2 直接推出）：`guards` 是**唯一执行源**；若一个服务被标记为
+   "声明字段不足以完整描述其授权行为"，那么这些行为**只能**存在于 `guards` 中
+   → `guards` 不可能为空。反之**不要求**：`guards` 非空不蕴含 payload_scoped
+   （非 payload-scoped 的服务同样可以有 guards，只要其行为可由声明完整概括）。
 
-2. **矩阵一致性测试（conformance test）**：
-   - 对**非** payload-scoped 的服务：遍历 `(session × security_level)` 的**全组合**，
-     执行其 guard 链，把结果的 allow/deny 与声明的 `allowed_sessions`/`required_security`
-     **逐格对比**；不一致即失败。
-   - 对 payload-scoped 的服务：不强行压成单格（那正是 Mode A 的错误），
-     只断言其**被显式标记**为 payload-scoped，且声明**没有**声称单一 session/security 规则。
+2. **矩阵一致性测试（conformance test）**：**按服务类别分别验证**，两种类别用不同判据：
+
+   - **非 payload-scoped 的服务**：声明字段**应当**能完整描述其授权状态 →
+     遍历 `(session × security_level)` **全组合**，执行 guard 链，
+     把实际 allow/deny 与 `allowed_sessions`/`required_security` **逐格对比**；不一致即失败。
+
+   - **payload-scoped 的服务**：**不得**把 guards 强行压成一张 `session/security` 矩阵
+     （那正是 Mode A 的错误）。只验证三件事：
+     ① `payload_scoped is True`；
+     ② `guards` **非空**（承接上面的结构规则）；
+     ③ 声明**没有**声称自己完整描述 —— 即 `0x22` 这类服务不得把 `required_security`
+        写成某个具体等级来"假装完整"（`None` 是它唯一诚实的取值）。
 
 3. **`0x22` / `0x2E` 如何表达（FROZEN）**：
 
    | 服务 | `guards` | `allowed_sessions` | `required_security` | `payload_scoped` |
    |------|----------|--------------------|---------------------|------------------|
-   | `0x22` | 1 个 guard：**逐 DID 循环 + 短路**（复刻 `:552-580`） | `None`（无会话约束） | `None`（per-DID，见 guards） | **`True`** |
-   | `0x2E` | **6 个有序 guards**（`13→31→7F→33→22→13` 逐级） | `None`（**注意**：真实约束是"非 DEFAULT"，由 guard 表达；见 OD-5） | `SECURITY_LEVEL1`（声明级；执行仍由 guard） | **`True`**（因其顺序含 payload 判定） |
+   | `0x22` | 1 个 guard：**逐 DID 循环 + 短路**（复刻 `:552-580`） | `None`（无会话约束） | **`None`** —— 权限是 per-DID（`F187 → LEVEL1` 而 `F190 → LOCKED`），**无法用单一值概括** | **`True`** |
+   | `0x2E` | **6 个有序 guards**（`13→31→7F→33→22→13` 逐级） | `None`（真实约束是"非 DEFAULT"，由 guard 表达；见 OD-5） | **`SECURITY_LEVEL1`** —— 它**确实整体要求**该等级，是合法声明 | **`True`** —— 完整授权链还依赖 DID 存在性 / 可写性 / 长度 / **请求顺序** |
 
-   > `0x2E` 的 `required_security` 可安全声明为 `LEVEL1`，因为**它确实是一个单一等级**；
-   > 而 `0x2E` 仍标 `payload_scoped=True`，因为其**顺序**依赖 payload（未知 DID 先于会话）。
-   > 这一细节由 conformance test 的第 2 条覆盖。
+   **`0x2E` 为何同时是 `LEVEL1` 与 payload-scoped**（本设计的关键区分）：
+
+   ```
+   required_security = LEVEL1   ：它对**所有 0x2E 请求**都成立（是一个真陈述）
+   payload_scoped    = True     ：但单靠它**不足以**描述完整行为 ——
+                                  例如 2E FF FF → 7F 2E 31（未知 DID 先于会话）
+                                       2E F1 02 → 7F 2E 7F
+                                  该差异由 payload（DID 是否已知）与**顺序**决定
+   ```
+
+   → 因此 `0x2E` 的声明是"**正确但不完整**"，而这正是 `payload_scoped=True` 要表达的意思。
 
 **Regression protection**：防漂移机制本身即是回归保护
 （一致性测试会在声明与 guard 分叉时失败）；叠加 §18.0 OD-1 的 29 个 pin。
@@ -932,7 +996,7 @@ F-a..F-g。**迁移前后必须逐字节一致**，由这些 pin + Phase 2 的 g
 | 12 | **test strategy** | 六主题新增测试 + NRC 优先级专项（§15.2 的 5 条锚点）+ 矩阵对拍 + 既有 907 作为回归网；**不修改任何既有测试** | **DESIGN FROZEN** |
 | 13 | **留给 C2 / C3 的问题** | **C2**：网关策略的求值位置/默认值/拒绝的总线表现/是否读 ECU 状态；**C3**：0x27 经网关的注入装配与"注入语义只定义一处" | **DESIGN FROZEN（边界）** |
 | 14 | **OD-1：guards 与 handler 的调用关系** | **per-service ordered guards → dispatcher 对当前已解析 service 求值 → 全部通过后才调 handler**。**明确 NOT a global authorization precheck**（§18.0 OD-1） | **DESIGN FROZEN** |
-| 15 | **OD-2：声明字段是否参与执行** | **`guards` 是唯一执行源**；声明字段仅用于 capability matrix / audit / 静态一致性检查；配**防漂移机制**（`payload_scoped ⟺ required_security is None` + 矩阵 conformance test）（§18.0 OD-2） | **DESIGN FROZEN** |
+| 15 | **OD-2：声明字段是否参与执行** | **`guards` 是唯一执行源**；声明字段仅用于 capability matrix / audit / 静态一致性检查；配**防漂移机制**（结构规则 `payload_scoped → guards 非空` + **分类别** conformance test；**不使用** `payload_scoped ⟺ required_security is None` 这类与实际服务冲突的等价式）（§18.0 OD-2） | **DESIGN FROZEN** |
 | 16 | **`services=` 覆盖的归一化** | `services=None` → 静态 spec；`services={sid: Callable}` → `ServiceSpec(sid, handler, guards=())`（**覆盖 = 整体替换**，与今天语义一致） | **DESIGN FROZEN** |
 
 **未冻结项（OPEN DECISION）**：**仅 OD-3 / OD-4 / OD-5 / OD-6**（§18.1）。
@@ -954,14 +1018,16 @@ C2 = "**网关作为网络中间设备**的报文级策略"（与任何 ECU 的�
 
 ### 19.2 实施前置条件（Preflight 后的更新）
 
-**本设计仍不实现任何代码。** 实施前需：
+**C1 框架本身仍未实现任何代码**（`ServiceSpec` / `guards` / 任何生产逻辑均未落地）。
+就本文档跨越的两个 PR 而言，**PR #26 已落地的只有测试**；实施前需：
 
 1. ~~解决 OD-1/OD-2~~ → **已于 2026-09-24 Preflight 冻结**（§18.0）；
-2. ~~建立 §15.2 的 NRC 优先级断言~~ → **已建立**
+2. ~~建立 §15.2 的 NRC 优先级断言~~ → **PR #26 已建立**
    （`tests/test_c1_contract_pins.py`，29 例，覆盖 N1/N2/N4/N6/N7 + F-a..F-g）；
 3. **仍需**：解决 **OD-4**（`services=` 的最终契约形态）与 **OD-3**（G4 的落地机制）；
-4. **仍需**：实现 OD-2 要求的**防漂移机制**（静态结构规则 + 矩阵 conformance test）——
-   注意该机制**属于 C1 实施的第一阶段**，不在本 Preflight 范围内。
+4. **仍需**：实现 OD-2 要求的**防漂移机制**（结构规则 `payload_scoped → guards 非空`
+   + 分类别 conformance test）—— 注意该机制**属于 C1 实施的第一阶段**，
+   不在 PR #26 的 preflight 范围内。
 
 > **Preflight 结论**：C1 的**执行模型已可实施**（OD-1/OD-2 冻结 + 契约 pin 就绪）；
 > 剩余的 OD-3/OD-4 可在 Phase 1 内解决，**不阻塞 Phase 1 的启动**。
