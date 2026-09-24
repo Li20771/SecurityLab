@@ -1,17 +1,16 @@
 # SecurityLab 状态看板（SECURITY LAB STATUS）
 
-> 更新：2026-09-24（OQ7 Gateway Runtime v1）。权威明细见 `FINAL_ENVIRONMENT_AUDIT_2026-09-20.md`（审计快照）、`ENGINEERING_CLOSE_2026-09-21.md`（第一轮收口报告）与 `TEST_MATRIX.md`；断点过程见 `AUTONOMOUS_BUILD_STATE.md`。
+> 更新：2026-09-24（OQ7 post-merge document checkpoint 同步）。权威明细见 `FINAL_ENVIRONMENT_AUDIT_2026-09-20.md`（审计快照）、`ENGINEERING_CLOSE_2026-09-21.md`（第一轮收口报告）与 `TEST_MATRIX.md`；断点过程见 `AUTONOMOUS_BUILD_STATE.md`。
 
 ## 一句话现状
 
 SecurityLab 第一轮建设及工程收口已经完成；第二轮已连续交付六项能力
 （OQ3 MF-v1、OQ4 ECUReset 扩展、OQ5 DTC severity、OQ6-A DTC runtime state、
-OQ6-B ControlDTCSetting 0x85、**OQ7 Gateway Runtime v1**）。
+OQ6-B ControlDTCSetting 0x85、**OQ7 Gateway Runtime v1**）—— 六项**均已 merge 到 main**。
 
-> **口径**：OQ6-B 及以前的状态指**已 merge 到 main**；**OQ7 目前处于
-> feature branch（`feat/oq7-gateway-runtime-v1`），尚未提 PR / 未 merge**——
-> 因此下文的 OQ7 记录**只有 Local verified，没有 merge commit，也没有 CI 证据**，
-> 不套用已合并能力的表述。
+> **口径**：OQ3–OQ7 的状态一律指**已 merge 到 main**（OQ7 的 merge commit 为
+> `ae22a556…`，见下）。因此 OQ7 与其它已合并能力用同一套表述：
+> **Local verified + GitHub CI verified**（Extended 仍为 workflow_dispatch，未实跑）。
 
 第一轮正式基线（历史）：
 
@@ -20,10 +19,13 @@ OQ6-B ControlDTCSetting 0x85、**OQ7 Gateway Runtime v1**）。
 
 当前基线：
 
-- **当前生产代码基线**：`c112f022a1da91000e27f524bacba836b2c81ac6`
-  - PR #17（`feat(uds): add ControlDTCSetting 0x85`）：**MERGED / CLOSED**（= OQ6-B merge）
-  - 该 merge 引入 OQ6-B 的生产代码 + 测试 + 文档变更
-  - post-merge GitHub Actions Fast QA：**PASS**（run **#65** / `35859067322`，event=push，branch=main）
+- **当前生产代码基线**：`ae22a556924d89d27e1d084ebcc5a4b4c56534f2`
+  - PR #21（`feat(gateway): add vCAN Gateway Runtime v1`）：**MERGED / CLOSED**（= OQ7 merge）
+  - 该 merge 引入 OQ7 的生产代码 + 测试 + 文档变更
+  - post-merge GitHub Actions Fast QA：**PASS**（run **#79** / `36008461688`，event=push，branch=main）
+- **上一轮生产代码基线**：`c112f022a1da91000e27f524bacba836b2c81ac6`（PR #17 = OQ6-B merge）
+  - post-merge Fast QA：**PASS**（run **#65** / `35859067322`，event=push，branch=main）
+  - 它是当前生产代码基线的**祖先**
 - **最近一次文档基线同步**：PR #18 / `62531bb70632def49250e997b9619de2a807aa1a`（**仅文档变更**）
   - post-merge Fast QA：**PASS**（run **#68** / `35944424974`，event=push，branch=main）
 - Extended job：**skipped**（仅 workflow_dispatch，未在真实 runner 实跑）
@@ -37,26 +39,28 @@ OQ6-B ControlDTCSetting 0x85、**OQ7 Gateway Runtime v1**）。
 
 > **注意区分**：OQ6-A 的**代码基线**是 `a0f6725a8006fb445d21485946034b4c66f20d5d`
 > （PR #16 merge）。它是当前生产代码基线的**祖先**。
-> 各轮代码基线：OQ6-B = `c112f022…`（PR #17）、OQ6-A = `a0f6725a…`（PR #16）、
-> OQ5 = `3349d79c…`（PR #13）、OQ4 = `c96f8586…`（PR #12）、OQ3 = `abcb8b4d…`（PR #10）。
+> 各轮代码基线：OQ7 = `ae22a556…`（PR #21）、OQ6-B = `c112f022…`（PR #17）、
+> OQ6-A = `a0f6725a…`（PR #16）、OQ5 = `3349d79c…`（PR #13）、
+> OQ4 = `c96f8586…`（PR #12）、OQ3 = `abcb8b4d…`（PR #10）。
 > 各能力现状见下方「第二轮已完成能力」。
 
-当前阶段：**Phase 4 — Second-Round / OQ7 Gateway Runtime v1**——OQ6-A / OQ6-B 已合入并封存；
-OQ7（Gateway Runtime v1）已在 feature branch 上完成实现 + 测试 + 文档 + 本地全量回归，
-**等待 PR / review**；
+当前阶段：**Phase 4 — Second-Round / Post-OQ7 Baseline**——OQ3–OQ7 已全部合入并封存，
+OQ7 post-merge 文档 checkpoint 同步已完成（本 PR，仅文档）；
+**下一项第二轮能力尚未确定**，需先做一次 main capability inventory
+（当前能力盘点 → 剩余缺口 → 候选 OQ → design review），不预设具体功能；
 仍按"小功能 → feature branch → 小 PR → 可验证 → 合入"节奏推进。
 
 ## 第二轮已完成能力
 
-### OQ7 — Gateway Runtime v1（最新，feature branch，**未 merge**）
+### OQ7 — Gateway Runtime v1（最新，PR #21）
 
 | 项 | 值 |
 |----|----|
-| OQ7 | **IMPLEMENTED ON BRANCH / 待 PR** |
-| PR | **尚未创建** |
-| merge commit | **尚不存在**（未 merge） |
-| feature branch | `feat/oq7-gateway-runtime-v1` |
-| base | `535fb8e`（PR #20 merge 的 tree，本地等价提交 `2f75f28`） |
+| OQ7 | **MERGED / VERIFIED** |
+| PR | #21 **MERGED / CLOSED** |
+| merge commit | `ae22a556924d89d27e1d084ebcc5a4b4c56534f2`（= 当前生产代码基线） |
+| feature branch | `feat/oq7-gateway-runtime-v1`（**provenance**：已合并，不是当前实现所在） |
+| base | `535fb8e`（PR #20 merge） |
 | 新增 | `ecu/gateway_runtime.py`（实时 transport adapter / 守护进程） |
 | 新增测试 | `tests/test_gateway_runtime_unit.py`（53）、`tests/test_gateway_runtime_vcan.py`（21） |
 | 新增可复现入口 | `scripts/repro/verify_gateway_runtime.sh`（独占 vcan0） |
@@ -67,9 +71,11 @@ OQ7（Gateway Runtime v1）已在 feature branch 上完成实现 + 测试 + 文�
 | 接口安全边界（**fail-closed**） | 只允许 **vcan0**（`ALLOWED_INTERFACES`）。`--interface` 取任何其它值（`can0` / `can1` / `vcan1` / 空串 …）一律**拒绝启动**（退出码 2），且拒绝发生在构造 runtime 与绑定 socket **之前** —— 不会建立任何 CAN 连接。刻意**不是**"只警告然后继续绑定" |
 | 边界（**未做**，禁写成已完成） | 真实 CAN / 真实 ECU、DoIP、多进程 ECU orchestration、gateway security policy / 高级过滤、真实固件刷写 —— 均为**本轮之外**的能力，不是 OQ7 的未完成项 |
 | 不属于本轮（**非 OQ7 缺陷**） | **0x27 不经 gateway 层**：OQ7 runtime 的 transport/routing 能力已完整；0x27 需要请求时依赖注入（时间快照 + 安全配置），按既有分层归属 `ecu.py` 入口层，`gateway.py` 用静态 SERVICE 表 —— 这是 OQ7 **之前就存在**的分层边界。让网关透传 0x27 属**后续独立 OQ**（需同时解决每 ECU 独立注入与注入语义只定义一处） |
-| 验证（**Local verified**，2026-09-24 本机实测） | uds-basic `run_tests.sh all` → PASS 23 / WARN 0 / FAIL 0（unit **673** + e2e **234** = **907**）；`qa_fast.sh` PASS；`verify_gateway_runtime.sh` PASS 7 / FAIL 0（13 项端到端断言全过）；can-tools offline PASS 4 |
+| 验证（**Local verified**，2026-09-24 本机实测） | uds-basic `run_tests.sh all` → PASS 23 / WARN 0 / FAIL 0（unit **673** + e2e **234** = **907**）；`qa_fast.sh` PASS；`verify_gateway_runtime.sh` PASS 7 / FAIL 0（13 项端到端断言全过）；can-tools offline PASS 4。其中 Gateway Runtime 自身：unit **53** / e2e **21** |
 | 回归 | OQ1–OQ6 全部既有 unit / e2e 用例保持通过（未改动任何 UDS 服务语义） |
-| CI 证据 | **无**（尚未提 PR，GitHub Actions 未运行） |
+| CI 证据（**GitHub CI verified**） | Fast job **success**：PR #21 分支 push run **#77** / `36007764805`、pull_request run **#78** / `36007774188`；**main post-merge run #79 / `36008461688` = success** |
+| CI **未覆盖** | e2e 不在自动门禁内（需 vcan0）；Extended 全程 **skipped**（仅 workflow_dispatch） |
+| 本轮**未运行**的 gate | `qa_extended.sh` **NOT RUN**、`healthcheck.sh` **NOT RUN**（本次为文档 checkpoint，不重新制造结果） |
 
 ### OQ6-B — 0x85 ControlDTCSetting（PR #17）
 
@@ -77,12 +83,12 @@ OQ7（Gateway Runtime v1）已在 feature branch 上完成实现 + 测试 + 文�
 |----|----|
 | OQ6-B | **MERGED / COMPLETED** |
 | PR | #17 **MERGED / CLOSED** |
-| merge commit | `c112f022a1da91000e27f524bacba836b2c81ac6`（= 当前生产代码基线） |
+| merge commit | `c112f022a1da91000e27f524bacba836b2c81ac6`（OQ7 之前的上一轮生产代码基线） |
 | feature branch | `feature/uds-control-dtc-setting-v1` |
 | 内容 | 新增 `0x85 ControlDTCSetting`；`85 01 → C5 01` / `85 02 → C5 02`（byte-exact 回显）；`85 00/03/FF → 7F 85 12`；`85` 与 `85 01 00 → 7F 85 13` |
 | 语义 | ON 允许 `dtc_runtime.set_dtc_status()` 更新；OFF **冻结**更新（返回 `False`，已有 status 不变）；**OFF 不阻止 `0x14` 清除**；`0x11 01/02/03` 恢复为上电默认 ON |
 | 边界 | 无 session / security 门控；不处理 suppressPosRspMsgIndicationBit；无 optional DTCSettingControlOptionRecord；**不新增 DTC mutation API / 不新增故障注入服务** |
-| 验证（**Local verified**，2026-09-24 重跑） | UDS unit **620** / e2e **213** / all **833**（PASS 21 / WARN 0 / FAIL 0）；`qa_fast.sh` PASS |
+| 验证（**Local verified**，2026-09-24 重跑） | UDS unit **620** / e2e **213** / all **833**（PASS 21 / WARN 0 / FAIL 0）；`qa_fast.sh` PASS —— **这是 OQ6-B 当时的总量，不是当前基线**（当前基线见文件顶部：unit 673 / e2e 234 / all 907） |
 | CI 证据（**GitHub CI verified**） | Fast job success：分支 push run `35858111493` / pull_request run `35858179009`；main post-merge run **#65** / `35859067322` |
 | CI **未覆盖** | e2e 不在自动门禁内；Extended 全程 skipped（仅 workflow_dispatch） |
 
@@ -97,7 +103,7 @@ OQ7（Gateway Runtime v1）已在 feature branch 上完成实现 + 测试 + 文�
 | 内容 | 新增 `ecu/dtc_runtime.py`：DTC 运行时状态的**唯一受校验写入入口**（已注册 DTC + status 单字节范围校验；未知 DTC **不静默创建**；`get_dtc_status()` 对"已注册但未写入"返回 `0x00`；`clear_dtc_status()` 刻意不做注册校验以保持 0x14 既有语义） |
 | 架构 | `DTC_DATABASE`（静态定义）→ `DTC_METADATA`（severity / functionalUnit，与 runtime status **正交**）→ `EcuState.dtc_records`（运行时 status）→ `dtc_runtime` 写入原语 |
 | **不新增 UDS 服务** | fault generation 只经 Python API / test seam，**不是协议能力**（`set_dtc_status()` 在 tracked 生产代码中无调用点） |
-| 验证（**Local verified**，2026-09-24 重跑） | 含于上表 620 / 213 / 833；`test_dtc_unit.py` 115 用例 |
+| 验证（**Local verified**，2026-09-24 重跑） | 含于上表 620 / 213 / 833（**OQ6 当时总量，非当前基线**）；`test_dtc_unit.py` 115 用例 |
 | CI 证据（**GitHub CI verified**） | 分支 push run `35855519460` / pull_request run `35855590059`；main post-merge run `35855945925` = success |
 
 ### OQ5 — 0x19 DTC severity（PR #13）
@@ -147,7 +153,7 @@ OQ7（Gateway Runtime v1）已在 feature branch 上完成实现 + 测试 + 文�
 | can-utils | VERIFIED | `candump/cansend/canplayer/isotpsend ...` |
 | ISO-TP | VERIFIED | `run_tests.sh all`（uds-basic） |
 | UDS（10/11/14/19/22/27/2E/31/34/35/36/37/38/3E/85） | VERIFIED | `labs/vehicle/uds-basic`（ecu.py / isotp_client.py）；`0x11` 支持 01/02/03（三态等价）；**`0x19` 支持 01/02/07/08/09/0A**；**`0x85` 支持 01/02**（DTC setting ON/OFF：冻结/恢复 runtime mutation，**不**阻止 0x14）；0x31 / 0x34-0x37（download + upload）/ 0x38 file transfer 均已合入 main 并有 unit + e2e 验证；**边界**：0x14 是 synthetic DTC model 的 status 清除；DTC status 只能经进程内 `dtc_runtime` 变更，**无 UDS 故障注入命令**；`0x19` 其余 reportType（03/04/05/06/0B–0E/14/15/16/1A…）未实现；0x38 为 synthetic in-memory 文件模型（非真实文件系统）；功能组、0x28、0x39 / 0x06 未实现 |
-| 多 ECU / Gateway | VERIFIED | 协议层 `ecu/gateway.py`（离线单测）+ **Gateway Runtime v1** `ecu/gateway_runtime.py`（vcan0 实时守护进程，物理 / 功能寻址、状态隔离、SIGTERM 优雅退出）；入口 `python3 labs/vehicle/uds-basic/ecu/gateway_runtime.py --interface vcan0`；可复现 `bash scripts/repro/verify_gateway_runtime.sh`。**边界**：真实 CAN / 真实 ECU、DoIP、多进程 ECU orchestration、gateway security policy / 高级过滤均**未做**；0x27 不经 gateway 层（既有分层边界） |
+| 多 ECU / Gateway | VERIFIED（已合入 main，OQ7 / PR #21） | 协议层 `ecu/gateway.py`（离线单测）+ **Gateway Runtime v1** `ecu/gateway_runtime.py`（vcan0 实时守护进程，物理 / 功能寻址、状态隔离、SIGTERM 优雅退出、**非 vcan0 接口 fail-closed**）；入口 `python3 labs/vehicle/uds-basic/ecu/gateway_runtime.py --interface vcan0`；可复现 `bash scripts/repro/verify_gateway_runtime.sh`。**边界**：真实 CAN / 真实 ECU、DoIP、多进程 ECU orchestration、gateway security policy / 高级过滤均**未做**；0x27 不经 gateway 层（既有分层边界，属后续独立 OQ） |
 | CAN/ISO-TP fuzz | VERIFIED | `fuzz/isotp_fuzz.py --smoke ...`（见 TEST_MATRIX）；最小复现 `scripts/repro/verify_fuzz_smoke.sh` |
 | UDS fuzz v1（请求层 SF） | VERIFIED | `fuzz/uds_fuzz.py --seed 12345 --max-cases N --out-dir …`；单请求 UDS 变异（SF ≤ 7B）；最小复现 `scripts/repro/verify_uds_fuzz_smoke.sh` |
 | UDS MF-v1（OQ3，已合入） | VERIFIED / MERGED | 同 UDS fuzz 入口；MF 8–128B（FF + CF）、>128B admission reject、max 19 frames、M1–M7 传输变异；**stateful / multi-request sequences = OUT OF SCOPE** |
@@ -164,7 +170,7 @@ OQ7（Gateway Runtime v1）已在 feature branch 上完成实现 + 测试 + 文�
 | 网络安全工具 | VERIFIED | nmap/tshark/tcpdump/ncat/socat/nft；`scripts/nettools_check.sh` |
 | Docker | VERIFIED（audit/local capability） | Ubuntu CLI → Docker Desktop E2E 已验证；当前 PR 不重新定义 Docker 当前运行态 |
 | 质量门禁 | VERIFIED | `scripts/qa_fast.sh`（离线）/ `qa_extended.sh`（vcan） |
-| CI | VERIFIED（Fast runner，branch + main 双证） | `.github/workflows/ci.yml`；Fast：**当前生产代码基线**（PR #17 merge）post-merge run **#65** / `35859067322` = success；PR #17 branch push `35858111493` / pull_request `35858179009` = success；PR #16 branch push `35855519460` / pull_request `35855590059` = success；文档 checkpoint 同步 PR #18 post-merge run #68 / `35944424974` = success；Extended：仅 workflow_dispatch，**全部 run 均为 skipped**，未在真实 runner 实跑 |
+| CI | VERIFIED（Fast runner，branch + main 双证） | `.github/workflows/ci.yml`；Fast：**当前生产代码基线**（PR #21 = OQ7 merge）post-merge run **#79** / `36008461688` = success；PR #21 branch push run #77 / `36007764805`、pull_request run #78 / `36007774188` = success；上一轮基线（PR #17 merge）post-merge run **#65** / `35859067322` = success；PR #17 branch push `35858111493` / pull_request `35858179009` = success；PR #16 branch push `35855519460` / pull_request `35855590059` = success；文档 checkpoint 同步 PR #18 post-merge run #68 / `35944424974` = success；Extended：仅 workflow_dispatch，**全部 run 均为 skipped**，未在真实 runner 实跑 |
 | 统一健康检查 | VERIFIED | `scripts/healthcheck.sh [--extended]` |
 | DSH Agent Web GUI | VERIFIED | `systemctl --user status dsh-web`，http://127.0.0.1:8731 |
 | binfmt / WSL interop | REPO VERIFIED / SYSTEM DEPLOYMENT NOT REVERIFIED | `configs/binfmt/binfmt-selfheal.sh` v2.3 fail-closed（helper 缺失绝不回落 systemd-binfmt） |
@@ -221,7 +227,7 @@ Current deployed system:
 
 ## 明确的 PARTIAL / 路线图（非空壳，第二轮能力建设）
 
-- ✅ 已交付（OQ7，待 PR）：0x7DF 功能寻址**实时网关守护进程**
+- ✅ 已交付并合入（OQ7 / PR #21，merge `ae22a556…`）：0x7DF 功能寻址**实时网关守护进程**
   （Gateway Runtime v1；协议层与多 ECU 物理寻址实时此前均已通过）。
 - 真实 Flash / firmware flashing / 签名校验、0x39 / 0x06、Permission /
   session framework、`0x19` 其余 reportType（03/04/05/06/0B–0E/14/15/16/1A…；
@@ -232,7 +238,8 @@ Current deployed system:
 - JFFS2 / UBIFS 完整 extraction chain（当前 build + identify 已通过）。
 - ✅ 已收口：Python 依赖 transitive lock（`python-network-requirements.lock`）。
 - ✅ 已完成：CI Fast 在真实 GitHub runner 上的运行验证
-  （当前生产代码基线 post-merge run **#65** / `35859067322` = success）；Extended 仍仅 workflow_dispatch。
+  （当前生产代码基线 = OQ7 post-merge run **#79** / `36008461688` = success；
+  Extended 仍仅 workflow_dispatch）。
 - 不启动：Docker Security Lab、Obsidian 系统、新真实 CAN 接口（需明确授权）。
 - 可选：jefferson/ubireader、pwndbg/gef、libFuzzer/Honggfuzz、DBC 解析。
 

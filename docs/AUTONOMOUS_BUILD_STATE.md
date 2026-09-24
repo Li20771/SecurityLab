@@ -7,32 +7,40 @@
 ## CURRENT STATE — 2026-09-24
 
 **CURRENT_PHASE**:
-Phase 4 — Second-Round / Post-OQ6 Baseline
+Phase 4 — Second-Round / Post-OQ7 Baseline
 
 **CURRENT_TASK**:
-OQ6-A / OQ6-B 已合并；OQ6 post-merge documentation checkpoint resync 已完成；
-下一项第二轮能力待重新盘点后确定
+OQ3–OQ7 全部已合并；OQ7 post-merge documentation checkpoint 同步进行中；
+**下一项第二轮能力尚未确定** —— 需先做一次 main capability inventory
+（能力盘点 → 剩余缺口 → 候选 OQ → design review），不预设具体功能
 
 **BRANCH**:
-`chore/docs-checkpoint-resync-20260924`（本轮只做文档 checkpoint 同步；
+`chore/oq7-post-merge-docs-20260924`（本轮只做文档 checkpoint 同步；
 第二轮能力一律新建独立 feature branch）
 
 **PR**:
-#18 MERGED / CLOSED
-merge commit `62531bb70632def49250e997b9619de2a807aa1a`（**仅文档变更**）
+#21 MERGED / CLOSED（OQ7 = `feat(gateway): add vCAN Gateway Runtime v1`）
+merge commit `ae22a556924d89d27e1d084ebcc5a4b4c56534f2`
+（引入 OQ7 生产代码 + 测试 + 文档）
 
 **MAIN**:
-- current main document checkpoint：`62531bb70632def49250e997b9619de2a807aa1a`（PR #18，**仅文档**）
-- latest production-code baseline：`c112f022a1da91000e27f524bacba836b2c81ac6`（PR #17 = OQ6-B merge）
+- latest production-code baseline：`ae22a556924d89d27e1d084ebcc5a4b4c56534f2`（PR #21 = OQ7 merge）
+- previous production-code baseline：`c112f022a1da91000e27f524bacba836b2c81ac6`（PR #17 = OQ6-B merge）
 
-> 两者**刻意分开记录**：`62531bb` 只是文档 checkpoint，**不是**生产代码基线。
+> OQ7 是**引入生产代码**的 PR，故按本文件既有口径更新"生产代码基线"；
+> 本轮 OQ7 post-merge 文档 checkpoint（仅文档）**不**改变生产代码基线。
 
 **GitHub CI**:
 post-merge Fast QA = PASS
-- 生产代码基线 `c112f022` → Run = `35859067322`（run **#65**，event=push，branch=main）
-- 文档 checkpoint `62531bb` → Run = `35944424974`（run #68，event=push，branch=main）= success
+- 生产代码基线 `ae22a556`（OQ7）→ Run = `36008461688`（run **#79**，event=push，branch=main）= success
+- OQ7 PR #21 分支 → Run = `36007764805`（run #77，push）/ `36007774188`（run #78，pull_request）= success
+- 上一轮基线 `c112f022`（OQ6-B）→ Run = `35859067322`（run **#65**，event=push，branch=main）= success
 
 Extended = 仅 workflow_dispatch，从未在真实 runner 实跑。
+
+**NOT RUN（本轮）**:
+`qa_extended.sh` = NOT RUN；`healthcheck.sh` = NOT RUN
+（本轮为文档 checkpoint，未执行，不制造结果）
 
 **PREVIOUS BASELINE（历史，不再作为当前状态）**:
 PR #17 MERGED，生产代码基线 = `c112f022a1da91000e27f524bacba836b2c81ac6`（**OQ6-B**）
@@ -78,27 +86,46 @@ offline 120 passed / 23594 subtests；OQ3 smoke PASS 10 / FAIL 0；
 v1 golden 947 且两个 digest unchanged。
 **stateful / multi-request sequences = OUT OF SCOPE**。
 
-**当前测试基线（Local verified，2026-09-24 本机实测，OQ6 合并后）**:
-UDS unit **620** / e2e **213** / all **833**（PASS 21 / WARN 0 / FAIL 0）；
-can-tools offline **303**；`qa_fast.sh` PASS。
-**e2e 不在 GitHub Fast CI 内** —— 需 vcan0，故 213 只能是 Local verified，
-**不得标为 GitHub CI verified**。
+**OQ7 状态**: **MERGED / COMPLETED**（PR #21，merge `ae22a556924d89d27e1d084ebcc5a4b4c56534f2`）
+新增 `ecu/gateway_runtime.py`：vcan0 上的多 ECU 诊断网关守护进程
+（`SocketCAN/ISO-TP → Gateway Runtime → DiagnosticGateway → ECU_A/B/C → UdsHandler`）。
+物理寻址 0x7E0/0x7E1/0x7E2 → 0x7E8/0x7E9/0x7EA；功能寻址 0x7DF 广播到三个 ECU 且
+**总线静默**（原始 CAN 抓包证明）；未知 ID 丢弃；ECU 状态隔离；SIGINT/SIGTERM
+优雅退出（退出码 0 + socket 清理）；**非 vcan0 接口 fail-closed**（只允许 vcan0，
+拒绝发生在构造 runtime 与绑定 socket 之前）。
+分层：`gateway.py` 保持纯协议层（不 import isotp/socket），寻址规则**零重复**。
+新增测试：`tests/test_gateway_runtime_unit.py`（53）、`tests/test_gateway_runtime_vcan.py`（21）；
+可复现入口 `scripts/repro/verify_gateway_runtime.sh`。
+**边界**：真实 CAN / 真实 ECU、DoIP、多进程 ECU orchestration、gateway security
+policy / 高级过滤、真实刷写均**未做**；**0x27 不经 gateway 层**属既有分层边界，
+是**后续独立 OQ**，不是 OQ7 缺陷。
+
+**当前测试基线（Local verified，2026-09-24 本机实测，**OQ7 合并后**）**:
+UDS unit **673** / e2e **234** / all **907**（PASS 23 / WARN 0 / FAIL 0）；
+其中 Gateway Runtime 自身 unit **53** / e2e **21**；
+can-tools offline **303**；`qa_fast.sh` PASS；
+`scripts/repro/verify_gateway_runtime.sh` PASS 7 / FAIL 0。
+**e2e 不在 GitHub Fast CI 内** —— 需 vcan0，故 234 只能是 Local verified，
+**不得标为 GitHub CI verified**；unit 部分已由 Fast QA 覆盖
+（OQ7 post-merge run **#79** / `36008461688` = success）。
 
 **NEXT_STEP**:
-重新盘点当前 main 的真实能力与剩余缺口 → 确定下一项第二轮能力 →
+重新盘点当前 main 的真实能力与剩余缺口（**main capability inventory**）→
+列出剩余缺口 → 提出候选 OQ → design review → 确定下一项第二轮能力 →
 创建独立 feature branch 开发（小功能 → 小 PR → 可验证 → 合入）。
+**不预设 OQ8 是哪个功能。**
 
 **SECOND-ROUND MODE**:
 不再把多个大型能力一次性堆进 main；每个能力单独 feature branch、
 单独 PR、单独审查与回滚。
 
-**POST-OQ6 COMPLETED（均已存在于当前 main 且已验证）**:
+**POST-OQ7 COMPLETED（均已存在于当前 main 且已验证）**:
 
 - UDS 服务：`0x10`、`0x11`（01/02/03）、`0x14`、`0x19`（01/02/07/08/09/0A）、
   `0x22`、`0x27`、`0x2E`、`0x31`、`0x34`–`0x37`、`0x38`、`0x3E`、`0x85`（01/02）
   —— 均已存在于当前 main 并有 unit + e2e 验证
 - OQ3 MF-v1、OQ4 ECUReset 扩展、OQ5 DTC severity、OQ6-A DTC runtime state、
-  OQ6-B ControlDTCSetting —— 均已合入 main
+  OQ6-B ControlDTCSetting、**OQ7 Gateway Runtime v1** —— 均已合入 main
 
 > 已实现 ≠ 全部完成：`0x19` 仍缺 03/04/05/06/0B–0E/14/15/16/1A 等 reportType；
 > `0x11` 未实现 04/05；suppressPosRspMsgIndicationBit 未实现（见下）。
@@ -121,7 +148,7 @@ can-tools offline **303**；`qa_fast.sh` PASS。
 > 以下各节为历史断点（Historical checkpoints），按当时状态记录，**不再回改**。
 > 其中的能力状态是**当时**的快照，可能与当前 main 不一致 ——
 > 例如多节写有 "0x19/0x31/0x34-37 未实现"，这些能力此后均已合入 main 并有验证
-> （见本文档 CURRENT STATE 的 POST-OQ6 COMPLETED 与 `TEST_MATRIX.md` §2）。
+> （见本文档 CURRENT STATE 的 POST-OQ7 COMPLETED 与 `TEST_MATRIX.md` §2）。
 > **判定当前状态一律以本文档顶部的 CURRENT STATE 为准。**
 
 ---
