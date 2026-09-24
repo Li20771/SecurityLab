@@ -47,9 +47,10 @@ __all__ = [
 
 #: 教学合成 DTC 出厂状态：{DTC(3 字节 int): statusOfDTC(1 字节)}。
 #:
-#: 本实验刻意不提供"设置 DTC 状态"的服务（0x85 ControlDTCSetting 未实现），
-#: 因此运行时默认即这些值；测试/未来服务通过 ``EcuState.dtc_records``
-#: 修改运行时状态。
+#: 本实验**没有任何 UDS 服务会置位 DTC status**：``0x85`` ControlDTCSetting
+#: 只开关"是否允许继续更新"，本身不产生故障。因此运行时默认即这些值；
+#: 产生 / 更新只经进程内的 ``dtc_runtime.set_dtc_status()``
+#: （fault generation 不是协议能力），``0x14`` 则把 status 置 ``0x00``。
 DTC_DATABASE: dict[int, int] = {
     0x100001: 0x01,   # testFailed
     0x100002: 0x02,   # testFailedThisOperationCycle

@@ -1,12 +1,12 @@
 # SecurityLab 状态看板（SECURITY LAB STATUS）
 
-> 更新：2026-09-23（PR #14 / docs baseline 合并后封存）。权威明细见 `FINAL_ENVIRONMENT_AUDIT_2026-09-20.md`（审计快照）、`ENGINEERING_CLOSE_2026-09-21.md`（第一轮收口报告）与 `TEST_MATRIX.md`；断点过程见 `AUTONOMOUS_BUILD_STATE.md`。
+> 更新：2026-09-24（OQ6-A / OQ6-B 合并后的文档基线重同步）。权威明细见 `FINAL_ENVIRONMENT_AUDIT_2026-09-20.md`（审计快照）、`ENGINEERING_CLOSE_2026-09-21.md`（第一轮收口报告）与 `TEST_MATRIX.md`；断点过程见 `AUTONOMOUS_BUILD_STATE.md`。
 
 ## 一句话现状
 
-SecurityLab 第一轮建设及工程收口已经完成；第二轮已连续交付三项能力
-（OQ3 MF-v1、OQ4 ECUReset 扩展、OQ5 DTC severity），
-并已完成 OQ5 之后的文档基线同步（PR #14，仅文档）。
+SecurityLab 第一轮建设及工程收口已经完成；第二轮已连续交付五项能力
+（OQ3 MF-v1、OQ4 ECUReset 扩展、OQ5 DTC severity、OQ6-A DTC runtime state、
+OQ6-B ControlDTCSetting 0x85）。
 
 第一轮正式基线（历史）：
 
@@ -15,22 +15,55 @@ SecurityLab 第一轮建设及工程收口已经完成；第二轮已连续交�
 
 当前 main 基线：
 
-- PR #14（`docs: sync post-OQ5 capability baseline`）：**MERGED / CLOSED**
-- merge commit / main HEAD：`dfe3ea79b625764cfd93c8d19d47eb868553e50a`
-- 该 merge **只引入文档变更**（`README.md` + 三份 `docs/`），无生产代码 / 测试变更
-- post-merge GitHub Actions Fast QA：PASS（run `35851993556`，event=push，branch=main）
+- PR #17（`feat(uds): add ControlDTCSetting 0x85`）：**MERGED / CLOSED**
+- merge commit / main HEAD：`c112f022a1da91000e27f524bacba836b2c81ac6`
+- 该 merge 引入 OQ6-B 的生产代码 + 测试 + 文档变更
+- post-merge GitHub Actions Fast QA：**PASS**（run **#65** / `35859067322`，event=push，branch=main）
+  - Extended job：**skipped**（仅 workflow_dispatch，未在真实 runner 实跑）
 
-> **注意区分**：OQ5 的**代码基线**是 `3349d79cac30b50593f6c826df8a1147fa9b4d34`
-> （PR #13 merge）。它是当前 main 的**祖先**，不是当前 main —— 当前 main 已前进
-> 到 `dfe3ea7`（仅文档）。OQ5 的能力现状见下方「第二轮已完成能力」。
+> **注意区分**：OQ6-A 的**代码基线**是 `a0f6725a8006fb445d21485946034b4c66f20d5d`
+> （PR #16 merge）。它是当前 main 的**祖先**，不是当前 main。
+> 各轮代码基线：OQ6-A = `a0f6725a…`（PR #16）、OQ5 = `3349d79c…`（PR #13）、
+> OQ4 = `c96f8586…`（PR #12）、OQ3 = `abcb8b4d…`（PR #10）。
+> 各能力现状见下方「第二轮已完成能力」。
 
-当前阶段：**Phase 4 — Second-Round / Post-OQ5 Baseline**——OQ5 已合入并封存，
+当前阶段：**Phase 4 — Second-Round / Post-OQ6 Baseline**——OQ6-A / OQ6-B 已合入并封存，
+并已完成 OQ6 合并后的文档基线重同步（本 PR，仅文档）；
 下一项第二轮能力待**重新盘点当前 main 真实状态后确定**（不预设具体功能）；
 仍按"小功能 → feature branch → 小 PR → 可验证 → 合入"节奏推进。
 
 ## 第二轮已完成能力
 
-### OQ5 — 0x19 DTC severity（最新，PR #13）
+### OQ6-B — 0x85 ControlDTCSetting（最新，PR #17）
+
+| 项 | 值 |
+|----|----|
+| OQ6-B | **MERGED / COMPLETED** |
+| PR | #17 **MERGED / CLOSED** |
+| merge commit | `c112f022a1da91000e27f524bacba836b2c81ac6`（= 当前 main HEAD） |
+| feature branch | `feature/uds-control-dtc-setting-v1` |
+| 内容 | 新增 `0x85 ControlDTCSetting`；`85 01 → C5 01` / `85 02 → C5 02`（byte-exact 回显）；`85 00/03/FF → 7F 85 12`；`85` 与 `85 01 00 → 7F 85 13` |
+| 语义 | ON 允许 `dtc_runtime.set_dtc_status()` 更新；OFF **冻结**更新（返回 `False`，已有 status 不变）；**OFF 不阻止 `0x14` 清除**；`0x11 01/02/03` 恢复为上电默认 ON |
+| 边界 | 无 session / security 门控；不处理 suppressPosRspMsgIndicationBit；无 optional DTCSettingControlOptionRecord；**不新增 DTC mutation API / 不新增故障注入服务** |
+| 验证（**Local verified**，2026-09-24 重跑） | UDS unit **620** / e2e **213** / all **833**（PASS 21 / WARN 0 / FAIL 0）；`qa_fast.sh` PASS |
+| CI 证据（**GitHub CI verified**） | Fast job success：分支 push run `35858111493` / pull_request run `35858179009`；main post-merge run **#65** / `35859067322` |
+| CI **未覆盖** | e2e 不在自动门禁内；Extended 全程 skipped（仅 workflow_dispatch） |
+
+### OQ6-A — DTC runtime state（PR #16）
+
+| 项 | 值 |
+|----|----|
+| OQ6-A | **MERGED / COMPLETED** |
+| PR | #16 **MERGED / CLOSED** |
+| merge commit | `a0f6725a8006fb445d21485946034b4c66f20d5d` |
+| feature branch | `feature/uds-dtc-runtime-state-v1` |
+| 内容 | 新增 `ecu/dtc_runtime.py`：DTC 运行时状态的**唯一受校验写入入口**（已注册 DTC + status 单字节范围校验；未知 DTC **不静默创建**；`get_dtc_status()` 对"已注册但未写入"返回 `0x00`；`clear_dtc_status()` 刻意不做注册校验以保持 0x14 既有语义） |
+| 架构 | `DTC_DATABASE`（静态定义）→ `DTC_METADATA`（severity / functionalUnit，与 runtime status **正交**）→ `EcuState.dtc_records`（运行时 status）→ `dtc_runtime` 写入原语 |
+| **不新增 UDS 服务** | fault generation 只经 Python API / test seam，**不是协议能力**（`set_dtc_status()` 在 tracked 生产代码中无调用点） |
+| 验证（**Local verified**，2026-09-24 重跑） | 含于上表 620 / 213 / 833；`test_dtc_unit.py` 115 用例 |
+| CI 证据（**GitHub CI verified**） | 分支 push run `35855519460` / pull_request run `35855590059`；main post-merge run `35855945925` = success |
+
+### OQ5 — 0x19 DTC severity（PR #13）
 
 | 项 | 值 |
 |----|----|
@@ -94,7 +127,7 @@ SecurityLab 第一轮建设及工程收口已经完成；第二轮已连续交�
 | 网络安全工具 | VERIFIED | nmap/tshark/tcpdump/ncat/socat/nft；`scripts/nettools_check.sh` |
 | Docker | VERIFIED（audit/local capability） | Ubuntu CLI → Docker Desktop E2E 已验证；当前 PR 不重新定义 Docker 当前运行态 |
 | 质量门禁 | VERIFIED | `scripts/qa_fast.sh`（离线）/ `qa_extended.sh`（vcan） |
-| CI | VERIFIED（Fast runner，branch + main 双证） | `.github/workflows/ci.yml`；Fast：PR #13 branch push run `35849957710` / pull_request run `35850109044` = success；**当前 main**（PR #14 docs merge）post-merge run `35851993556` = success；Extended：仅 workflow_dispatch，目前不作为自动 PR 门禁 |
+| CI | VERIFIED（Fast runner，branch + main 双证） | `.github/workflows/ci.yml`；Fast：**当前 main**（PR #17 merge）post-merge run **#65** / `35859067322` = success；PR #17 branch push `35858111493` / pull_request `35858179009` = success；PR #16 branch push `35855519460` / pull_request `35855590059` = success；Extended：仅 workflow_dispatch，**全部 run 均为 skipped**，未在真实 runner 实跑 |
 | 统一健康检查 | VERIFIED | `scripts/healthcheck.sh [--extended]` |
 | DSH Agent Web GUI | VERIFIED | `systemctl --user status dsh-web`，http://127.0.0.1:8731 |
 | binfmt / WSL interop | REPO VERIFIED / SYSTEM DEPLOYMENT NOT REVERIFIED | `configs/binfmt/binfmt-selfheal.sh` v2.3 fail-closed（helper 缺失绝不回落 systemd-binfmt） |
@@ -160,7 +193,7 @@ Current deployed system:
 - JFFS2 / UBIFS 完整 extraction chain（当前 build + identify 已通过）。
 - ✅ 已收口：Python 依赖 transitive lock（`python-network-requirements.lock`）。
 - ✅ 已完成：CI Fast 在真实 GitHub runner 上的运行验证
-  （当前 main post-merge run `35851993556` = success）；Extended 仍仅 workflow_dispatch。
+  （当前 main post-merge run **#65** / `35859067322` = success）；Extended 仍仅 workflow_dispatch。
 - 不启动：Docker Security Lab、Obsidian 系统、新真实 CAN 接口（需明确授权）。
 - 可选：jefferson/ubireader、pwndbg/gef、libFuzzer/Honggfuzz、DBC 解析。
 
