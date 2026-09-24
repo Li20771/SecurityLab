@@ -566,53 +566,75 @@ C1 明确留给 C3（见 §16）。
 
 ## 14. Migration Strategy
 
-> 迁移按**"先建模型、再逐服务迁移、最后清理"**三段推进，而非大爆炸。
+> **两个阶段的划分（FROZEN）**：
+>
+> ```
+> Phase 1  =  Build complete ServiceSpec model, but keep legacy execution path
+> Phase 2  =  Dispatcher cutover + byte-for-byte per-service migration
+> ```
+>
+> **核心区别**：Phase 1 里**模型是完整的**（含真实的 guards），但
+> **执行权威仍然是旧的 `SERVICES → handler`**；Phase 2 才把执行权切换给 `guards`。
 
-### Phase 1 — 建立模型（**零行为变更**）
+### Phase 1 — 建立**完整**模型，但保留旧执行路径（**零可观测行为变更**）
 
-1. 引入 `ServiceSpec`（§7.4），但**先不改变执行路径**：dispatcher 仍查
-   `dict[int, Callable]`；新增一个**平行的** `SERVICE_SPECS: dict[int, ServiceSpec]`
-   用于描述与对拍。
-2. 为 15 个服务填写规范（`allowed_sessions` / `required_security` / `payload_scoped`），
-   **`guards` 暂为空**。
-3. 新增"矩阵对拍测试"：断言 spec 的声明与**实际行为**一致（§13 的测试设计）。
-4. 退出条件：矩阵测试通过 + **907 用例全绿 + 零字节变化**。
+1. 引入 `ServiceSpec`（§7.4）。dispatcher **不变**：仍查 `dict[int, Callable]`。
+   新增一个**平行的** `SERVICE_SPECS: dict[int, ServiceSpec]` 作为**模型**。
 
-### Phase 2 — 迁移有授权判断的两个服务（**逐服务原子迁移**）
+2. **15 个已实现服务全部构造完整 spec**（不是占位、不是"后填"）。
 
-5. 迁移 `0x22`：把 `:552-580` 的循环改写为一个 guard（语义逐字节相同），
-   dispatcher 对该 SID 改用 `guards` 求值路径。
-6. 迁移 `0x2E`：6 个 rung → 6 个 guards（§11）。
-7. 每迁移一个服务：**先**记录迁移前的完整响应矩阵（golden），**再**迁移，
-   **后**逐字节对拍。任一项不符即回滚该服务。
-8. 退出条件：两个服务对拍全绿 + 907 全绿。
+3. **`guards` 不再"全部为空"** —— 按服务的真实授权语义分别构造：
 
-### Phase 3 — 把无授权服务纳入规格（**仅声明，不加限制**）
+   | 服务 | `payload_scoped` | `required_security` | `guards`（Phase 1 即完整） |
+   |------|------------------|---------------------|---------------------------|
+   | **`0x22`** | `True` | `None` | **完整真实 guard**：表达 `format → 逐 DID 循环 → 未知 DID=31 → 权限不足=33 → 首个失败 DID 决定 NRC → all-or-nothing`（复刻 `:552-580` 的语义） |
+   | **`0x2E`** | `True` | `SECURITY_LEVEL1` | **完整六级链**：`13 → 31 → 7F → 33 → 22 → 13`（与 `:745-780` 的 inline 顺序逐级对应） |
+   | 其余 **12** 个 | `False` | `LOCKED`（或按真实声明） | **`()`** —— 它们**没有**授权 guard（其 NRC 全部为格式/范围/序列类，见 §8.2） |
 
-9. 将其余 12 个服务的 `guards` 保持为 `()`，但它们**已在矩阵中出现**，
-   且 dispatcher 对它们也走统一的 `ServiceSpec` 路径。
-10. 此时"新服务默认必须声明授权语义"（G4）生效：新增 SID 若无 spec 则**拒绝加载**
-    （或测试失败），消除 P5。
-11. 退出条件：`SERVICES` 与 `SERVICE_SPECS` 合并为单一结构；907 全绿。
+   > 这与 OD-2 冻结规则**一致**：`payload_scoped=True → guards 非空`（`0x22`/`0x2E` 均满足）；
+   > 其余 12 个 `payload_scoped=False → guards 允许为空`（§18.0 OD-2）。
+   > **"`guards` 暂为空"的旧写法已废弃** —— 它与该规则冲突。
 
-### Phase 4 — 清理（**可选、且需单独评审**）
+4. **`0x22` / `0x2E` 的 guards 在 Phase 1 就构造完整、真实**，描述**当前已有**的
+   inline authorization semantics；**但 Phase 1 的 dispatcher 不执行它们**。
+   它们的作用仅限于：**模型校验（model validation）** 与 **矩阵 / 审计**。
 
-12. 删除 `guards=()` 的服务的旧 inline 检查（若有残留）与过渡代码。
-13. **不删除** `required_security_level(did)` —— 它是 `0x22` guard 的实现。
+5. 建立并执行 **Phase 1 范围的静态 / conformance 检查**（§15.1、§18.0 OD-2）：
+   结构有效性、`payload_scoped → guards != ()`、`0x22`/`0x2E` 的 guard 存在性、
+   声明一致性。**不要求 dispatcher 使用 guards。**
+
+6. **退出条件**：模型内部有效 + Phase 1 检查通过 + **907 用例全绿 + 零字节变化**。
+
+### Phase 2 — dispatcher 切换 + 逐服务字节对拍迁移
+
+7. **切换 dispatcher**：改为 `resolve ServiceSpec(sid) → 求值 spec.guards →（全部通过后）调 spec.handler`（OD-1 冻结的形态）。
+8. **原子迁移 `0x22`**：**先**记录迁移前的完整响应矩阵（golden），**再**切换，**后**逐字节对拍；不符即回滚该服务。
+9. **原子迁移 `0x2E`**：同上（六级链逐级对拍）。
+10. **本阶段新增检查**：`legacy handler 结果` vs `spec.guards + spec.handler 结果` **逐请求逐字节对拍**
+    （这是 Phase 1 **没有**的一层，见 §15.1）。
+11. **退出条件**：两个服务对拍全绿 + 907 全绿。
+
+### Phase 3 — 收敛与清理（**可选，且需单独评审**）
+
+12. `SERVICES` 与 `SERVICE_SPECS` 合并为单一结构（`SERVICES` 变为 spec 的派生视图或只读别名）。
+13. "新服务必须声明授权语义"（G4）强制化：新增 SID 若无 spec 则拒绝加载 / 测试失败（消除 P5）。
+14. 删除过渡代码。**不删除** `required_security_level(did)` —— 它是 `0x22` guard 的实现。
 
 **关于 `SERVICES → dispatcher → handler` 如何平滑迁移**：
 
 ```
-Phase 1:   SERVICES[sid] = handler              +  SERVICE_SPECS[sid]（仅描述）
-Phase 2:   被迁移服务: dispatcher 走 spec.guards → spec.handler
-           未迁移服务: 仍走 SERVICES[sid]
-Phase 3:   全部走 spec；SERVICES 变为 spec 的派生视图（保持兼容导入）
-Phase 4:   移除派生视图（或保留为只读兼容别名）
+Phase 1:   dispatcher 仍走   SERVICES[sid] → legacy handler
+           同时存在         SERVICE_SPECS[sid]（完整模型，含真实 guards，但不执行）
+
+Phase 2:   dispatcher 改走   spec.guards → spec.handler
+                            （0x22 / 0x2E 逐服务原子迁移 + 字节对拍）
+
+Phase 3:   SERVICES 与 SERVICE_SPECS 收敛为单一结构（可选，单独评审）
 ```
 
 **关键约束**：`handle_uds_request(..., services=...)` 的**注入契约必须保持**
 （`ecu.py:386-389` 依赖它注入 0x27）。Phase 3 的合并**不得**破坏该参数。
-若最终 `services=` 的形态需要改变，属**接口变更**，须单独评审（见 §18 OD-4）。
+若最终 `services=` 的形态需要改变，属**接口变更**，须单独评审（见 §18.1 OD-4）。
 
 ---
 
@@ -624,17 +646,23 @@ Phase 4:   移除派生视图（或保留为只读兼容别名）
 > |------|------|--------------|
 > | **PR #25** = C1 Design Freeze | 设计冻结（本文档初版） | **否** —— 只设计测试矩阵 |
 > | **PR #26** = C1 Implementation Preflight / Contract Lock | 冻结 OD-1/OD-2 + **实际新增 29 个 contract pins** | **是** —— 新增 `tests/test_c1_contract_pins.py` 与 `run_tests.sh` 接入（+8 行） |
-> | **Phase 1**（未来）= C1 implementation | 真正的框架实现 | 将新增防漂移机制与框架测试 |
+> | **Phase 1**（未来）= 完整模型 + 结构检查 | 15 个服务全部构造完整 spec（含 `0x22`/`0x2E` 的真实 guards），**但 dispatcher 仍走 legacy handler** | 将新增防漂移机制与 Phase 1 结构/conformance 测试 |
+> | **Phase 2**（未来）= dispatcher 切换 | `spec.guards` 生效；`0x22`/`0x2E` 逐服务原子迁移 | 将新增 `legacy ↔ 新路径` 的逐字节对拍 |
 >
 > 即：**PR #25 的设计阶段不改测试；PR #26 的 preflight 已按本文档所述新增了
 > contract-pin 测试**。下文 §15.1/§15.2 描述的是**测试设计**（PR #25 起即有），
-> 其**已落地的部分**见 §15.7 的 pin 表；尚未落地的部分属 **Phase 1**。
+> 其**已落地的部分**见 §15.7 的 pin 表；尚未落地的部分按 §14 归属 Phase 1 或 Phase 2。
 
 ### 15.1 测试矩阵（按主题）
 
 > **落地状态**：★ = **PR #26 已落地**（见 §15.7 的 29 例 pin 表）；
-> 其余条目属 **C1 Phase 1**（框架实现时随框架一并落地）。
+> 其余条目按 §14 的阶段归属 **Phase 1**（完整模型 + 结构检查）或 **Phase 2**（切换 + 字节对拍）。
 > 本表是**测试设计**，不是"尚未开始"的意思。
+>
+> **Phase 1 与 Phase 2 的检查不是同一层**：Phase 1 只验证**模型的内部有效性**
+> （结构规则、guard 存在性、声明一致性），**不要求 dispatcher 执行 guards**；
+> Phase 2 才新增 `legacy handler` ↔ `spec.guards + handler` 的**逐字节对拍**。
+> 二者**不得混成一个执行路径**（§14）。
 
 | 主题 | 用例 | 状态 |
 |------|------|------|
@@ -642,7 +670,8 @@ Phase 4:   移除派生视图（或保留为只读兼容别名）
 | **Security** | `required level satisfied` / `insufficient`；`security_level` 提升后原被拒请求转为允许；切会话重新锁定后再次被拒（★ F-a） | 部分 ★ |
 | **Permission** | service allowed / denied；subfunction denied；**DID denied**（per-DID 粒度，★ F-b/F-c）；`payload_scoped` 服务的 payload 相关分支 | 部分 ★ |
 | **NRC priority** | 格式+会话、未知 DID+会话（★ N1）、安全+会话、未知服务+授权、`0x33` 先于 `0x22`（★ N4）、`0x22` DID 顺序（★ N2） —— **每组都必须断言"先发生的是哪一个"** | 大部分 ★ |
-| **Matrix conformance** | spec 的声明字段 ↔ 实际行为对拍（按服务类别分别判据，见 §18.0 OD-2） | Phase 1 |
+| **Matrix conformance（Phase 1）** | **结构有效性**：`payload_scoped → guards != ()`；`0x22`/`0x2E` 的 guard 存在；声明一致性（按服务类别分别判据，见 §18.0 OD-2）。**不要求 dispatcher 使用 guards** | Phase 1 |
+| **Byte-for-byte migration（Phase 2）** | `legacy handler 结果` vs `spec.guards + spec.handler 结果` **逐请求逐字节对拍**（按服务类别分别判据） | Phase 2 |
 
 ### 15.2 NRC 优先级专项（**最关键的回归网**）
 
@@ -925,18 +954,28 @@ F-a..F-g。**迁移前后必须逐字节一致**，由这些 pin + Phase 2 的 g
    → `guards` 不可能为空。反之**不要求**：`guards` 非空不蕴含 payload_scoped
    （非 payload-scoped 的服务同样可以有 guards，只要其行为可由声明完整概括）。
 
-2. **矩阵一致性测试（conformance test）**：**按服务类别分别验证**，两种类别用不同判据：
+2. **矩阵一致性测试（conformance test）**：**按服务类别分别验证**，
+   且**按阶段分层**（Phase 1 / Phase 2 的检查不是同一层，不得混成一个执行路径）：
 
-   - **非 payload-scoped 的服务**：声明字段**应当**能完整描述其授权状态 →
-     遍历 `(session × security_level)` **全组合**，执行 guard 链，
-     把实际 allow/deny 与 `allowed_sessions`/`required_security` **逐格对比**；不一致即失败。
+   **Phase 1 —— 只验证"模型内部有效"（不要求 dispatcher 执行 guards）**
 
-   - **payload-scoped 的服务**：**不得**把 guards 强行压成一张 `session/security` 矩阵
-     （那正是 Mode A 的错误）。只验证三件事：
-     ① `payload_scoped is True`；
-     ② `guards` **非空**（承接上面的结构规则）；
-     ③ 声明**没有**声称自己完整描述 —— 即 `0x22` 这类服务不得把 `required_security`
-        写成某个具体等级来"假装完整"（`None` 是它唯一诚实的取值）。
+   - **结构规则**：`payload_scoped=True → guards != ()`。
+     其余 12 个（`payload_scoped=False`）**允许** `guards=()`。
+   - **guard 存在性**：`0x22` / `0x2E` 必须各自拥有**非空**且**与其 inline 语义对应**的 guards。
+   - **声明一致性**（按类别不同判据）：
+     - **非 payload-scoped 的服务**：声明字段**应当**能完整描述其授权状态 →
+       遍历 `(session × security_level)` **全组合**，执行 guard 链，
+       把实际 allow/deny 与 `allowed_sessions`/`required_security` **逐格对比**；不一致即失败。
+     - **payload-scoped 的服务**：**不得**把 guards 强行压成一张 `session/security` 矩阵
+       （那正是 Mode A 的错误）。只验证：① `payload_scoped is True`；② `guards` **非空**
+       （承接结构规则）；③ 声明**没有**声称自己完整描述 —— 即 `0x22` 这类服务不得把
+       `required_security` 写成某个具体等级来"假装完整"（`None` 是它唯一诚实的取值）。
+
+   **Phase 2 —— 新增"旧实现 ↔ 新路径"的逐字节对拍**
+
+   - 对每个被切换的服务：`legacy handler 结果` vs `spec.guards + spec.handler 结果`
+     **逐请求逐字节相同**；任何一格不符即回滚该服务（§14 Phase 2）。
+   - 这一层在 **Phase 1 不存在**（Phase 1 的 dispatcher 仍走 legacy handler）。
 
 3. **`0x22` / `0x2E` 如何表达（FROZEN）**：
 
@@ -966,9 +1005,9 @@ F-a..F-g。**迁移前后必须逐字节一致**，由这些 pin + Phase 2 的 g
 
 | ID | 问题 | 为何未决 | 影响 |
 |----|------|----------|------|
-| **OD-3** | 是否要**强制**"新服务必须有 spec"（G4）？以何种机制？（拒绝加载 / 测试失败 / lint 规则） | 需要先确认对既有 14 个服务与 `0x27` 注入路径的兼容性 | 决定 G4 的落地方式 |
+| **OD-3** | 是否要**强制**"新服务必须有 spec"（G4）？以何种机制？（拒绝加载 / 测试失败 / lint 规则） | 需要先确认对既有 14 个服务与 `0x27` 注入路径的兼容性 | 决定 G4 的落地方式 —— 属 **Phase 3**（收敛与清理） |
 | **OD-4** | `handle_uds_request(..., services=...)` 的**最终契约**：保留 `dict[int, Callable]`，还是改为 `dict[int, ServiceSpec]`？ | OD-1 已冻结**归一化规则**（覆盖 = 整体替换，`guards=()`），因此**当前契约可原样保留**；是否需要最终改为 spec 形态，取决于 Phase 3 的收敛方式 | 决定 Phase 3 的收敛方式 |
-| **OD-5** | `0x2E` 的会话判定**写法**：保留 `== DEFAULT`，还是改为 `allowed = {EXTENDED, PROGRAMMING}`？ | 当前在三个会话下二者等价；OD-2 已确定"声明不执行"，故改写**只影响 guard 内部实现**，仍需对拍证明等价 | 决定 §11 的实现形式 |
+| **OD-5** | `0x2E` 的会话判定**写法**：保留 `== DEFAULT`，还是改为 `allowed = {EXTENDED, PROGRAMMING}`？ | 当前在三个会话下二者等价；OD-2 已确定"声明不执行"，故改写**只影响 guard 内部实现**，仍需对拍证明等价 | 决定 §11 的实现形式 —— 属 **Phase 2**（`0x2E` 切换时，有逐字节对拍兜底） |
 | **OD-6** | 是否把 `0x27` 也纳入 `ServiceSpec`（作为"动态注入的服务如何声明策略"）？ | `0x27` 不在静态表，其注入路径特殊；纳入方式需先解决 OD-4 | 决定矩阵的完整性（当前是**策略盲区**） |
 
 > **OD-1/OD-2 冻结后的连带结论**：OD-4 的**紧迫性下降**（当前契约可保留），
@@ -992,7 +1031,7 @@ F-a..F-g。**迁移前后必须逐字节一致**，由这些 pin + Phase 2 的 g
 | 8 | **0x2E 如何兼容** | 6 个 rung → **6 个有序 guards**；`13→31→7F→33→22→13` 逐字节保持；**写法（OD-5）未决** | **DESIGN FROZEN**（写法除外） |
 | 9 | **0x27 如何接入** | 保持 `ecu.py` 注入边界不变；C1 只消费 `security_level`，**不搬动注入、不改状态机**；0x27 经网关可达性 = **C3 的范围** | **DESIGN FROZEN** |
 | 10 | **gateway 如何与 ECU authorization 分层** | **C1 = ECU service authorization**；`gateway.py` **零改动**；gateway policy = **C2**；功能寻址下各 ECU **独立**判定 | **DESIGN FROZEN** |
-| 11 | **migration strategy** | 四阶段：①建模型（零行为变更）→ ②逐服务原子迁移（0x22、0x2E）→ ③其余服务纳入规格（仅声明）→ ④清理（单独评审）。每阶段退出条件都要求 **907 全绿 + 字节等价** | **DESIGN FROZEN** |
+| 11 | **migration strategy** | **Phase 1 = 建立完整 ServiceSpec 模型（15 个服务全构造，`0x22`/`0x2E` 含**完整真实 guards**）+ 静态/conformance 检查，但 **dispatcher 仍走 legacy `SERVICES → handler`**（零可观测行为变更）；**Phase 2 = dispatcher 切换 → `spec.guards` 生效 → `0x22`/`0x2E` 逐服务原子迁移 + 逐字节对拍**；Phase 3 = 收敛与清理（可选，单独评审）。每阶段退出条件均含 **907 全绿 + 字节等价** | **DESIGN FROZEN** |
 | 12 | **test strategy** | 六主题新增测试 + NRC 优先级专项（§15.2 的 5 条锚点）+ 矩阵对拍 + 既有 907 作为回归网；**不修改任何既有测试** | **DESIGN FROZEN** |
 | 13 | **留给 C2 / C3 的问题** | **C2**：网关策略的求值位置/默认值/拒绝的总线表现/是否读 ECU 状态；**C3**：0x27 经网关的注入装配与"注入语义只定义一处" | **DESIGN FROZEN（边界）** |
 | 14 | **OD-1：guards 与 handler 的调用关系** | **per-service ordered guards → dispatcher 对当前已解析 service 求值 → 全部通过后才调 handler**。**明确 NOT a global authorization precheck**（§18.0 OD-1） | **DESIGN FROZEN** |
@@ -1026,8 +1065,10 @@ C2 = "**网关作为网络中间设备**的报文级策略"（与任何 ECU 的�
    （`tests/test_c1_contract_pins.py`，29 例，覆盖 N1/N2/N4/N6/N7 + F-a..F-g）；
 3. **仍需**：解决 **OD-4**（`services=` 的最终契约形态）与 **OD-3**（G4 的落地机制）；
 4. **仍需**：实现 OD-2 要求的**防漂移机制**（结构规则 `payload_scoped → guards 非空`
-   + 分类别 conformance test）—— 注意该机制**属于 C1 实施的第一阶段**，
+   + 分类别 conformance test）—— 该机制**属于 C1 Phase 1**（§14），
    不在 PR #26 的 preflight 范围内。
 
-> **Preflight 结论**：C1 的**执行模型已可实施**（OD-1/OD-2 冻结 + 契约 pin 就绪）；
-> 剩余的 OD-3/OD-4 可在 Phase 1 内解决，**不阻塞 Phase 1 的启动**。
+> **Preflight 结论**：C1 的**执行模型已可实施**（OD-1/OD-2 冻结 + 契约 pin 就绪）。
+> 剩余开放项的阶段归属：**OD-5**（`0x2E` 会话判定写法）属 **Phase 2**（有字节对拍兜底）；
+> **OD-3**（是否强制新服务声明 spec）与 **OD-4**（`services=` 最终契约形态）
+> 属 **Phase 3**（收敛与清理，§14）。**三者均不阻塞 Phase 1 的启动。**
