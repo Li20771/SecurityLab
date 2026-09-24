@@ -10,12 +10,13 @@
 Phase 4 — Second-Round / Post-OQ7 Baseline
 
 **CURRENT_TASK**:
-OQ3–OQ7 全部已合并；OQ7 post-merge documentation checkpoint 同步进行中；
-**下一项第二轮能力尚未确定** —— 需先做一次 main capability inventory
+OQ3–OQ7 全部已合并；OQ7 post-merge documentation baseline 已完成；
+**下一项第二轮能力尚未确定** —— 下一步先做一次 main capability inventory
 （能力盘点 → 剩余缺口 → 候选 OQ → design review），不预设具体功能
 
-**BRANCH**:
-`chore/oq7-post-merge-docs-20260924`（本轮只做文档 checkpoint 同步；
+**CHECKPOINT_BRANCH**:
+`chore/oq7-post-merge-docs-20260924`
+（本轮文档 checkpoint 分支；合并后生产主线仍为 `main`。
 第二轮能力一律新建独立 feature branch）
 
 **PR**:
