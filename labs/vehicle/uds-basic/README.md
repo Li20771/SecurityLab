@@ -246,7 +246,7 @@ set_dtc_status(dtc, 非零)   → DTC active
 
 `0x06` ResumeFile、`0x39` RequestFileTransferExit、`0x19` 的其余 reportType
 （03/04/05/06/0B–0E/14/15/16/1A…；07/08/09 已实现）、
-`0x28` CommunicationControl、`0x85` ControlDTCSetting 等。
+`0x28` CommunicationControl 等。
 
 ### 4.1 响应格式
 
@@ -733,14 +733,15 @@ status 字节变 `0x00`**。
 
 1. `0x14` 是**当前 synthetic DTC model 的 runtime status 清除** —— 它只把
    `EcuState.dtc_records` 中条目的 status 置零，**不触碰**任何静态数据。
-2. **本 ECU 没有 DTC 产生 / 故障注入机制**（`0x85 ControlDTCSetting`
-   未实现，也没有任何服务会置位 DTC status）。因此真实链路只能验证
-   "清除 → 观察 → 复位保留"三段语义，**不能**验证"故障发生 → DTC 置位
-   → 清除"。
+2. **本 ECU 没有任何 UDS 服务会置位 DTC status**：`0x85 ControlDTCSetting`
+   只开关"是否允许继续更新"，本身不产生故障；产生 / 更新只能经进程内的
+   `dtc_runtime.set_dtc_status()`（fault generation 不是协议能力）。因此
+   真实链路只能验证"清除 → 观察 → 复位保留"三段语义，**不能**验证
+   "故障发生 → DTC 置位 → 清除"。
 3. **functional group 不在本 PR**：现模型 `{DTC: statusOfDTC}` 不含任何
    分组元数据，表达功能组需要新增映射结构。因此功能组取值自然落入
    `0x31`。**这是本项目 profile，不声称是 ISO 功能组语义的完整实现。**
-4. `0x85` / `0x19` 其余 reportType / `0x28` / `0x39` / `0x06` 均不在本 PR。
+4. `0x19` 其余 reportType / `0x28` / `0x39` / `0x06` 均不在本 PR。
 
 **生命周期**：`0x14` 之后 `hardReset` **不恢复** status（`0x11` 刻意保留
 `dtc_records` 内容）；`hardReset` 之后 `0x14` 正常工作；`0x14` 不影响
@@ -1230,7 +1231,7 @@ bash tests/run_tests.sh e2e    # 只跑 vcan0 端到端测试
 
 > 表中数字为 **Local verified**（本机 `run_tests.sh all` 实测）。
 > GitHub CI 的 fast job 只覆盖 ruff / mypy / **unit** / can-tools offline；
-> **e2e（需 vcan0）不在 CI 内**，因此 208 / 789 不能标为 CI verified。
+> **e2e（需 vcan0）不在 CI 内**，因此 213 / 833 不能标为 CI verified。
 
 ### 8.2 离线单元测试（不需要 CAN）
 
@@ -1651,13 +1652,14 @@ uds-basic/
 - [x] can-isotp 2.0.7 双向收发
 - [x] udsoncan 1.26.1 客户端（含 `unlock_security_access()`）
 - [x] `0x10` DiagnosticSessionControl（01/02/03 + 各自 P2/P2* + NRC 12/13）
-- [x] `0x11` ECUReset（01 + NRC 12/13）
+- [x] `0x11` ECUReset（01/02/03，三者状态等价 + NRC 12/13）
 - [x] `0x22` ReadDataByIdentifier（单 DID、多 DID + NRC 31/13）
 - [x] `0x27` SecurityAccess（RequestSeed / SendKey 全路径）
 - [x] `0x2E` WriteDataByIdentifier（门控链：13→31→7F→33→22→13→6E）
 - [x] `0x3E` TesterPresent（`3E 00→7E 00`；`3E 80` 抑制；非法子功能 12；长度错 13）
-- [x] `0x19` ReadDTCInformation（reportType 01/02/0A；mask 过滤、稳定排序、
-  DTCCount 16-bit BE；非法 reportType 12、长度错 13）
+- [x] `0x19` ReadDTCInformation（reportType **01/02/07/08/09/0A**；mask 过滤、
+  稳定排序、DTCCount 16-bit BE；severity 记录字段序为
+  `severity→functionalUnit→DTC→status`；非法 reportType 12、长度错 13）
 - [x] `0x31` RoutineControl（Start/Stop/RequestResults；0x2001 start-counter +
   0x2002 magic-echo；状态机 22、未知 RID 31、长度 13、子功能 12）
 - [x] routine 生命周期：hardReset 清空 routine 状态、session 切换保留、
@@ -1689,6 +1691,15 @@ uds-basic/
   status 清除：`0xFFFFFF` 全清 / 单个 DTC；**status 置零不删 key**，
   因此 `0x19/0A` 仍报告全部成员；未支持 DTC 与功能组取值 → `0x31`；
   无 session/security 门控；`EcuState` 零新增字段，0x11/0x19 零改动）
+- [x] `ecu/dtc_runtime.py`（OQ6-A）：DTC 运行时状态的**唯一受校验写入入口**
+  （已注册 DTC + status 单字节范围校验；未知 DTC **不静默创建**；
+  `get_dtc_status()` 对"已注册但未写入"返回 `0x00` 而非 KeyError）；
+  **不新增任何 UDS 服务** —— fault generation 只经 Python API / test seam
+- [x] `0x85` ControlDTCSetting（OQ6-B）：`85 01 → C5 01` / `85 02 → C5 02`
+  （byte-exact 回显）；`0x85 02` 冻结 `dtc_runtime.set_dtc_status()` 的后续
+  更新（返回 `False`、已有 status 保持不变）；**不阻止 `0x14` 清除**；
+  无 session/security 门控、不处理 suppressPosRspMsgIndicationBit；
+  `0x11 01/02/03` 将其恢复为上电默认 ON
 - [x] `0x7F` 否定响应与 NRC 判定（0x11/0x12/0x13/0x22/0x24/0x31/0x33/0x35/0x36/0x37/0x7F）
 - [x] 未实现服务统一返回 NRC 0x11
 - [x] 会话状态管理与复位回归
@@ -1699,11 +1710,11 @@ uds-basic/
 - [x] ISO-TP 单帧 / 多帧分帧验证
 - [x] 多 ECU 拓扑（`ecu/gateway.py`）：物理寻址三 ECU、功能寻址广播、
   状态隔离、构造护栏（13 单元 + 4 e2e）
-- [x] 显式 `EcuState`（10 字段）与单一事实源 `STATE`
+- [x] 显式 `EcuState`（27 字段）与单一事实源 `STATE`
 - [x] 静态服务 registry + 协议层 dispatcher
 - [x] transport / protocol 分层与单向依赖（`uds_server` 不反向依赖 `ecu`）
-- [x] 离线单元测试 312 PASS（106 ECU + 34 keygen + 17 services-extra + 13 gateway + 30 dtc + 25 routine + 40 transfer + 47 upload）
-- [x] vcan0 端到端测试 143 PASS（65 e2e + 14 isotp-matrix + 8 write-did + 4 multi-ecu + 8 dtc + 11 routine + 17 transfer + 16 upload）
+- [x] 离线单元测试 620 PASS（116 ECU + 34 keygen + 17 services-extra + 13 gateway + 115 dtc + 39 dtc-clear + 25 routine + 40 transfer + 47 upload + 174 file-transfer）
+- [x] vcan0 端到端测试 213 PASS（69 e2e + 14 isotp-matrix + 8 write-did + 4 multi-ecu + 21 dtc + 11 dtc-clear + 11 routine + 18 transfer + 16 upload + 41 file-transfer）
 - [x] **三轮连续稳定性验证全部通过**（见第 14.7 节）
 
 ---
@@ -1955,10 +1966,24 @@ can-tools 离线 183 PASS   （34 parsers + 50 isotp-options + 99 fuzz-harness�
 fuzz kernel oracle 三态 AVAILABLE/UNAVAILABLE/ERROR 如实上报
 ```
 
+OQ6 合并后基线（main `c112f022`，实测）：
+
+```text
+UDS Unit       620 PASS   （116 ECU + 34 keygen + 17 services-extra + 13 gateway + 115 dtc
+                           + 39 dtc-clear + 25 routine + 40 transfer + 47 upload
+                           + 174 file-transfer）
+E2E（在网）     213 PASS  （69 + 14 isotp-matrix + 8 write-did + 4 multi-ecu + 21 dtc
+                           + 11 dtc-clear + 11 routine + 18 transfer + 16 upload
+                           + 41 file-transfer）
+can-tools 离线 303 PASS   （34 parsers + 50 isotp-options + 99 fuzz-harness + 120 uds-fuzz）
+qa_fast.sh（ruff + mypy + unit + can-tools offline）= PASS
+GitHub CI Fast（main post-merge run #65）= success；Extended 未在 runner 实跑
+```
+
 运行方式：
 
 ```bash
-bash labs/vehicle/uds-basic/tests/run_tests.sh all   # 312 + 143
+bash labs/vehicle/uds-basic/tests/run_tests.sh all   # 620 + 213
 bash scripts/healthcheck.sh                          # 环境 + 离线测试
 ```
 
@@ -2225,10 +2250,13 @@ Phase 3 完成的是一次**结构性重构**（行为保持不变）：
 
 - ✅ 已完成：`0x2E` WriteDataByIdentifier（见 4.3）
 - ✅ 已完成：`0x3E` TesterPresent（见 4.1）
-- ✅ 已完成：`0x19` ReadDTCInformation 的 reportType 01/02/0A
-  （其余 reportType 与 0x85 DTC 控制属后续）
+- ✅ 已完成：`0x19` ReadDTCInformation 的 reportType 01/02/07/08/09/0A
+  （其余 reportType 属后续）
 - ✅ 已完成：`0x14` ClearDiagnosticInformation（见 4.9；功能组、DTC
-  产生/故障注入、0x85 属后续）
+  产生/故障注入属后续）
+- ✅ 已完成：`0x85` ControlDTCSetting（见 4.11；仅 01/02 两个
+  DTCSettingType；optional DTCSettingControlOptionRecord、
+  suppressPosRspMsgIndicationBit 全局框架属后续）
 - ✅ 已完成：`0x31` RoutineControl（Start/Stop/RequestResults +
   0x2001/0x2002 synthetic routines；routineControlOptionRecord /
   routineStatusRecord 与权限/会话门控属后续）
@@ -2237,7 +2265,7 @@ Phase 3 完成的是一次**结构性重构**（行为保持不变）：
 - ✅ 已完成：`0x38` RequestFileTransfer（mode 1–5，synthetic in-memory
   文件模型；`0x39` RequestFileTransferExit、`0x06` ResumeFile、
   真实文件系统/Flash、压缩/加密/签名校验属后续）
-- `0x28` CommunicationControl、`0x85` ControlDTCSetting
+- `0x28` CommunicationControl
 - `0x78` ResponsePending 与 P2* 超时处理
 - `0x27` 多安全等级（Level 2：`0x03`/`0x04`，需位掩码式安全等级）
 - 功能寻址（`0x7DF`）的**用户态实时网关守护进程**

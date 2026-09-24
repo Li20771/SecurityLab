@@ -358,12 +358,12 @@ def _reset_volatile_state(state: EcuState) -> None:
     在 ECUReset 下**可观测到的**诊断状态变化——凡在本模型内部被视为
     "掉电即失"的状态一律复位，被视为"故障记忆 / 非易失"的一律保留。
 
-    复位（21 字段）::
+    复位（22 字段）::
 
         session / security_level / pending_seed / seed_issued_at /
         seed_consumed / did_overrides / active_routines /
         routine_start_counts / download_* (6) / upload_* (5) /
-        file_mode / file_path
+        file_mode / file_path / dtc_setting_enabled
 
     刻意保留（5 字段）::
 
