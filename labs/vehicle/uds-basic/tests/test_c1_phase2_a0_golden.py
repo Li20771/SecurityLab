@@ -44,6 +44,7 @@ UDS Basic —— C1 Phase 2 Migration A0：0x22 legacy golden **重放**测试
 import os
 import sys
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -87,12 +88,41 @@ EXPECTED_CORPUS_SIZE = 92
 
 
 class TestGoldenReplay(unittest.TestCase):
-    """§13 / §14 —— 逐条重放并比较 response 与 state projection。"""
+    """
+    §13 / §14 —— 逐条重放并比较 response 与 state projection。
+
+    三个比较维度共用**同一条真实遍历路径** ``_replay_all()``，避免出现多套
+    彼此漂移的 replay 逻辑：
+
+        test_replay_response_bytes_match      比较 response bytes
+        test_replay_state_projection_matches  比较 state projection
+        test_every_case_is_compared           证明**实际执行**覆盖全部 case
+
+    （``test_execution_is_deterministic`` 关注"同一 case 连跑两次是否一致"，
+    属另一维度，保留其自有循环。）
+    """
 
     @classmethod
     def setUpClass(cls):
         cls.corpus = lib.load_corpus()
         cls.entries = cls.corpus["cases"]
+
+    def _replay_all(self, check=None):
+        """
+        对 corpus 中的**每一条** case 走一次真实 replay（``lib.execute``）。
+
+        :param check: 可选回调 ``(entry, response, final_state) -> None``，
+                      用于在该次**真实执行结果**上做断言。
+        :returns: 按 corpus 顺序记录的被遍历 ``case_id`` 列表。
+        """
+        visited = []
+        for entry in self.entries:
+            visited.append(entry["case_id"])
+            case = lib.deserialize_case(entry)
+            response, final_state = lib.execute(case)
+            if check is not None:
+                check(entry, response, final_state)
+        return visited
 
     def test_corpus_size_is_frozen(self):
         """A0 冻结的 corpus 规模必须原样保留（防静默删减）。"""
@@ -104,39 +134,62 @@ class TestGoldenReplay(unittest.TestCase):
 
     def test_every_case_is_compared(self):
         """
-        重放必须覆盖**全部** case，而非抽样。
+        证明 replay **实际调用了** ``lib.execute()``，且覆盖全部 case、顺序一致。
 
-        与 ``test_corpus_size_is_frozen`` 互补：后者锁规模，本用例锁"遍历确实
-        覆盖了每一个 case_id"（防止未来有人给遍历加上过滤条件）。
+        **不用**"从 corpus 读出的 case_id 与 corpus 自己比较" —— 那是同义反复：
+        它只证明 corpus 自洽，无法发现 replay 循环被截断（``entries[:10]``）
+        或被加上过滤条件。
+
+        因此这里对 ``lib.execute`` 安装**调用记录器**，断言的依据是
+        "真实发生过的执行"，而非"corpus 里有什么"。
         """
-        replayed = [entry["case_id"] for entry in self.entries]
-        self.assertEqual(len(replayed), EXPECTED_CORPUS_SIZE)
+        executed = []
+        original_execute = lib.execute
+
+        def recording_execute(case):
+            executed.append(case["case_id"])
+            return original_execute(case)
+
+        with patch.object(lib, "execute", side_effect=recording_execute):
+            visited = self._replay_all()
+
+        expected = [entry["case_id"] for entry in self.entries]
+
         self.assertEqual(
-            set(replayed),
-            {entry["case_id"] for entry in lib.load_corpus()["cases"]},
+            len(executed),
+            EXPECTED_CORPUS_SIZE,
+            f"A2 replay 必须实际执行全部 {EXPECTED_CORPUS_SIZE} 条 case",
+        )
+        self.assertEqual(
+            executed,
+            expected,
+            "A2 replay 的**实际执行**集合与顺序必须与冻结 corpus 一致",
+        )
+        self.assertEqual(
+            visited,
+            executed,
+            "遍历到的 case 与真正执行到的 case 必须一一对应",
         )
 
     def test_replay_response_bytes_match(self):
-        for entry in self.entries:
-            with self.subTest(case_id=entry["case_id"]):
-                case = lib.deserialize_case(entry)
-                response, _ = lib.execute(case)
-                self.assertEqual(
-                    response.hex(),
-                    entry["legacy_response"],
-                    f"{entry['case_id']}：重放响应与 legacy golden 不一致",
-                )
+        def check(entry, response, final_state):
+            self.assertEqual(
+                response.hex(),
+                entry["legacy_response"],
+                f"{entry['case_id']}：重放响应与 legacy golden 不一致",
+            )
+
+        self._replay_all(check)
 
     def test_replay_state_projection_matches(self):
-        for entry in self.entries:
-            with self.subTest(case_id=entry["case_id"]):
-                case = lib.deserialize_case(entry)
-                _, final_state = lib.execute(case)
-                self.assertEqual(
-                    final_state,
-                    entry["legacy_final_state"],
-                    f"{entry['case_id']}：重放后的状态投影与 golden 不一致",
-                )
+        def check(entry, response, final_state):
+            self.assertEqual(
+                final_state,
+                entry["legacy_final_state"],
+                f"{entry['case_id']}：重放后的状态投影与 golden 不一致",
+            )
+
+        self._replay_all(check)
 
     def test_execution_is_deterministic(self):
         """同一 case 连跑两次必须完全一致（证明重放可复现，§13.5）。"""
