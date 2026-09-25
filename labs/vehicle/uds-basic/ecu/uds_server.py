@@ -2151,13 +2151,17 @@ SERVICES = {
 # C1 Phase 1 —— 服务授权规格模型（ServiceSpec / guards）
 # ======================================================================
 #
-# **Phase 1 定位：只建模，不执行。**
+# **Phase 1 定位（历史）：只建模，不执行。**
 #
-# 下面的 ``SERVICE_SPECS`` 是 ``SERVICES`` 的**平行模型**；Phase 1 的 dispatcher
-# （``handle_uds_request``）**仍然**走 ``SERVICES[sid] -> handler``，**不执行**
-# 任何 ``guards``。切换执行路径属 **Phase 2**（设计文档 §14）。
+# 下面的 ``SERVICE_SPECS`` 是 ``SERVICES`` 的**平行模型**。Phase 1 **当时**，
+# dispatcher（``handle_uds_request``）仍走 ``SERVICES[sid] -> handler``，
+# **不执行**任何 ``guards`` —— 因此本节的引入**不改变任何可观测行为**，
+# 只使真实授权语义显式、可校验、可对拍。
 #
-# 因此本节的引入**不改变任何可观测行为**；它使当前真实授权语义显式、可校验、可对拍。
+# **当前状态**：Phase 2 Step 1 起 dispatcher 改为经 ``resolve_service_spec()``
+# 进入执行框架；**执行哪些 guard 由源码常量 ``_SPEC_EXECUTION`` 控制** ——
+# 已列入该白名单的 SID 执行其声明式 guard 链，未列入的 SID 跳过 guards。
+# Migration A 已启用 0x22。
 #
 # guards 的语义（见 ``service_spec.Guard``）：返回 NRC 表示拒绝，``None`` 表示通过；
 # **顺序即语义**，必须与下列 handler 内的既有 inline 顺序**逐级一致**。
@@ -2478,9 +2482,12 @@ def handle_uds_request(
                      覆盖**取代**而非合并；对已建模 SID 仅替换 handler、
                      **不**替换授权 —— 详见 ``resolve_service_spec``。
 
-    Phase 2：本函数已接入 ``ServiceSpec`` 执行框架，但**执行哪些 guard**
-    由 ``_SPEC_EXECUTION`` 决定。其当前值为空集，故 guards 恒不执行，
-    行为与 Phase 1 逐字节一致。
+    Phase 2：本函数经 ``resolve_service_spec()`` 进入 ``ServiceSpec`` 执行框架。
+    **执行哪些 guard 由源码常量 ``_SPEC_EXECUTION`` 决定**：已列入的 SID 执行其
+    声明式 guard 链，未列入的 SID 跳过 guards。当前 Migration A 已启用 0x22。
+
+    未迁移的 SID 因此仍走其 handler 的既有路径；guard 链与 handler 内检查
+    逐字节等价，故已迁移 SID 的可观测响应不变。
     """
     # 空请求必须在查表之前处理：空请求没有 SID 可取，
     # 若先执行 request[0] 会 IndexError。此处固定回显 SID 0x00 + NRC 0x13。
@@ -2502,7 +2509,8 @@ def handle_uds_request(
 
     # 按序求值授权 guard 链（**顺序即语义**），首个失败即短路。
     # guard 只判定、不产生响应；NRC 由这里统一组装成 7F <sid> <nrc>。
-    # 当前 ``_SPEC_EXECUTION`` 为空 → 本循环不执行任何 guard。
+    # 执行哪些 guard 由 ``_guards_for()`` 按 ``_SPEC_EXECUTION`` 白名单决定：
+    # 已迁移的 SID 执行其 guard 链，未迁移的 SID 返回空链（跳过本循环）。
     for guard in _guards_for(spec):
         nrc = guard(request, state)
         if nrc is not None:
