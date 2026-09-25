@@ -341,7 +341,7 @@ DiagnosticGateway.route(can_id, payload)                     # gateway.py:152
    避免网关暴露自身策略的存在与形状。
 2. **不撒谎**：返回 NRC 需要选一个语义上不成立的 NRC（ECU 根本没执行该服务，
    `7F 22 33` 之类会谎称 ECU 做了什么）。静默丢弃不产生关于 ECU 状态的虚假陈述。
-3. **可观测性的边界（⚠ 本设计的已知缺口）**：
+3. **可观测性的边界**：
    拒绝**不能**仅凭 `route()` 的返回值与其它 `[]` 情形区分 ——
    未知物理地址、功能寻址、以及"**放行但服务抑制正响应**"都会返回 `[]`。因此：
 
@@ -351,8 +351,195 @@ DiagnosticGateway.route(can_id, payload)                     # gateway.py:152
      而对**本身不修改状态的服务**（如 `3E 80` TesterPresent+suppress）
      该差异**也不存在**。
 
-   → 这构成 **C2-OQ-5（BLOCKING）**：C2-A2 的等价性对拍与 C2-A4 的 override 审计
-   都需要一个**明确可断言的策略决策信号**。**本设计未冻结该信号的形式。**
+   → 该缺口由 **C2-OD-9（§9.2）** 解决 —— 原则是
+   **两条语义严格分开**：
+
+   ```
+   wire observable（CAN/UDS 对外行为）  = **不变**
+   test/API observable                  = **显式的每次调用 trace**
+   ```
+
+   即：**不改变 `route()` 的返回契约，也不改变任何对外行为**；
+   决策可观测性由**调用方/测试显式请求**的旁路接口提供。
+
+### 9.2 C2-OD-9 —— Policy decision observability（**FROZEN**）
+
+> **C2-OD-9 —— 策略决策仅通过一个显式的"每次调用"trace 接口可观测；
+> `route()` 的返回契约与 wire 行为均保持不变。**
+
+#### 9.2.1 接口
+
+```
+route(can_id, payload)                -> list[RouteResult]                    # 契约不变
+route_with_trace(can_id, payload)     -> (list[RouteResult], PolicyTrace)     # 新增旁路观测
+```
+
+**为什么不能改 `route()` 的返回值**（明确排除 `GatewayResult(responses=…, decisions=…)`
+这类方案）：
+
+1. 修改现有**公共返回契约**；
+2. 会扩大 C2 的迁移范围；
+3. runtime 当前**直接消费** `list[RouteResult]`（`gateway_runtime.py:454`）；
+4. C1 已经采用"**保持行为契约、额外建立验证证据**"的思路；
+5. 决策信息属**测试/调用方观测**，不是总线 wire semantics。
+
+```
+正常生产调用：  route()
+需要决策证据：  route_with_trace()
+```
+
+#### 9.2.2 trace 必须是"单次调用"的产物
+
+```
+PolicyTrace
+    decisions: ordered sequence[PolicyDecision]      # 本次调用独有，不可变
+
+PolicyDecision
+    target          : int          # ECU 的 request_id
+    addressing_mode : "physical" | "functional"
+    sid             : int
+    allowed         : bool
+```
+
+**禁止**：
+
+```
+global last_decision / global policy_counter / module-level mutable trace
+把日志 grep 当作测试 oracle
+```
+
+必须满足 `call #1 trace ≠ call #2 trace`（互不污染）。
+
+#### 9.2.3 字段冻结
+
+| 字段 | 冻结值 | 理由 |
+|---|---|---|
+| `target` | **ECU 的 `request_id`**（`0x7E0` / `0x7E1` / `0x7E2`） | `request_id` 在路由层**本来就是寻址身份**，是稳定、唯一、可断言的 oracle。**禁止**用 `id(obj)` / `repr(obj)` / 对象身份 |
+| `addressing_mode` | **字符串 `"physical"` / `"functional"`** | 让测试报告直接表达语义；**禁止** `True/False`、`0/1` |
+| `sid` | `payload[0]` | 仅在 `payload != b""` **且**该请求按 **C2-OD-8** 进入策略求值时产生 decision |
+| `allowed` | `bool` | 唯一判定结果 |
+
+**刻意不纳入**（属 observability enhancement，非 authorization correctness 必要条件）：
+
+```
+reason / rule_id / message / timestamp / logger
+```
+
+最小 oracle `(target, addressing_mode, sid, allowed)` 已足以支撑
+A2 等价性对拍、A4 bypass 审计、functional per-ECU 证明；将来需要可直接扩展。
+
+#### 9.2.4 与 C2-OD-8 的关系（**不留歧义**）
+
+未进入策略求值的情形**不产生任何 decision 记录** ——
+**不得**把它们伪装成 `allowed = True`：
+
+| 情形 | `trace.decisions` |
+|---|---|
+| 未知物理 target（`route(0x7E5, …)`） | **`[]`** —— 是"**不进入 policy**"，不是 deny |
+| 空 payload（`route(0x7E0, b"")`） | **`[]`** —— 交由既有 handler/protocol 语义 |
+| 未知 SID | **`[]`** —— 保持 C2-OD-8；**不得**记为 `allowed=True` |
+
+#### 9.2.5 functional 寻址必须**逐 ECU**产生 decision
+
+```
+route_with_trace(0x7DF, payload)   （默认三 ECU）
+
+trace.decisions == [
+    PolicyDecision(target=0x7E0, addressing_mode="functional", sid=…, allowed=decision_A),
+    PolicyDecision(target=0x7E1, addressing_mode="functional", sid=…, allowed=decision_B),
+    PolicyDecision(target=0x7E2, addressing_mode="functional", sid=…, allowed=decision_C),
+]
+```
+
+**顺序必须等于 `self.ecus` 的确定性遍历顺序**（当前为 ECU_A / ECU_B / ECU_C）。
+**禁止** set / dict 无序遍历 / 对象身份顺序。
+测试必须能断言 `decision order == target traversal order`。
+
+#### 9.2.6 空策略 / default-allow 时的 trace（A1/A2 的核心证据）
+
+空策略按 **C2-OD-2** 的 `default-allow` ⇒ 对**实际进入策略求值**的 target：
+
+```
+decision.allowed == True
+```
+
+这使 C2-A1/A2 可以**同时**证明：
+
+```
+response unchanged  ∧  state unchanged  ∧  policy **确实被求值过**  ∧  decision = allow
+```
+
+而不只是看到 `route(...) == []`。
+
+#### 9.2.7 deny 时的 trace（两个维度严格分开）
+
+```
+trace :  PolicyDecision(..., allowed=False)
+wire  :  results == []
+         target.process() **不被调用**
+```
+
+#### 9.2.8 trace 必须是**真实求值**的产物
+
+`PolicyDecision` **只允许**在真正执行策略求值之后产生。
+
+**禁止**：
+
+```
+先执行策略、事后再"补写"一个 trace
+根据 results / state **事后推断** decision
+```
+
+正确结构（概念上）：
+
+```
+target resolved
+    ↓
+policy.evaluate(...)          ← 唯一产生 decision 的地方
+    ↓
+PolicyDecision
+    ↓
+trace.append(decision)
+    ↓
+if allowed:
+    target.process(...)
+```
+
+#### 9.2.9 `route()` 与 `route_with_trace()` 必须共用**同一个 route core**
+
+```
+route()              = route core，仅返回 results
+route_with_trace()   = **同一个** route core，返回 results + trace
+```
+
+**禁止**两套 routing 实现 —— 否则会出现"普通运行路径一套语义、测试路径另一套语义"，
+直接摧毁 C2-A2 的证明价值。
+
+#### 9.2.10 契约表（冻结）
+
+| 情形 | policy evaluated | trace record | wire result |
+|---|---|---|---|
+| known physical + valid SID | yes | **1** | existing behavior |
+| functional + valid SID | **yes, per ECU** | **N** | `[]` |
+| unknown physical target | **no** | **0** | `[]` |
+| empty payload | **no** | **0** | existing handler/protocol result |
+| unknown SID | **no** | **0** | existing handler result |
+| policy allow | yes | `allowed=true` | target may execute |
+| policy deny | yes | `allowed=false` | **no response** |
+
+> `N` = 参与广播的 ECU 数量（默认网段为 3）。
+
+#### 9.2.11 C2-A4 bypass 审计如何使用 trace
+
+```
+制造 policy deny
+    → route_with_trace(...)
+        → 断言 trace.decisions == [PolicyDecision(..., allowed=False)]
+        → **spy/monkeypatch `target.process()`，断言 call_count == 0**
+```
+
+这比单看 `results == []` 强得多 —— 它同时排除了
+"看起来被拒但其实 handler 被调用了"（§6.3 类问题的同型防线）。
 
 ---
 
@@ -456,15 +643,24 @@ route(0x7DF, payload):
 C2-A0  capture legacy Gateway golden
        （在**策略机制尚未引入**时捕获：route() 对 (can_id, payload) 的
          [(response_id, payload)] 与各 ECU 的 final state projection）
+       —— **无 policy trace 要求**（此时 trace 机制尚不存在）
 
-C2-A1  引入策略机制（空策略）
-       —— 必须证明"框架引入本身"零行为变更：空策略下 golden 逐字节不变
+C2-A1  引入**空策略 + trace 机制**
+       —— 必须证明"框架引入本身"零行为变更：
+          ① 空策略下 golden **逐字节不变**；
+          ② `route()` 的 **wire 行为不变**；
+          ③ 对**实际进入策略求值**的 target，`route_with_trace()` 产生
+             `allowed=True` 的 decision 记录（§9.2.6）—— 用于证明
+             "策略**确实被求值过**"，而不只是"什么都没发生"
 
 C2-A2  legacy ↔ policy 逐字节对拍（空策略）
+       —— 比较三个维度：**response** + **state projection** + **PolicyTrace 断言**
 
 C2-A3  full regression
 
 C2-A4  override / bypass 不变量审计（§12）
+       —— 使用**显式 DENY trace** + spy `target.process()` 断言 `call_count == 0`
+          （§9.2.11）；这比单看 `results == []` 强得多
 
 C2-A5  exit review
 ```
@@ -528,17 +724,26 @@ C2 明确不实现：
 **分级标准**：Blocking = 未决则会阻塞 C2 的**实现或迁移对拍**；
 Deferred = 属于未来架构议题，当前机制不被其阻塞。
 
-### 15.1 BLOCKING（必须在 C2 实现 / 对拍之前冻结）
+### 15.1 RESOLVED（原 BLOCKING，已由 C2-OD-9 冻结）
 
-| # | 问题 | 为何阻塞 | 不解决的后果 |
+| # | 问题 | 状态 | 解决方式 |
 |---|---|---|---|
-| **C2-OQ-5** | **策略决策如何对调用方与测试可观测？** 是否需要让 `route()`（或其伴随接口）暴露"本次是否被策略拒绝"？若需要，是返回值形态变更（**接口变更**）还是旁路信号（日志 / 计数器 / 决策记录）？ | C2-A2 的**等价性对拍**必须能断言"该请求被拒 / 被放行"；C2-A4 的 **override 审计**必须能断言"策略仍然生效"。按当前 §9.1，拒绝与"未知地址 / 功能寻址 / 放行但抑制响应"在返回值上**不可区分**，对**不修改状态的服务**连 `EcuState` 都相同 | 迁移阶段**无法写出有效的判定断言**；对拍会退化为"看起来通过了但什么都没验证" |
+| **C2-OQ-5** | 策略决策如何对调用方与测试可观测？ | **RESOLVED** —— 由 **C2-OD-9** 冻结 | 新增**显式、每次调用、有序**的旁路 trace 接口 `route_with_trace()`；`route()` 的返回契约与 wire 行为**均不变**。详见 **§9.2** |
 
-> **C2-OQ-5 是本设计新发现的缺口**（在 §9.1 理由 3 中给出实证）。
-> 它修正了本文件初稿中"拒绝在返回值上可观测"这一**不准确**的表述。
-> **在该问题冻结之前，不应进入 C2-A1/A2/A4。**
+> **审计历史保留**：C2-OQ-5 曾是本设计的 **BLOCKING** 缺口 —— 它源于
+> 本文件初稿中"拒绝在**返回值**上可观测"这一**不准确**表述（§9.1 理由 3
+> 已给出实证：`[]` 无法区分拒绝与未知地址 / 功能寻址 / 放行但抑制响应）。
+>
+> 该缺口现已由 **C2-OD-9** 解决，**wire 语义与 `route()` 契约均未改变**：
+> 决策可观测性走**独立的显式接口**，不影响任何 CAN/UDS 对外行为。
 
-### 15.2 DEFERRED（不阻塞 C2，属未来架构）
+### 15.2 BLOCKING
+
+**当前无 BLOCKING 项。**
+
+（C2-OQ-5 冻结后，剩余 Open Question 均不阻塞 C2 的实现与对拍。）
+
+### 15.3 DEFERRED（不阻塞 C2，属未来架构）
 
 | # | 问题 | 为何暂缓 | 归属 |
 |---|---|---|---|
@@ -569,6 +774,7 @@ Deferred = 属于未来架构议题，当前机制不被其阻塞。
 | **C2-OD-6** | `handler` / 拓扑 / transport / 构造路径的 override **不能**绕过策略 | **FROZEN** |
 | **C2-OD-7** | C2 用 SID 表达服务，天然容纳 C3 的 0x27；**不得**为 0x27 预置特殊分支 | **FROZEN** |
 | **C2-OD-8** | 未知物理 target / 未知 SID / 空 payload **不进入策略**，维持既有路由与 NRC 语义 | **FROZEN** |
+| **C2-OD-9** | **Policy decision observability**：策略决策仅通过**显式的每次调用有序 trace** 对调用方/测试可见；`route()` 的**返回类型与 wire 行为保持不变**（§9.2） | **FROZEN** |
 | Policy dimensions | `target` / `addressing_mode` / `SID`（**不含** payload 内容、session、source） | **FROZEN** |
 | C1 / C2 边界 | 需要读 `EcuState` 内部字段才能成立的规则属 **C1** | **FROZEN** |
 | 迁移策略 | 沿用 C1 六段式（capture → 空策略等价 → 对拍 → 回归 → override 审计 → exit） | **FROZEN** |
@@ -657,7 +863,7 @@ deployment **security posture** = ???       ← 不由 C2-OD-2 决定
 替代方案 default-deny 在引入瞬间改变全部 gateway 行为，
 使 C2-A2 的「等价性对拍」**不可能存在**（没有可比基线）。
 
-### Focus B —— C2-OD-3 拒绝语义（⚠ 含 BLOCKING 缺口）
+### Focus B —— deny 语义：**wire 不可见、trace 可见**（C2-OD-3 + C2-OD-9）
 
 已冻结的部分（§9.1 表格 1–10 行逐条给出）：
 
@@ -669,19 +875,26 @@ Gateway 是否合成 7F   → **否**
 使用什么 NRC          → **无 NRC**
 ```
 
-**⚠ 但存在一个未冻结的缺口（C2-OQ-5，BLOCKING）：**
+**原 BLOCKING 缺口（C2-OQ-5）已由 C2-OD-9 解决**，形成两条**严格分开**的语义：
 
-拒绝**无法**仅凭返回值与其它 `[]` 情形区分 —— 未知物理地址、功能寻址、
-以及「**放行但服务抑制正响应**」都返回 `[]`。拒绝的唯一可观测差异是
-"目标 ECU 的 `EcuState` 未变"，而对**本身不修改状态的服务**（如 `3E 80`）
-连该差异也不存在。
+```
+C2-OD-3  wire deny semantics        —— deny **在总线上不可见**
+C2-OD-9  decision observability     —— deny **通过显式 trace API 可见**
+```
 
-**后果**：C2-A2 的对拍与 C2-A4 的 override 审计**写不出有效断言**。
+即：
 
-**请在评审中决定** `C2-OQ-5`：策略决策是否需要（以及以何种形式）
-对调用方/测试可观测。若需要返回值形态变更，那是**接口变更**，须单独评审。
+| 维度 | deny 时 |
+|---|---|
+| wire（CAN/UDS 对外） | **不可见** —— 无帧、无 `7F`、无 NRC |
+| 显式 trace API（`route_with_trace`） | **可见** —— `PolicyDecision(..., allowed=False)`，且 `target.process()` 不被调用 |
+| `route()` 返回契约 | **不变**（`list[RouteResult]`） |
 
-> **在 C2-OQ-5 冻结之前，不应进入 C2-A1 / A2 / A4。**
+这正好解决 §9.1 理由 3 发现的问题：迁移阶段因此**可以写出有效的判定断言**
+（§9.2.11），而**不需要**改变任何对外行为。
+
+完整契约见 **§9.2.1–9.2.11**，其中 §9.2.10 给出七种情形的
+policy-evaluated / trace-record / wire-result 对照表。
 
 ### Focus C —— C2-OD-4 功能寻址逐 target 判定（请确认）
 
@@ -723,21 +936,25 @@ policy carrier:
 |---|---|---|
 | 1 | C1 / C2 authorization boundary（需读 `EcuState` 的规则属 C1） | §4 |
 | 2 | `default-allow` rationale（机制缺省 vs 部署姿态） | Focus A / §8.2 |
-| 3 | Gateway deny response semantics（含 **C2-OQ-5** 缺口） | Focus B / §9.1 |
+| 3 | Gateway deny response semantics（wire 不可见 / trace 可见） | Focus B / §9.1 + §9.2 |
 | 4 | functional addressing per-ECU semantics | Focus C / §10.2 |
 | 5 | multi-ECU isolation（判定单位与结论独立） | §11 |
 | 6 | override cannot bypass policy | Focus D / §12 |
 | 7 | C3 / 0x27 boundary（C2 不预置 0x27 分支） | §14 |
-| 8 | implementation observability（**= C2-OQ-5**） | §15.1 |
+| 8 | implementation observability（**C2-OD-9**，原 C2-OQ-5） | §9.2 / §15.1 |
 | 9 | legacy → policy migration feasibility（六段式 + 空策略等价） | §13 |
 | 10 | policy carrier | Focus E / §15.2 |
 
 ### 本次评审的放行条件
 
 ```
-C2-OQ-5 获得明确决定           ← **必须**（BLOCKING）
+C2-OQ-5（→ C2-OD-9）已冻结      ← **已完成**（本文件 §9.2）
 Focus A / C / D 明确确认
 Focus E 给出设计意见（不阻塞）
 ```
 
-满足后方可进入下一阶段（C2-A0 legacy Gateway golden capture）。
+> **原 BLOCKING 项已解除**：C2-OQ-5 已由 **C2-OD-9** 冻结（§9.2），
+> 且**未**改变 `route()` 契约或任何对外行为。
+> 当前 **无 BLOCKING 项**（§15.2）。
+
+满足上述确认后方可进入下一阶段（C2-A0 legacy Gateway golden capture）。
