@@ -431,8 +431,13 @@ class TestA2ReplayGateIsMeaningful(unittest.TestCase):
         )
 
     def test_non_migrated_services_still_skip_guards(self):
-        """反向对照：未迁移服务的 guards 必须仍被跳过（例如 0x2E）。"""
-        self.assertEqual(_guards_for(SERVICE_SPECS[0x2E]), ())
+        """
+        反向对照：**未迁移**服务的 guards 必须仍被跳过。
+
+        注意：本例**不能**再用 0x2E —— 它在 Migration B1 之后已经迁移
+        （`0x2E ∈ _SPEC_EXECUTION`）。改用仍未迁移的服务（如 0x3E TesterPresent）。
+        """
+        self.assertEqual(_guards_for(SERVICE_SPECS[0x3E]), ())
 
 
 if __name__ == "__main__":

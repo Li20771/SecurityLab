@@ -2389,12 +2389,12 @@ if 0x27 not in SPECS_EXCLUDED:
 #: 迁移进度（设计文档 §11.1 / §12.1，**严格 A → B 顺序**）：
 #:
 #: - Phase 2 Step 1（框架引入时）：``frozenset()`` —— 不迁移任何服务
-#: - **Migration A1（当前）：``{0x22}``** —— 仅 0x22 走 spec 执行路径
-#: - Migration B（0x2E）：``{0x22, 0x2E}``
+#: - Migration A1：``{0x22}`` —— 仅 0x22 走 spec 执行路径
+#: - **Migration B1（当前）：``{0x22, 0x2E}``** —— 0x2E 也已切换
 #:
 #: 未列入的 SID 走 ``()``，即 ``_guards_for()`` 恒返回空、guards 不执行，
 #: dispatcher 行为与其 legacy 路径完全一致。
-_SPEC_EXECUTION: frozenset[int] = frozenset({0x22})
+_SPEC_EXECUTION: frozenset[int] = frozenset({0x22, 0x2E})
 
 
 def _guards_for(
