@@ -199,6 +199,14 @@ run_unit() {
 
     echo
 
+    if "$PYTHON_BIN" "$TESTS_DIR/test_c2_a2_legacy_current_differential.py"; then
+        ok "C2 A2 legacy / current differential audit passed"
+    else
+        fail "C2 A2 legacy / current differential audit failed"
+    fi
+
+    echo
+
     if "$PYTHON_BIN" "$TESTS_DIR/test_dtc_unit.py"; then
         ok "0x19 ReadDTCInformation unit tests passed"
     else
