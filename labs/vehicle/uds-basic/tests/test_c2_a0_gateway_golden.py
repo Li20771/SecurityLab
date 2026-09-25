@@ -121,18 +121,43 @@ class TestCaptureProvenance(unittest.TestCase):
             self.corpus["state_projection_fields"], list(lib.STATE_PROJECTION_FIELDS)
         )
 
-    def test_policy_mechanism_still_absent_in_production(self):
+    def test_capture_guard_refuses_to_regenerate_the_legacy_oracle(self):
         """
-        A0 的 Golden 只有在"policy 机制尚不存在"时才代表 legacy 行为。
+        A0 的 Golden **只能在"policy 机制尚不存在"时捕获**。
 
-        若本用例失败 ⇒ 生产代码已引入 policy 符号 ⇒
-        该 Golden 的 legacy 语义前提已变，**A1 必须现在处理**，
-        而不是让 A0 的 corpus 被悄悄重新解读。
+        A1 之后机制已存在 ⇒ ``policy_execution_present()`` 为 True，
+        捕获脚本据此 **fail-closed（``exit 2``）**，使"C2-A2 的对拍基准被
+        静默重新生成"成为**不可能**。
+
+        .. note::
+
+           本用例是 A0 那条 live 断言的**阶段迁移**版本：
+           A0 时断言"机制不存在"；**A1 起**断言"机制存在 ⇒ 捕获被拒绝"。
+           两者锁定的是同一件事的两面，只是阶段不同。
+
+           历史事实 ``policy_execution = "absent"`` 仍由 corpus 头部保留
+           （见 ``test_policy_execution_was_absent_at_capture``），
+           不随阶段推进而变。
         """
-        self.assertFalse(
+        self.assertTrue(
             lib.policy_execution_present(),
-            "gateway.py 已出现 policy 机制符号 —— A0 的 legacy 前提已改变",
+            "A1 起 policy 机制应当存在；若为 False，说明阶段回退了",
         )
+
+    def test_default_gateway_ships_with_the_empty_policy(self):
+        """
+        A1 的**实时不变量**：机制已引入，但默认策略是**空策略**（C2-OD-2）。
+
+        这正是"框架引入本身零行为变更"在机制层的证据 ——
+        默认网关拿到的是 ``DEFAULT_POLICY``（全放行），不是任何实际策略。
+        """
+        from gateway import ADDRESSING_PHYSICAL, DEFAULT_POLICY, build_default_gateway
+
+        gw = build_default_gateway()
+        self.assertIs(gw.policy, DEFAULT_POLICY)
+        for ecu in gw.ecus:
+            with self.subTest(ecu=ecu.name):
+                self.assertTrue(DEFAULT_POLICY(ecu, ADDRESSING_PHYSICAL, 0x22))
 
 
 class TestSingleRequestInvariant(unittest.TestCase):
