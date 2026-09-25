@@ -65,7 +65,14 @@ def custom_handler(request: bytes, state: EcuState) -> bytes:
 
 
 #: 当前迁移阶段（设计 §11.1 / §12.1，**严格 A → B 顺序**）。
-MIGRATION_STAGE = "A1"
+#:
+#: ``A1`` → ``A2`` 只是**验证阶段的推进**：
+#:
+#:     A1  启用 0x22 的 spec execution         production 路径**改变**
+#:     A2  对 0x22 做 92 条 golden 逐字节对拍  production 路径**不变**
+#:
+#: 因此本常量从 ``A1`` 变为 ``A2`` 时，``EXPECTED_SPEC_EXECUTION`` **必须保持不变**。
+MIGRATION_STAGE = "A2"
 
 #: 该阶段下 ``uds_server._SPEC_EXECUTION`` 的**期望内容**。
 #:

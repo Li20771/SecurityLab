@@ -25,7 +25,9 @@ UDS Basic —— C1 Phase 2 Migration A0：0x22 legacy golden **重放**测试
 因此本文件**不**假定 ``_SPEC_EXECUTION`` 永远为空：
 
 - **A0 / Step 1**：重放走 legacy 路径 → 比较证明 corpus **自洽**；
-- **A1**：0x22 改走 spec 路径 → 比较即 **"legacy oracle ↔ spec 路径"的逐字节对拍**。
+- **A1**：0x22 改走 spec 路径；
+- **A2（当前）**：本文件的比较即 **"legacy oracle ↔ spec 路径"的正式对拍门禁**
+  —— 逐条比较 **response bytes** 与 **StateSnapshot**（§14.2）。
 
 "捕获必须处于 legacy 模式"这一前置条件**只由捕获脚本把关**，不放在本文件 ——
 否则阶段一推进，长期回归网就会因阶段变化而误报。
@@ -46,6 +48,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import c1_golden_lib as lib  # noqa: E402
+from uds_server import SERVICE_SPECS, _guards_for  # noqa: E402
 
 
 class TestCorpusProvenance(unittest.TestCase):
@@ -75,6 +78,14 @@ class TestCorpusProvenance(unittest.TestCase):
         self.assertEqual(corpus["state_projection_fields"], list(lib.STATE_PROJECTION_FIELDS))
 
 
+#: A0 捕获并冻结的 corpus 规模（设计 §11.3）。
+#:
+#: **精确相等**，而非"至少" —— 目的是让"有人静默删减 corpus"成为一个
+#: 立刻失败的事实。若未来合法地扩充，必须同时更新本常量，
+#: 使该变更在 diff 中**可见**。
+EXPECTED_CORPUS_SIZE = 92
+
+
 class TestGoldenReplay(unittest.TestCase):
     """§13 / §14 —— 逐条重放并比较 response 与 state projection。"""
 
@@ -83,8 +94,27 @@ class TestGoldenReplay(unittest.TestCase):
         cls.corpus = lib.load_corpus()
         cls.entries = cls.corpus["cases"]
 
-    def test_corpus_is_not_empty(self):
-        self.assertGreater(len(self.entries), 0)
+    def test_corpus_size_is_frozen(self):
+        """A0 冻结的 corpus 规模必须原样保留（防静默删减）。"""
+        self.assertEqual(
+            len(self.entries),
+            EXPECTED_CORPUS_SIZE,
+            f"0x22 golden corpus 必须保持冻结的 {EXPECTED_CORPUS_SIZE} 条 case",
+        )
+
+    def test_every_case_is_compared(self):
+        """
+        重放必须覆盖**全部** case，而非抽样。
+
+        与 ``test_corpus_size_is_frozen`` 互补：后者锁规模，本用例锁"遍历确实
+        覆盖了每一个 case_id"（防止未来有人给遍历加上过滤条件）。
+        """
+        replayed = [entry["case_id"] for entry in self.entries]
+        self.assertEqual(len(replayed), EXPECTED_CORPUS_SIZE)
+        self.assertEqual(
+            set(replayed),
+            {entry["case_id"] for entry in lib.load_corpus()["cases"]},
+        )
 
     def test_replay_response_bytes_match(self):
         for entry in self.entries:
@@ -312,6 +342,44 @@ class TestSingleRequestInvariant(unittest.TestCase):
 
         first.did_overrides[0x1234] = b"X"
         self.assertNotIn(0x1234, second.did_overrides)
+
+
+class TestA2ReplayGateIsMeaningful(unittest.TestCase):
+    """
+    §11.1 **A2** —— 本文件在当前阶段的对拍必须**真的是** A2 对拍。
+
+    A2 的全部价值在于"legacy oracle ↔ **spec 路径**"。若某天 0x22 被移出
+    ``_SPEC_EXECUTION``，重放会静默退化成 "legacy vs legacy" —— 仍然全绿，
+    但 A2 的覆盖面**凭空消失**，且仅在**另一个文件**里才会有测试失败。
+
+    本类把"本文件的对拍是否仍然经由 spec 路径"这件事，在**本文件内**显式锁定。
+
+    （白名单的**内容**仍由 ``test_c1_phase2_framework_unit.py`` 以阶段常量断言；
+    本类只断言"对拍路径确实经过了 guards"这一**本文件语义前提**。）
+    """
+
+    def test_0x22_is_enabled_in_the_whitelist(self):
+        self.assertIn(
+            lib.SID_READ,
+            lib._SPEC_EXECUTION,
+            "0x22 必须在 _SPEC_EXECUTION 中，否则本文件的重放不构成 A2 对拍",
+        )
+
+    def test_0x22_spec_actually_carries_guards(self):
+        self.assertTrue(
+            SERVICE_SPECS[lib.SID_READ].guards, "0x22 必须已建模 guard 链"
+        )
+
+    def test_guards_are_actually_evaluated_for_0x22(self):
+        """``_guards_for()`` 对 0x22 必须返回非空链 —— 即 guards 真的会执行。"""
+        self.assertTrue(
+            _guards_for(SERVICE_SPECS[lib.SID_READ]),
+            "0x22 的 guards 必须真的被求值，否则对拍未覆盖 guard 路径",
+        )
+
+    def test_non_migrated_services_still_skip_guards(self):
+        """反向对照：未迁移服务的 guards 必须仍被跳过（例如 0x2E）。"""
+        self.assertEqual(_guards_for(SERVICE_SPECS[0x2E]), ())
 
 
 if __name__ == "__main__":
