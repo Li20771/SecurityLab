@@ -25,6 +25,7 @@ UDS Basic —— C1 Phase 1 服务规格模型（``service_spec``）单元测试
     bash tests/run_tests.sh unit
 """
 
+import ast
 import itertools
 import os
 import sys
@@ -163,18 +164,35 @@ class TestModelStructure(unittest.TestCase):
 
     def test_model_is_not_executed_by_the_dispatcher(self):
         """
-        结构性证据：Phase 1 的 dispatcher **不引用** ``SERVICE_SPECS``。
+        结构性证据：``handle_uds_request()`` 的**函数体**不引用 ``SERVICE_SPECS``。
 
-        （行为证据见 ``TestModelAgreesWithLegacy``：即便把 spec 整体置空，
-        响应也不会变 —— 但这里用更直接的方式：检查 dispatcher 源码不引用它。）
+        行为证据见 ``TestModelAgreesWithLegacy``：Phase 1 的实际请求仍通过
+        ``handle_uds_request()`` 的 legacy ``SERVICES -> handler`` 路径执行；
+        模型本身只在测试侧被独立求值。
+
+        这里用 AST 精确定位 ``FunctionDef`` 的源码范围，只检查该函数体 ——
+        不依赖"从某个字符串 split 到文件末尾"（那会因该函数之后新增引用
+        ``SERVICE_SPECS`` 的代码而误报）。
         """
         with open(os.path.join(_ECU_DIR, "uds_server.py"), encoding="utf-8") as handle:
             source = handle.read()
 
-        dispatcher = source.split("def handle_uds_request(", 2)[-1]
+        dispatcher = next(
+            (
+                node
+                for node in ast.walk(ast.parse(source))
+                if isinstance(node, ast.FunctionDef) and node.name == "handle_uds_request"
+            ),
+            None,
+        )
+        self.assertIsNotNone(dispatcher, "未找到 handle_uds_request 定义")
+
+        body = ast.get_source_segment(source, dispatcher)
+        self.assertIsNotNone(body, "无法定位 handle_uds_request 的源码范围")
+
         self.assertNotIn(
             "SERVICE_SPECS",
-            dispatcher,
+            body,
             "Phase 1 的 dispatcher 不得引用 SERVICE_SPECS（切换执行路径属 Phase 2）",
         )
 

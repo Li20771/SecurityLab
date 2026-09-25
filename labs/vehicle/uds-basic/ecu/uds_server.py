@@ -2254,7 +2254,10 @@ def _guard_write_did_data_length(request: bytes, state: EcuState) -> int | None:
 
 def _build_service_specs() -> dict[int, service_spec.ServiceSpec[EcuState]]:
     """
-    构造 15 个已实现服务的完整 spec。
+    构造静态 ``SERVICES`` 中 **14 个**服务的完整 spec。
+
+    ``0x27`` SecurityAccess 属**动态注入**服务（不在静态表内），由
+    ``SPECS_EXCLUDED`` 显式记录，本函数**不**为它构造 spec（见该常量处说明）。
 
     授权语义**完全来自当前 inline 实现**：
 
