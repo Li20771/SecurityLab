@@ -1,15 +1,28 @@
 #!/usr/bin/env python3
 """
-UDS Basic —— C1 Phase 2 **Step 1：执行框架** 单元测试
+UDS Basic —— C1 Phase 2 **执行框架 + 迁移阶段** 单元测试
 
-范围严格限定为"框架引入"本身，**不迁移任何服务**：
+覆盖：
 
 1. ``resolve_service_spec()`` 的解析契约（设计文档 §6.5，OD-4 = A′）；
-2. ``_SPEC_EXECUTION`` / ``_guards_for()`` 的空白名单行为（§15.1）；
-3. dispatcher 接入框架后**行为逐字节不变**（§20.2 第 2 步）。
+2. ``_SPEC_EXECUTION`` / ``_guards_for()`` 在**当前迁移阶段**的行为（§15）；
+3. dispatcher 接入框架后与其 legacy 路径的**行为一致性**（§20.2）；
+4. **A1 定向激活证据**：0x22 的 guard 确已接管（§11.1）。
 
-**本文件不启用任何 guard**：``_SPEC_EXECUTION`` 必须保持 ``frozenset()``。
-0x22 / 0x2E 的迁移属 Migration A / B，**尚未开始**。
+**当前阶段：A1（Migration A）** —— 只有 0x22 走 ServiceSpec 执行路径：
+
+```
+_SPEC_EXECUTION = {0x22}      0x22 = ON
+                              0x2E = OFF
+                              0x27 = 不受影响（不在静态表，见 SPECS_EXCLUDED）
+```
+
+阶段推进（A1 → B1）时必须**同时**更新 ``uds_server._SPEC_EXECUTION`` 与
+本文件的 ``EXPECTED_SPEC_EXECUTION`` —— 使"某个 SID 被启用/停用"永远是一次
+**可见的、可 review 的**源码变更（§15.3：拒绝 feature flag / 环境变量切换）。
+
+完整 golden corpus 的逐字节对拍属 **A2**，由 ``test_c1_phase2_a0_golden.py`` 承担，
+本文件**不**重复它。
 
 设计出处：``docs/OQ_C1_PHASE2_MIGRATION_DESIGN_REVIEW_2026-09-25.md``
 
@@ -51,37 +64,66 @@ def custom_handler(request: bytes, state: EcuState) -> bytes:
     return bytes([0xAA, 0xBB])
 
 
-class TestSpecExecutionWhitelistEmpty(unittest.TestCase):
+#: 当前迁移阶段（设计 §11.1 / §12.1，**严格 A → B 顺序**）。
+MIGRATION_STAGE = "A1"
+
+#: 该阶段下 ``uds_server._SPEC_EXECUTION`` 的**期望内容**。
+#:
+#: 这里是**显式声明**，而不是"读取当前值再断言它自洽" —— 任何启用或停用
+#: 都必须同时改动 production 常量与本常量，从而在 diff 中**可见**。
+EXPECTED_SPEC_EXECUTION = frozenset({SID_READ})
+
+
+class TestSpecExecutionWhitelist(unittest.TestCase):
     """
-    §15.1 —— Step 1 的白名单**必须为空**，且 guards **一个都不执行**。
+    §15 —— ``_SPEC_EXECUTION`` 是**源码常量白名单**（非 feature flag），
+    决定哪些 SID 的 guards 真正被求值。
+
+    本类断言的是**当前阶段**（``MIGRATION_STAGE``）的白名单内容。
     """
 
-    def test_whitelist_is_empty_frozenset(self):
+    def test_whitelist_matches_declared_stage(self):
         self.assertIsInstance(_SPEC_EXECUTION, frozenset)
-        self.assertEqual(_SPEC_EXECUTION, frozenset())
+        self.assertEqual(
+            _SPEC_EXECUTION,
+            EXPECTED_SPEC_EXECUTION,
+            f"当前阶段 {MIGRATION_STAGE} 的白名单与声明不符",
+        )
 
-    def test_no_service_is_enabled(self):
-        """特别锁定：0x22 / 0x2E **不得**提前加入。"""
-        self.assertNotIn(SID_READ, _SPEC_EXECUTION)
+    def test_0x22_is_enabled(self):
+        """Migration A1：0x22 走 ServiceSpec 执行路径。"""
+        self.assertIn(SID_READ, _SPEC_EXECUTION)
+
+    def test_0x2E_is_still_disabled(self):
+        """**A1 不得顺带打开 0x2E** —— 那属 Migration B。"""
         self.assertNotIn(SID_WRITE, _SPEC_EXECUTION)
-        self.assertEqual(len(_SPEC_EXECUTION), 0)
 
-    def test_guards_for_returns_empty_for_every_modeled_service(self):
-        """
-        对 ``SERVICE_SPECS`` 中的**每一个** SID，``_guards_for()`` 都必须返回 ``()``
-        —— 这是"Step 1 不执行任何 guard"的结构性证明。
-        """
-        self.assertTrue(SERVICE_SPECS, "前置条件：静态服务必须已被建模")
-        for sid, spec in SERVICE_SPECS.items():
-            with self.subTest(sid=hex(sid)):
-                self.assertEqual(_guards_for(spec), ())
+    def test_0x27_is_not_in_the_whitelist(self):
+        """0x27 不在静态表内（OD-6 = 方案 A），也不得进入白名单。"""
+        self.assertNotIn(SID_SECURITY_ACCESS, _SPEC_EXECUTION)
 
-    def test_guards_for_returns_empty_even_when_spec_has_guards(self):
-        """0x22 / 0x2E 的 spec **确实带有** guards —— 但白名单为空时仍不执行。"""
-        for sid in (SID_READ, SID_WRITE):
+    def test_guards_are_executed_for_enabled_services(self):
+        """已启用 SID 的 guards 必须真的被求值（返回其完整 guard 链）。"""
+        self.assertTrue(SERVICE_SPECS[SID_READ].guards, "0x22 应已建模 guard")
+        self.assertEqual(
+            _guards_for(SERVICE_SPECS[SID_READ]), SERVICE_SPECS[SID_READ].guards
+        )
+
+    def test_guards_are_skipped_for_every_disabled_service(self):
+        """
+        未启用 SID 的 guards 必须恒被跳过 —— 结构性证明：
+        除白名单外的**每一个**已建模 SID，``_guards_for()`` 都返回 ``()``。
+        """
+        disabled = [sid for sid in SERVICE_SPECS if sid not in EXPECTED_SPEC_EXECUTION]
+        self.assertTrue(disabled, "应当仍有未迁移的服务")
+        for sid in disabled:
             with self.subTest(sid=hex(sid)):
-                self.assertTrue(SERVICE_SPECS[sid].guards, "该服务应已建模 guards")
                 self.assertEqual(_guards_for(SERVICE_SPECS[sid]), ())
+
+    def test_0x2E_guards_are_skipped_even_though_spec_has_guards(self):
+        """0x2E 的 spec **确实带有** 6 个 guards —— 但 A1 阶段仍不执行它们。"""
+        self.assertEqual(len(SERVICE_SPECS[SID_WRITE].guards), 6)
+        self.assertEqual(_guards_for(SERVICE_SPECS[SID_WRITE]), ())
 
 
 class TestResolveServiceSpecContract(unittest.TestCase):
@@ -215,9 +257,10 @@ class TestResolveServiceSpecContract(unittest.TestCase):
 
 class TestDispatcherFrameworkIntegration(unittest.TestCase):
     """
-    §20.2 第 2 步 —— 接入框架后 dispatcher **行为逐字节不变**。
+    §20.2 —— dispatcher 接入框架后，其可观测行为与其 legacy 路径一致。
 
-    因为 ``_SPEC_EXECUTION`` 为空，guards 恒被跳过，handler 仍以既有方式取得。
+    A1 起 0x22 会先经 guards；因为 guard 链是既有 inline 检查的**忠实模型**
+    （Phase 1 已由 28 例 model-vs-legacy 证明），故最终响应仍逐字节相同。
     """
 
     def _requests(self):
@@ -275,19 +318,13 @@ class TestDispatcherFrameworkIntegration(unittest.TestCase):
 
                     self.assertEqual(dispatched, expected)
 
-    def test_guards_are_not_executed_even_for_guarded_services(self):
+    def test_override_does_not_disable_guard_for_enabled_service(self):
         """
-        Step 1 的关键行为证据：对带 guards 的已建模 SID 装自定义 handler 时，
-        **guard 不会拦截它**（因为 ``_SPEC_EXECUTION`` 为空）。
+        A1（原 Step 1 用例的**语义翻转**）：对**已启用**的已建模 SID 装自定义
+        handler 时，guard 仍先执行并短路 —— ``custom_handler`` **不得被调用**。
 
-        请求 ``22 F1 87`` 在 LOCKED 下会被 0x22 的 guard 判为 ``0x33``；
-        但 Step 1 根本不执行 guard，故自定义 handler 仍被调用。
-
-        .. note::
-
-           **Migration A 会改变本用例** —— 按设计文档 §6.9，
-           ``_SPEC_EXECUTION = {0x22}`` 之后该请求必须返回 ``7F 22 33``
-           且 custom_handler 不得被调用。届时本用例应改写为断言"收紧已生效"。
+        这正是 OD-4 A′ 的关键安全语义：``services=`` 替换**实现**，不替换**授权**。
+        （Step 1 时白名单为空，guard 被跳过，故当时本用例断言相反结果。）
         """
         state = self._state(uds_types.SESSION_EXTENDED, uds_types.SECURITY_LOCKED)
         response = handle_uds_request(
@@ -295,8 +332,25 @@ class TestDispatcherFrameworkIntegration(unittest.TestCase):
         )
         self.assertEqual(
             response,
+            bytes([0x7F, SID_READ, uds_types.NRC_SECURITY_ACCESS_DENIED]),
+            "guard 必须先执行并短路；custom_handler 不得被调用",
+        )
+
+    def test_override_does_not_enable_guard_for_disabled_service(self):
+        """
+        反向对照：对**未启用**的 0x2E 装自定义 handler 时，其 guards **不执行**，
+        故 ``custom_handler`` 会被直接调用（0x2E 的迁移属 Migration B）。
+        """
+        state = self._state(uds_types.SESSION_DEFAULT, uds_types.SECURITY_LOCKED)
+        response = handle_uds_request(
+            bytes([SID_WRITE, 0xF1, 0x02]) + b"X",
+            state,
+            services={SID_WRITE: custom_handler},
+        )
+        self.assertEqual(
+            response,
             bytes([0xAA, 0xBB]),
-            "Step 1 不得执行 guard：自定义 handler 必须被直接调用",
+            "A1 不得执行 0x2E 的 guards：自定义 handler 必须被直接调用",
         )
 
     def test_override_semantics_unchanged(self):
@@ -335,6 +389,138 @@ class TestDispatcherFrameworkIntegration(unittest.TestCase):
                     handle_uds_request(bytes([sid, 0x01, 0x02]), EcuState()),
                     bytes([0x7F, sid, uds_types.NRC_SERVICE_NOT_SUPPORTED]),
                 )
+
+
+class TestA1_0x22GuardActivation(unittest.TestCase):
+    """
+    §11.1 **A1 定向激活证据** —— 0x22 的 guard 已经真正接管执行路径。
+
+    这是 A1 的**完成判据**：最小、定向、可读的行为证据。
+
+    完整 golden corpus（92 条）的逐字节对拍属 **A2**，由
+    ``test_c1_phase2_a0_golden.py`` 承担，本类**不**重复它。
+    """
+
+    def _state(self, session, security):
+        state = EcuState()
+        state.session = session
+        state.security_level = security
+        return state
+
+    # ---- 1. guard 确实拦截 ----
+
+    def test_guard_blocks_protected_did_while_locked(self):
+        """``22 F1 87`` + EXTENDED + LOCKED → ``7F 22 33``（guard 接管）。"""
+        self.assertEqual(
+            handle_uds_request(
+                bytes([SID_READ, 0xF1, 0x87]),
+                self._state(uds_types.SESSION_EXTENDED, uds_types.SECURITY_LOCKED),
+            ),
+            bytes([0x7F, SID_READ, uds_types.NRC_SECURITY_ACCESS_DENIED]),
+        )
+
+    def test_guard_blocks_unknown_did(self):
+        """``22 FF FF`` → ``7F 22 31``（guard 的未知 DID 分支）。"""
+        self.assertEqual(
+            handle_uds_request(
+                bytes([SID_READ, 0xFF, 0xFF]),
+                self._state(uds_types.SESSION_EXTENDED, uds_types.SECURITY_LEVEL1),
+            ),
+            bytes([0x7F, SID_READ, uds_types.NRC_REQUEST_OUT_OF_RANGE]),
+        )
+
+    def test_guard_blocks_malformed_length(self):
+        """``22``（长度 1）→ ``7F 22 13``（guard 的格式分支）。"""
+        self.assertEqual(
+            handle_uds_request(
+                bytes([SID_READ]),
+                self._state(uds_types.SESSION_EXTENDED, uds_types.SECURITY_LEVEL1),
+            ),
+            bytes([0x7F, SID_READ, uds_types.NRC_INCORRECT_MESSAGE_LENGTH]),
+        )
+
+    # ---- 2. guard 放行后 handler 执行 ----
+
+    def test_guard_passes_then_handler_returns_data(self):
+        """``22 F1 87`` + LEVEL1 → guard 放行 → handler 返回正响应。"""
+        response = handle_uds_request(
+            bytes([SID_READ, 0xF1, 0x87]),
+            self._state(uds_types.SESSION_EXTENDED, uds_types.SECURITY_LEVEL1),
+        )
+        self.assertEqual(response[0], 0x62)
+        self.assertEqual(response[1:3], bytes([0xF1, 0x87]))
+
+    def test_guard_passes_for_public_did_while_locked(self):
+        """公开 DID 在 LOCKED 下也应放行（guard 不误伤）。"""
+        response = handle_uds_request(
+            bytes([SID_READ, 0xF1, 0x90]),
+            self._state(uds_types.SESSION_DEFAULT, uds_types.SECURITY_LOCKED),
+        )
+        self.assertEqual(response[0], 0x62)
+
+    # ---- 3. 冻结锚点在 guard 接管后仍成立 ----
+
+    def test_frozen_anchor_protected_first_still_security_denied(self):
+        """``22 F1 87 FF FF`` → ``7F 22 33``（顺序语义未被改变）。"""
+        self.assertEqual(
+            handle_uds_request(
+                bytes([SID_READ, 0xF1, 0x87, 0xFF, 0xFF]),
+                self._state(uds_types.SESSION_EXTENDED, uds_types.SECURITY_LOCKED),
+            ),
+            bytes([0x7F, SID_READ, uds_types.NRC_SECURITY_ACCESS_DENIED]),
+        )
+
+    def test_frozen_anchor_unknown_first_still_out_of_range(self):
+        """``22 FF FF F1 87`` → ``7F 22 31``（first-failure-wins 未被改变）。"""
+        self.assertEqual(
+            handle_uds_request(
+                bytes([SID_READ, 0xFF, 0xFF, 0xF1, 0x87]),
+                self._state(uds_types.SESSION_EXTENDED, uds_types.SECURITY_LOCKED),
+            ),
+            bytes([0x7F, SID_READ, uds_types.NRC_REQUEST_OUT_OF_RANGE]),
+        )
+
+    # ---- 4. OD-4 A′：override 不能绕过授权，也不会丢失授权 ----
+
+    def test_override_handler_runs_only_after_guard_passes(self):
+        """guard 放行后，override 的 handler 才被调用（替换实现，不替换授权）。"""
+        response = handle_uds_request(
+            bytes([SID_READ, 0xF1, 0x87]),
+            self._state(uds_types.SESSION_EXTENDED, uds_types.SECURITY_LEVEL1),
+            services={SID_READ: custom_handler},
+        )
+        self.assertEqual(response, bytes([0xAA, 0xBB]))
+
+    def test_ecu_style_full_table_override_still_executes_guards(self):
+        """
+        复刻 ``ecu.py:374`` 的注入形态 ``{**SERVICES, ...}``：
+        0x22 的 handler 虽来自 override，guards 仍须生效
+        —— 即设计 §6.3 的"路径分叉"已被 A′ 消除。
+        """
+        self.assertEqual(
+            handle_uds_request(
+                bytes([SID_READ, 0xF1, 0x87]),
+                self._state(uds_types.SESSION_EXTENDED, uds_types.SECURITY_LOCKED),
+                services=dict(SERVICES),
+            ),
+            bytes([0x7F, SID_READ, uds_types.NRC_SECURITY_ACCESS_DENIED]),
+        )
+
+    # ---- 5. 0x27 不受影响 ----
+
+    def test_0x27_is_still_not_resolvable_from_the_static_path(self):
+        """
+        0x27 不在静态表内（OD-6 = 方案 A）：``resolve(0x27, None) is None``。
+        A1 只改白名单，未触碰 0x27 的注入边界。
+        """
+        self.assertIsNone(resolve_service_spec(SID_SECURITY_ACCESS, None))
+
+    def test_0x27_injected_handler_still_has_no_guards(self):
+        """0x27 由入口层注入时仍归一化为 ``guards=()``（不受 A1 影响）。"""
+        spec = resolve_service_spec(SID_SECURITY_ACCESS, {SID_SECURITY_ACCESS: custom_handler})
+        self.assertIsNotNone(spec)
+        self.assertEqual(spec.guards, ())
+        self.assertIs(spec.handler, custom_handler)
 
 
 if __name__ == "__main__":

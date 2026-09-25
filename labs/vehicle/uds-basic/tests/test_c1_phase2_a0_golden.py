@@ -10,13 +10,27 @@ UDS Basic —— C1 Phase 2 Migration A0：0x22 legacy golden **重放**测试
     response bytes          （§13）
     state projection        （§14.2：session / security_level / did_overrides）
 
-**A0 阶段**：``_SPEC_EXECUTION`` 为空，因此重放走的就是捕获时的同一条 legacy 路径，
-比较结果必然一致 —— 这证明的是 **corpus 自洽**（捕获端与重放端语义相同、执行确定）。
+**阶段职责分离**（设计 §11.1）：
 
-**A1 之后**：同一条 case 将通过 spec 路径执行，届时本文件的比较就变成
-**"legacy oracle ↔ spec 路径"的逐字节对拍**（设计 §11.1 的 A2）。
-因此本文件**不**假定 `_SPEC_EXECUTION` 永远为空；相反，它显式记录并断言
-当前处于哪个阶段，使阶段切换是**显式**的而非静默的。
+```
+捕获（A0）   capture_c1_phase2_a0_golden.py
+             **必须**在 _SPEC_EXECUTION 为空时执行
+             —— 该脚本自带 fail-closed 护栏，非空即 exit 2（§13.4）
+
+重放（长期） 本文件
+             把 corpus 当作**固定的 legacy oracle**，
+             用**当前** dispatcher 路径重放并逐条比较
+```
+
+因此本文件**不**假定 ``_SPEC_EXECUTION`` 永远为空：
+
+- **A0 / Step 1**：重放走 legacy 路径 → 比较证明 corpus **自洽**；
+- **A1**：0x22 改走 spec 路径 → 比较即 **"legacy oracle ↔ spec 路径"的逐字节对拍**。
+
+"捕获必须处于 legacy 模式"这一前置条件**只由捕获脚本把关**，不放在本文件 ——
+否则阶段一推进，长期回归网就会因阶段变化而误报。
+
+白名单本身的内容由 ``test_c1_phase2_framework_unit.py`` 以**显式阶段常量**断言。
 
 运行：
 
@@ -34,21 +48,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import c1_golden_lib as lib  # noqa: E402
 
 
-class TestA0Preconditions(unittest.TestCase):
-    """A0 的前置条件：corpus 必须是在 legacy 模式下捕获的。"""
+class TestCorpusProvenance(unittest.TestCase):
+    """
+    corpus 的**来源**必须可追溯：它是在 legacy 模式下捕获的。
 
-    def test_spec_execution_whitelist_is_still_empty(self):
-        """
-        A0 **不迁移任何服务**：``_SPEC_EXECUTION`` 必须仍为空集。
+    注意：这里检查的是 corpus **头部记录的捕获时状态**（历史事实），
+    而**不是**当前 ``_SPEC_EXECUTION`` 的值 —— 后者随迁移阶段推进而变，
+    其对错由 ``test_c1_phase2_framework_unit.py`` 按阶段常量断言。
 
-        这条断言使"某个 SID 被提前加入白名单"成为一个**会立刻失败**的事实，
-        而不是等到对拍时才被察觉。
-        """
-        self.assertEqual(
-            lib._SPEC_EXECUTION,
-            frozenset(),
-            "A0 阶段不得迁移任何服务；加入 SID 属 Migration A1",
-        )
+    "捕获时必须为 legacy" 的**实时**护栏保留在捕获脚本内（fail-closed，exit 2）。
+    """
 
     def test_corpus_header_declares_legacy_mode(self):
         corpus = lib.load_corpus()
