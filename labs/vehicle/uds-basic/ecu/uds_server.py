@@ -45,7 +45,7 @@ UDS Basic —— ECU 运行时状态与服务处理
 """
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import dtc_runtime
 import keygen
@@ -121,6 +121,7 @@ __all__ = [
     "service_transfer_data",
     "service_request_transfer_exit",
     "service_request_file_transfer",
+    "resolve_service_spec",
     "handle_uds_request",
 ]
 
@@ -2361,6 +2362,104 @@ if 0x27 not in SPECS_EXCLUDED:
     raise ValueError("0x27 SecurityAccess 必须显式出现在 SPECS_EXCLUDED 中")
 
 
+# ======================================================================
+# C1 Phase 2 —— ServiceSpec 执行框架
+# ======================================================================
+#
+# Phase 2 的目标：把 dispatcher 从 ``SERVICES[sid] -> handler`` 切到
+# ``resolve spec -> ordered guards -> handler``，但**可观测响应字节不变**。
+#
+# 迁移按**服务逐个**进行（先 0x22，再 0x2E），因此执行路径的切换必须是
+# **per-SID 可开关**的 —— 见 ``_SPEC_EXECUTION``。
+#
+# 设计出处：``docs/OQ_C1_PHASE2_MIGRATION_DESIGN_REVIEW_2026-09-25.md``
+# （OD-4 = A′、OD-5、OD-6、§9 dispatcher 架构、§15 rollback、§20.2 实施顺序）。
+
+
+#: 已切换到 ``ServiceSpec`` 执行路径（即 guards 会被真正求值）的 SID 集合。
+#:
+#: **源码常量，不是 feature flag**（设计文档 §15.3）：
+#: 回滚必须是一次**可审计的代码变更**（留下 git 历史与 review 记录），
+#: 而不是一次环境配置变更 —— 后者会让同一 commit 在不同环境行为不同。
+#:
+#: 迁移进度（设计文档 §11.1 / §12.1，**严格 A → B 顺序**）：
+#:
+#: - Phase 2 Step 1（本文件引入框架时）：``frozenset()`` —— **不迁移任何服务**
+#: - Migration A（0x22）：``{0x22}``
+#: - Migration B（0x2E）：``{0x22, 0x2E}``
+#:
+#: 为空时 ``_guards_for()`` 恒返回 ``()``，dispatcher 行为与 Phase 1 完全一致。
+_SPEC_EXECUTION: frozenset[int] = frozenset()
+
+
+def _guards_for(
+    spec: service_spec.ServiceSpec[EcuState],
+) -> tuple[service_spec.Guard[EcuState], ...]:
+    """
+    返回**当前应当执行**的 guard 链。
+
+    SID 已在 ``_SPEC_EXECUTION`` 中 → 返回 ``spec.guards``（顺序即语义）；
+    否则返回 ``()``（该服务仍走 legacy 逐字路径，guards **不执行**）。
+
+    这使"迁移某个服务"与"引入执行框架"成为两件可分离的事：
+    框架先落地并全量回归，再逐 SID 打开。
+    """
+    return spec.guards if spec.sid in _SPEC_EXECUTION else ()
+
+
+def resolve_service_spec(
+    sid: int,
+    services: Mapping[int, Callable[[bytes, EcuState], bytes]] | None,
+) -> service_spec.ServiceSpec[EcuState] | None:
+    """
+    把 ``(sid, services)`` 解析为一个 ``ServiceSpec``；``None`` 表示未注册。
+
+    **纯函数**：不读全局可变状态、无副作用、**不调用任何 guard**。
+    解析与执行分离，使本函数可被独立单测。
+
+    契约（设计文档 §6.5，OD-4 = A′）：
+
+    ``services is None``
+        直接取 ``SERVICE_SPECS``。
+
+    ``services`` 非空
+        override 表**取代而非合并**（既有契约，N6）：
+        因此 **SID 的存在性由 override 决定** —— 未列出的 SID → ``None``
+        → dispatcher 返回 ``7F <sid> 11``。
+
+        - SID **不在** ``SERVICE_SPECS``（典型：0x27 动态注入、测试自定义 SID）
+          → 构造 ``ServiceSpec(guards=())``。
+        - SID **在** ``SERVICE_SPECS``（已建模）
+          → ``replace(base, handler=override_handler)``：
+            **handler 可被覆盖，guards 保留自 ``SERVICE_SPECS``。**
+
+    最后一条即 §6.5.1 的**有意收紧**：``services=`` 覆盖的是**实现**，
+    **不是授权** —— 调用方无法通过传入自定义 handler 来绕过该 SID 的 guards。
+    （Phase 1 无此语义，因为 Phase 1 根本不执行 guards。）
+    """
+    if services is None:
+        return SERVICE_SPECS.get(sid)
+
+    handler = services.get(sid)
+
+    if handler is None:
+        # 覆盖表取代而非合并：未列出的 SID 视为未注册。
+        return None
+
+    base = SERVICE_SPECS.get(sid)
+
+    if base is None:
+        # 静态表未建模的 SID：无声明式授权，guards 为空。
+        return service_spec.ServiceSpec[EcuState](
+            sid=sid,
+            handler=handler,
+            guards=(),
+        )
+
+    # 已建模 SID：保留授权链，仅替换 handler（OD-4 A′）。
+    return replace(base, handler=handler)
+
+
 def handle_uds_request(
     request: bytes,
     state: EcuState,
@@ -2372,8 +2471,15 @@ def handle_uds_request(
 
     :param request: 原始 UDS 请求字节
     :param state:   目标 ECU 状态（显式传入，不使用隐式全局状态）
-    :param services: 可选的服务表覆盖。为 None 时使用静态 ``SERVICES``；
+    :param services: 可选的服务表覆盖。为 None 时使用静态服务规格表
+                     （两者均经 ``resolve_service_spec`` 解析）；
                      入口层借助它注入需要请求时依赖的服务条目（0x27）。
+                     覆盖**取代**而非合并；对已建模 SID 仅替换 handler、
+                     **不**替换授权 —— 详见 ``resolve_service_spec``。
+
+    Phase 2：本函数已接入 ``ServiceSpec`` 执行框架，但**执行哪些 guard**
+    由 ``_SPEC_EXECUTION`` 决定。其当前值为空集，故 guards 恒不执行，
+    行为与 Phase 1 逐字节一致。
     """
     # 空请求必须在查表之前处理：空请求没有 SID 可取，
     # 若先执行 request[0] 会 IndexError。此处固定回显 SID 0x00 + NRC 0x13。
@@ -2384,18 +2490,24 @@ def handle_uds_request(
 
     service = request[0]
 
-    table = SERVICES if services is None else services
+    spec = resolve_service_spec(service, services)
 
-    handler = table.get(service)
-
-    if handler is None:
+    if spec is None:
         # 未注册的 SID：回显请求 SID + NRC 0x11。
         # 不额外做长度检查；尾随负载一并忽略。
         return uds_types.negative_response(
             service, uds_types.NRC_SERVICE_NOT_SUPPORTED
         )
 
-    return handler(request, state)
+    # 按序求值授权 guard 链（**顺序即语义**），首个失败即短路。
+    # guard 只判定、不产生响应；NRC 由这里统一组装成 7F <sid> <nrc>。
+    # 当前 ``_SPEC_EXECUTION`` 为空 → 本循环不执行任何 guard。
+    for guard in _guards_for(spec):
+        nrc = guard(request, state)
+        if nrc is not None:
+            return uds_types.negative_response(service, nrc)
+
+    return spec.handler(request, state)
 
 
 if __name__ == "__main__":

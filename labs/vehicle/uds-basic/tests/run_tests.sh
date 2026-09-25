@@ -143,6 +143,14 @@ run_unit() {
 
     echo
 
+    if "$PYTHON_BIN" "$TESTS_DIR/test_c1_phase2_framework_unit.py"; then
+        ok "C1 phase 2 execution framework unit tests passed"
+    else
+        fail "C1 phase 2 framework tests failed"
+    fi
+
+    echo
+
     if "$PYTHON_BIN" "$TESTS_DIR/test_dtc_unit.py"; then
         ok "0x19 ReadDTCInformation unit tests passed"
     else
