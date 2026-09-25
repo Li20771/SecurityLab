@@ -1,0 +1,1184 @@
+{
+  "schema_version": 2,
+  "sid": 46,
+  "sid_hex": "0x2E",
+  "target_sid": 46,
+  "target_execution_mode": "legacy",
+  "description": "C1 Phase 2 Migration B0 —— 0x2E legacy golden corpus",
+  "captured_at_commit": "19d146bf931b78e143d72af22dd10f05f2708f9a",
+  "dispatcher_mode": "legacy",
+  "spec_execution_at_capture": [
+    34
+  ],
+  "state_projection_fields": [
+    "session",
+    "security_level",
+    "did_overrides"
+  ],
+  "cases": [
+    {
+      "case_id": "L1-s01-k00",
+      "description": "rung① 长度：只有 SID，长度 1",
+      "request": "2e",
+      "initial_state": {
+        "session": 1,
+        "security_level": 0,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e13",
+      "legacy_final_state": {
+        "session": 1,
+        "security_level": 0,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "L1-s01-k01",
+      "description": "rung① 长度：只有 SID，长度 1",
+      "request": "2e",
+      "initial_state": {
+        "session": 1,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e13",
+      "legacy_final_state": {
+        "session": 1,
+        "security_level": 1,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "L1-s03-k00",
+      "description": "rung① 长度：只有 SID，长度 1",
+      "request": "2e",
+      "initial_state": {
+        "session": 3,
+        "security_level": 0,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e13",
+      "legacy_final_state": {
+        "session": 3,
+        "security_level": 0,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "L1-s03-k01",
+      "description": "rung① 长度：只有 SID，长度 1",
+      "request": "2e",
+      "initial_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e13",
+      "legacy_final_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "L1-s02-k00",
+      "description": "rung① 长度：只有 SID，长度 1",
+      "request": "2e",
+      "initial_state": {
+        "session": 2,
+        "security_level": 0,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e13",
+      "legacy_final_state": {
+        "session": 2,
+        "security_level": 0,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "L1-s02-k01",
+      "description": "rung① 长度：只有 SID，长度 1",
+      "request": "2e",
+      "initial_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e13",
+      "legacy_final_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "L2-s01-k00",
+      "description": "rung① 长度：长度 2，DID 不完整",
+      "request": "2ef1",
+      "initial_state": {
+        "session": 1,
+        "security_level": 0,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e13",
+      "legacy_final_state": {
+        "session": 1,
+        "security_level": 0,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "L2-s01-k01",
+      "description": "rung① 长度：长度 2，DID 不完整",
+      "request": "2ef1",
+      "initial_state": {
+        "session": 1,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e13",
+      "legacy_final_state": {
+        "session": 1,
+        "security_level": 1,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "L2-s03-k00",
+      "description": "rung① 长度：长度 2，DID 不完整",
+      "request": "2ef1",
+      "initial_state": {
+        "session": 3,
+        "security_level": 0,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e13",
+      "legacy_final_state": {
+        "session": 3,
+        "security_level": 0,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "L2-s03-k01",
+      "description": "rung① 长度：长度 2，DID 不完整",
+      "request": "2ef1",
+      "initial_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e13",
+      "legacy_final_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "L2-s02-k00",
+      "description": "rung① 长度：长度 2，DID 不完整",
+      "request": "2ef1",
+      "initial_state": {
+        "session": 2,
+        "security_level": 0,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e13",
+      "legacy_final_state": {
+        "session": 2,
+        "security_level": 0,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "L2-s02-k01",
+      "description": "rung① 长度：长度 2，DID 不完整",
+      "request": "2ef1",
+      "initial_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e13",
+      "legacy_final_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "L3-s01-k00",
+      "description": "rung① 长度：长度 3，数据为空（仍违反 len>=4）",
+      "request": "2ef102",
+      "initial_state": {
+        "session": 1,
+        "security_level": 0,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e13",
+      "legacy_final_state": {
+        "session": 1,
+        "security_level": 0,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "L3-s01-k01",
+      "description": "rung① 长度：长度 3，数据为空（仍违反 len>=4）",
+      "request": "2ef102",
+      "initial_state": {
+        "session": 1,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e13",
+      "legacy_final_state": {
+        "session": 1,
+        "security_level": 1,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "L3-s03-k00",
+      "description": "rung① 长度：长度 3，数据为空（仍违反 len>=4）",
+      "request": "2ef102",
+      "initial_state": {
+        "session": 3,
+        "security_level": 0,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e13",
+      "legacy_final_state": {
+        "session": 3,
+        "security_level": 0,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "L3-s03-k01",
+      "description": "rung① 长度：长度 3，数据为空（仍违反 len>=4）",
+      "request": "2ef102",
+      "initial_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e13",
+      "legacy_final_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "L3-s02-k00",
+      "description": "rung① 长度：长度 3，数据为空（仍违反 len>=4）",
+      "request": "2ef102",
+      "initial_state": {
+        "session": 2,
+        "security_level": 0,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e13",
+      "legacy_final_state": {
+        "session": 2,
+        "security_level": 0,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "L3-s02-k01",
+      "description": "rung① 长度：长度 3，数据为空（仍违反 len>=4）",
+      "request": "2ef102",
+      "initial_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e13",
+      "legacy_final_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "D1-s01-k00",
+      "description": "rung② 未知 DID 0xFFFF",
+      "request": "2effff58",
+      "initial_state": {
+        "session": 1,
+        "security_level": 0,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e31",
+      "legacy_final_state": {
+        "session": 1,
+        "security_level": 0,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "D1-s01-k01",
+      "description": "rung② 未知 DID 0xFFFF",
+      "request": "2effff58",
+      "initial_state": {
+        "session": 1,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e31",
+      "legacy_final_state": {
+        "session": 1,
+        "security_level": 1,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "D1-s03-k00",
+      "description": "rung② 未知 DID 0xFFFF",
+      "request": "2effff58",
+      "initial_state": {
+        "session": 3,
+        "security_level": 0,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e31",
+      "legacy_final_state": {
+        "session": 3,
+        "security_level": 0,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "D1-s03-k01",
+      "description": "rung② 未知 DID 0xFFFF",
+      "request": "2effff58",
+      "initial_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e31",
+      "legacy_final_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "D1-s02-k00",
+      "description": "rung② 未知 DID 0xFFFF",
+      "request": "2effff58",
+      "initial_state": {
+        "session": 2,
+        "security_level": 0,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e31",
+      "legacy_final_state": {
+        "session": 2,
+        "security_level": 0,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "D1-s02-k01",
+      "description": "rung② 未知 DID 0xFFFF",
+      "request": "2effff58",
+      "initial_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e31",
+      "legacy_final_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "D2-s01-k00",
+      "description": "rung② 未知 DID 0x0000",
+      "request": "2e000058",
+      "initial_state": {
+        "session": 1,
+        "security_level": 0,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e31",
+      "legacy_final_state": {
+        "session": 1,
+        "security_level": 0,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "D2-s01-k01",
+      "description": "rung② 未知 DID 0x0000",
+      "request": "2e000058",
+      "initial_state": {
+        "session": 1,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e31",
+      "legacy_final_state": {
+        "session": 1,
+        "security_level": 1,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "D2-s03-k00",
+      "description": "rung② 未知 DID 0x0000",
+      "request": "2e000058",
+      "initial_state": {
+        "session": 3,
+        "security_level": 0,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e31",
+      "legacy_final_state": {
+        "session": 3,
+        "security_level": 0,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "D2-s03-k01",
+      "description": "rung② 未知 DID 0x0000",
+      "request": "2e000058",
+      "initial_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e31",
+      "legacy_final_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "D2-s02-k00",
+      "description": "rung② 未知 DID 0x0000",
+      "request": "2e000058",
+      "initial_state": {
+        "session": 2,
+        "security_level": 0,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e31",
+      "legacy_final_state": {
+        "session": 2,
+        "security_level": 0,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "D2-s02-k01",
+      "description": "rung② 未知 DID 0x0000",
+      "request": "2e000058",
+      "initial_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e31",
+      "legacy_final_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "W-s01-k00",
+      "description": "rung③④⑤⑥ 可写 DID 全状态矩阵",
+      "request": "2ef10258",
+      "initial_state": {
+        "session": 1,
+        "security_level": 0,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e7f",
+      "legacy_final_state": {
+        "session": 1,
+        "security_level": 0,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "W-s01-k01",
+      "description": "rung③④⑤⑥ 可写 DID 全状态矩阵",
+      "request": "2ef10258",
+      "initial_state": {
+        "session": 1,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e7f",
+      "legacy_final_state": {
+        "session": 1,
+        "security_level": 1,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "W-s03-k00",
+      "description": "rung③④⑤⑥ 可写 DID 全状态矩阵",
+      "request": "2ef10258",
+      "initial_state": {
+        "session": 3,
+        "security_level": 0,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e33",
+      "legacy_final_state": {
+        "session": 3,
+        "security_level": 0,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "W-s03-k01",
+      "description": "rung③④⑤⑥ 可写 DID 全状态矩阵",
+      "request": "2ef10258",
+      "initial_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "6ef102",
+      "legacy_final_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {
+          "f102": "58"
+        }
+      }
+    },
+    {
+      "case_id": "W-s02-k00",
+      "description": "rung③④⑤⑥ 可写 DID 全状态矩阵",
+      "request": "2ef10258",
+      "initial_state": {
+        "session": 2,
+        "security_level": 0,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e33",
+      "legacy_final_state": {
+        "session": 2,
+        "security_level": 0,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "W-s02-k01",
+      "description": "rung③④⑤⑥ 可写 DID 全状态矩阵",
+      "request": "2ef10258",
+      "initial_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "6ef102",
+      "legacy_final_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {
+          "f102": "58"
+        }
+      }
+    },
+    {
+      "case_id": "R1-f190-s01-k00",
+      "description": "rung⑤ 已知只读 DID 0xF190",
+      "request": "2ef19058",
+      "initial_state": {
+        "session": 1,
+        "security_level": 0,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e7f",
+      "legacy_final_state": {
+        "session": 1,
+        "security_level": 0,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "R1-f190-s01-k01",
+      "description": "rung⑤ 已知只读 DID 0xF190",
+      "request": "2ef19058",
+      "initial_state": {
+        "session": 1,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e7f",
+      "legacy_final_state": {
+        "session": 1,
+        "security_level": 1,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "R1-f190-s03-k00",
+      "description": "rung⑤ 已知只读 DID 0xF190",
+      "request": "2ef19058",
+      "initial_state": {
+        "session": 3,
+        "security_level": 0,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e33",
+      "legacy_final_state": {
+        "session": 3,
+        "security_level": 0,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "R1-f190-s03-k01",
+      "description": "rung⑤ 已知只读 DID 0xF190",
+      "request": "2ef19058",
+      "initial_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e22",
+      "legacy_final_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "R1-f190-s02-k00",
+      "description": "rung⑤ 已知只读 DID 0xF190",
+      "request": "2ef19058",
+      "initial_state": {
+        "session": 2,
+        "security_level": 0,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e33",
+      "legacy_final_state": {
+        "session": 2,
+        "security_level": 0,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "R1-f190-s02-k01",
+      "description": "rung⑤ 已知只读 DID 0xF190",
+      "request": "2ef19058",
+      "initial_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e22",
+      "legacy_final_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "R2-f180-s01-k00",
+      "description": "rung⑤ 已知只读 DID 0xF180",
+      "request": "2ef18058",
+      "initial_state": {
+        "session": 1,
+        "security_level": 0,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e7f",
+      "legacy_final_state": {
+        "session": 1,
+        "security_level": 0,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "R2-f180-s01-k01",
+      "description": "rung⑤ 已知只读 DID 0xF180",
+      "request": "2ef18058",
+      "initial_state": {
+        "session": 1,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e7f",
+      "legacy_final_state": {
+        "session": 1,
+        "security_level": 1,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "R2-f180-s03-k00",
+      "description": "rung⑤ 已知只读 DID 0xF180",
+      "request": "2ef18058",
+      "initial_state": {
+        "session": 3,
+        "security_level": 0,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e33",
+      "legacy_final_state": {
+        "session": 3,
+        "security_level": 0,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "R2-f180-s03-k01",
+      "description": "rung⑤ 已知只读 DID 0xF180",
+      "request": "2ef18058",
+      "initial_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e22",
+      "legacy_final_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "R2-f180-s02-k00",
+      "description": "rung⑤ 已知只读 DID 0xF180",
+      "request": "2ef18058",
+      "initial_state": {
+        "session": 2,
+        "security_level": 0,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e33",
+      "legacy_final_state": {
+        "session": 2,
+        "security_level": 0,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "R2-f180-s02-k01",
+      "description": "rung⑤ 已知只读 DID 0xF180",
+      "request": "2ef18058",
+      "initial_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e22",
+      "legacy_final_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "R3-f187-s01-k00",
+      "description": "rung⑤ 已知只读 DID 0xF187",
+      "request": "2ef18758",
+      "initial_state": {
+        "session": 1,
+        "security_level": 0,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e7f",
+      "legacy_final_state": {
+        "session": 1,
+        "security_level": 0,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "R3-f187-s01-k01",
+      "description": "rung⑤ 已知只读 DID 0xF187",
+      "request": "2ef18758",
+      "initial_state": {
+        "session": 1,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e7f",
+      "legacy_final_state": {
+        "session": 1,
+        "security_level": 1,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "R3-f187-s03-k00",
+      "description": "rung⑤ 已知只读 DID 0xF187",
+      "request": "2ef18758",
+      "initial_state": {
+        "session": 3,
+        "security_level": 0,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e33",
+      "legacy_final_state": {
+        "session": 3,
+        "security_level": 0,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "R3-f187-s03-k01",
+      "description": "rung⑤ 已知只读 DID 0xF187",
+      "request": "2ef18758",
+      "initial_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e22",
+      "legacy_final_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "R3-f187-s02-k00",
+      "description": "rung⑤ 已知只读 DID 0xF187",
+      "request": "2ef18758",
+      "initial_state": {
+        "session": 2,
+        "security_level": 0,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e33",
+      "legacy_final_state": {
+        "session": 2,
+        "security_level": 0,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "R3-f187-s02-k01",
+      "description": "rung⑤ 已知只读 DID 0xF187",
+      "request": "2ef18758",
+      "initial_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e22",
+      "legacy_final_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "N01-s03-k01",
+      "description": "rung⑥ 数据长度 1（下界（合法））",
+      "request": "2ef10258",
+      "initial_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "6ef102",
+      "legacy_final_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {
+          "f102": "58"
+        }
+      }
+    },
+    {
+      "case_id": "N01-s02-k01",
+      "description": "rung⑥ 数据长度 1（下界（合法））",
+      "request": "2ef10258",
+      "initial_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "6ef102",
+      "legacy_final_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {
+          "f102": "58"
+        }
+      }
+    },
+    {
+      "case_id": "N02-s03-k01",
+      "description": "rung⑥ 数据长度 2（合法）",
+      "request": "2ef1025858",
+      "initial_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "6ef102",
+      "legacy_final_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {
+          "f102": "5858"
+        }
+      }
+    },
+    {
+      "case_id": "N02-s02-k01",
+      "description": "rung⑥ 数据长度 2（合法）",
+      "request": "2ef1025858",
+      "initial_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "6ef102",
+      "legacy_final_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {
+          "f102": "5858"
+        }
+      }
+    },
+    {
+      "case_id": "N15-s03-k01",
+      "description": "rung⑥ 数据长度 15（上界前一位（合法））",
+      "request": "2ef102585858585858585858585858585858",
+      "initial_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "6ef102",
+      "legacy_final_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {
+          "f102": "585858585858585858585858585858"
+        }
+      }
+    },
+    {
+      "case_id": "N15-s02-k01",
+      "description": "rung⑥ 数据长度 15（上界前一位（合法））",
+      "request": "2ef102585858585858585858585858585858",
+      "initial_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "6ef102",
+      "legacy_final_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {
+          "f102": "585858585858585858585858585858"
+        }
+      }
+    },
+    {
+      "case_id": "N16-s03-k01",
+      "description": "rung⑥ 数据长度 16（上界（合法））",
+      "request": "2ef10258585858585858585858585858585858",
+      "initial_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "6ef102",
+      "legacy_final_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {
+          "f102": "58585858585858585858585858585858"
+        }
+      }
+    },
+    {
+      "case_id": "N16-s02-k01",
+      "description": "rung⑥ 数据长度 16（上界（合法））",
+      "request": "2ef10258585858585858585858585858585858",
+      "initial_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "6ef102",
+      "legacy_final_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {
+          "f102": "58585858585858585858585858585858"
+        }
+      }
+    },
+    {
+      "case_id": "N17-s03-k01",
+      "description": "rung⑥ 数据长度 17（越界（应 0x13））",
+      "request": "2ef1025858585858585858585858585858585858",
+      "initial_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e13",
+      "legacy_final_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "N17-s02-k01",
+      "description": "rung⑥ 数据长度 17（越界（应 0x13））",
+      "request": "2ef1025858585858585858585858585858585858",
+      "initial_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {}
+      },
+      "legacy_response": "7f2e13",
+      "legacy_final_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {}
+      }
+    },
+    {
+      "case_id": "O1-s03-k01",
+      "description": "override：可写 DID 已有覆盖 → 成功路径应改写为 NEW",
+      "request": "2ef1024e4557",
+      "initial_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {
+          "f102": "4f4c44"
+        }
+      },
+      "legacy_response": "6ef102",
+      "legacy_final_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {
+          "f102": "4e4557"
+        }
+      }
+    },
+    {
+      "case_id": "O1-s02-k01",
+      "description": "override：可写 DID 已有覆盖 → 成功路径应改写为 NEW",
+      "request": "2ef1024e4557",
+      "initial_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {
+          "f102": "4f4c44"
+        }
+      },
+      "legacy_response": "6ef102",
+      "legacy_final_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {
+          "f102": "4e4557"
+        }
+      }
+    },
+    {
+      "case_id": "O2-s03-k01",
+      "description": "override：未知 DID 的覆盖**不**使其可写（rung② 只看 DID_DATABASE）",
+      "request": "2effff58",
+      "initial_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {
+          "ffff": "47484f5354"
+        }
+      },
+      "legacy_response": "7f2e31",
+      "legacy_final_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {
+          "ffff": "47484f5354"
+        }
+      }
+    },
+    {
+      "case_id": "O2-s02-k01",
+      "description": "override：未知 DID 的覆盖**不**使其可写（rung② 只看 DID_DATABASE）",
+      "request": "2effff58",
+      "initial_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {
+          "ffff": "47484f5354"
+        }
+      },
+      "legacy_response": "7f2e31",
+      "legacy_final_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {
+          "ffff": "47484f5354"
+        }
+      }
+    },
+    {
+      "case_id": "O3-s03-k01",
+      "description": "override：只读 DID 的覆盖**不**使其可写（rung⑤ 只看 WRITABLE_DIDS）",
+      "request": "2ef19058",
+      "initial_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {
+          "f190": "47484f5354"
+        }
+      },
+      "legacy_response": "7f2e22",
+      "legacy_final_state": {
+        "session": 3,
+        "security_level": 1,
+        "did_overrides": {
+          "f190": "47484f5354"
+        }
+      }
+    },
+    {
+      "case_id": "O3-s02-k01",
+      "description": "override：只读 DID 的覆盖**不**使其可写（rung⑤ 只看 WRITABLE_DIDS）",
+      "request": "2ef19058",
+      "initial_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {
+          "f190": "47484f5354"
+        }
+      },
+      "legacy_response": "7f2e22",
+      "legacy_final_state": {
+        "session": 2,
+        "security_level": 1,
+        "did_overrides": {
+          "f190": "47484f5354"
+        }
+      }
+    }
+  ]
+}
