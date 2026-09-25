@@ -317,7 +317,7 @@ DiagnosticGateway.route(can_id, payload)                     # gateway.py:152
 
 **精确插入位置**：目标解析完成之后、`target.process(payload)` 之前。
 
-### 9.1 拒绝时的语义（§10 的五个问题）
+### 9.1 拒绝时的语义
 
 | # | 问题 | 决定 |
 |---|---|---|
@@ -326,8 +326,13 @@ DiagnosticGateway.route(can_id, payload)                     # gateway.py:152
 | 3 | 是否静默丢弃？ | **是** |
 | 4 | 是否允许目标 ECU 看见请求？ | **否** —— `target.process()` 不被调用，`EcuState` 不变 |
 | 5 | 是否允许 response 回传？ | 不适用（无请求即无响应） |
+| 6 | **物理寻址**被拒时，**谁**收到 response？ | **无人** —— 不产生任何帧，Tester 收不到回应 |
+| 7 | **功能寻址**下某个 target 被**单独**拒绝时，response 如何表示？ | **无额外表示** —— 功能寻址恒返回 `[]`；被拒者只是**不被 process**，其 `EcuState` 不变 |
+| 8 | **多个 target** 中允许 A、拒绝 B，Gateway 最终返回什么？ | **仍返回 `[]`** —— 功能寻址"不收集响应"的既有语义不变 |
+| 9 | Gateway 是否 **synthesize** `7F` response？ | **否** —— 网关不代 ECU 作答 |
+| 10 | 使用什么 **NRC**？ | **无 NRC** —— 不产生任何否定响应 |
 
-> **C2-OD-3 —— 策略拒绝 = 静默丢弃（无响应、目标 ECU 不可见）。**
+> **C2-OD-3 —— 策略拒绝 = 静默丢弃（无响应、目标 ECU 不可见、不合成 NRC）。**
 
 **理由：**
 
@@ -336,8 +341,18 @@ DiagnosticGateway.route(can_id, payload)                     # gateway.py:152
    避免网关暴露自身策略的存在与形状。
 2. **不撒谎**：返回 NRC 需要选一个语义上不成立的 NRC（ECU 根本没执行该服务，
    `7F 22 33` 之类会谎称 ECU 做了什么）。静默丢弃不产生关于 ECU 状态的虚假陈述。
-3. **可观测性**：拒绝在**返回值**（`[]`）与**运行时日志**（`gateway_runtime.py:452`
-   已打印 RX 行）上可观测，不影响测试与审计。
+3. **可观测性的边界（⚠ 本设计的已知缺口）**：
+   拒绝**不能**仅凭 `route()` 的返回值与其它 `[]` 情形区分 ——
+   未知物理地址、功能寻址、以及"**放行但服务抑制正响应**"都会返回 `[]`。因此：
+
+   * 物理寻址下「被拒」与「放行后抑制响应」在**返回值上不可区分**；
+   * 功能寻址下「某 ECU 被拒」与「该 ECU 被执行」在返回值上**同样不可区分**；
+   * 拒绝的**唯一**可观测差异是"目标 ECU 的 `EcuState` 未被改动" ——
+     而对**本身不修改状态的服务**（如 `3E 80` TesterPresent+suppress）
+     该差异**也不存在**。
+
+   → 这构成 **C2-OQ-5（BLOCKING）**：C2-A2 的等价性对拍与 C2-A4 的 override 审计
+   都需要一个**明确可断言的策略决策信号**。**本设计未冻结该信号的形式。**
 
 ---
 
@@ -508,16 +523,35 @@ C2 明确不实现：
 
 ---
 
-## 15. Open Questions
+## 15. Open Questions（**已分级**）
 
-**仅记录真正未决的问题**，不在本阶段强行给答案。
+**分级标准**：Blocking = 未决则会阻塞 C2 的**实现或迁移对拍**；
+Deferred = 属于未来架构议题，当前机制不被其阻塞。
 
-| # | 问题 | 为何未决 | 影响 |
+### 15.1 BLOCKING（必须在 C2 实现 / 对拍之前冻结）
+
+| # | 问题 | 为何阻塞 | 不解决的后果 |
 |---|---|---|---|
-| **C2-OQ-1** | 是否需要 **source / Tester identity**？ | 当前输入契约中**完全没有**该信息（11-bit CAN ID 表示目的地）。引入它需要变更 `route()` 的输入签名 —— 是**接口变更**，须单独评审 | 决定"多 Tester 差异化授权"是否可能 |
-| **C2-OQ-2** | 是否需要 **response 方向**过滤？ | 当前响应只可能来自被放行的 target，故行为上尚无可观测差异；但"网关是否应能拦截 ECU 的响应"是独立议题 | 决定未来的 egress policy 面 |
-| **C2-OQ-3** | 策略的**表达载体**：Python 常量 / 数据文件 / 代码 | 与 C1 的 `_SPEC_EXECUTION`（源码常量）是否采用同一原则？倾向源码常量（可 review、可回滚） | 决定 C2 实现形态 |
-| **C2-OQ-4** | 是否存在**多网关 / 中继**场景需要跨网段策略？ | 当前实验只有一个 `DiagnosticGateway` 实例 | 决定是否需要网关间策略传播 |
+| **C2-OQ-5** | **策略决策如何对调用方与测试可观测？** 是否需要让 `route()`（或其伴随接口）暴露"本次是否被策略拒绝"？若需要，是返回值形态变更（**接口变更**）还是旁路信号（日志 / 计数器 / 决策记录）？ | C2-A2 的**等价性对拍**必须能断言"该请求被拒 / 被放行"；C2-A4 的 **override 审计**必须能断言"策略仍然生效"。按当前 §9.1，拒绝与"未知地址 / 功能寻址 / 放行但抑制响应"在返回值上**不可区分**，对**不修改状态的服务**连 `EcuState` 都相同 | 迁移阶段**无法写出有效的判定断言**；对拍会退化为"看起来通过了但什么都没验证" |
+
+> **C2-OQ-5 是本设计新发现的缺口**（在 §9.1 理由 3 中给出实证）。
+> 它修正了本文件初稿中"拒绝在返回值上可观测"这一**不准确**的表述。
+> **在该问题冻结之前，不应进入 C2-A1/A2/A4。**
+
+### 15.2 DEFERRED（不阻塞 C2，属未来架构）
+
+| # | 问题 | 为何暂缓 | 归属 |
+|---|---|---|---|
+| **C2-OQ-1** | 是否需要 **source / Tester identity**？ | 当前输入契约中**完全没有**该信息（11-bit CAN ID 表示目的地）。引入它需要变更 `route()` 的输入签名 —— 属**接口变更**。而 C2 冻结的 dimensions 不含 source，故机制不被其阻塞 | 未来架构（多 Tester 差异化授权） |
+| **C2-OQ-2** | 是否需要 **response 方向**过滤？ | **经复核，它不影响 C2 deny 的 observable behavior**：C2-OD-3 已冻结"拒绝时不产生任何响应"，因此 deny 路径上**没有可被过滤的响应**。egress 过滤是"拦截**被放行**请求的响应"，属**新增能力**而非 C2 deny 语义 | 未来架构（egress policy） |
+| **C2-OQ-3** | 策略的**表达载体**：源码常量 / 数据文件 / 代码 | 这是**实现形态**选择，不改变已冻结的语义（OD-1…OD-8）。倾向与 C1 一致：**源码常量**（可 review、可回滚、随 commit 评审） | C2 实现阶段决定（**非**阻塞设计） |
+| **C2-OQ-4** | 是否存在**多网关 / 中继**场景需要跨网段策略？ | 当前实验只有一个 `DiagnosticGateway` 实例，架构中**没有**该场景 | **deferred / out of scope** |
+
+> **关于 C2-OQ-2 的判定**：它**不是** implementation blocker —— 因为
+> C2-OD-3 的"静默丢弃"选择使 deny 路径上**不存在**响应，
+> 故 response-direction filtering 与 C2 deny 的可观测行为**正交**。
+> （若未来把 OD-3 改为"网关合成 `7F` 响应"，则该结论**需重新评估** ——
+> 届时 deny 会产生响应，response 方向过滤将与其直接相关。）
 
 ---
 
@@ -597,3 +631,113 @@ C1 Phase 2 = COMPLETE（不受本阶段影响）
 ```
 Design → Legacy Golden → Implementation → Equivalence → Regression → Audit → Exit Review
 ```
+
+---
+
+## 19. Review Focus（本次评审重点）
+
+以下五项请评审明确确认或推翻。**本节不引入新的设计决定**，
+仅把已有决定与未决缺口挑明。
+
+### Focus A —— C2-OD-2 `default-allow`（请确认取舍）
+
+**必须区分两件事：**
+
+```
+policy **mechanism** default   = allow      ← C2-OD-2 冻结的是这个
+deployment **security posture** = ???       ← 不由 C2-OD-2 决定
+```
+
+即：`default-allow` 描述的是**机制缺省**（空策略是 no-op），
+**不是**部署姿态。"拒绝一切未显式允许"完全可以用一条**显式 allowlist 策略**表达
+（那是**数据**，不是机制缺省）。
+
+**请确认接受该取舍**：代价是"机制缺省不 fail-closed"，
+收益是**唯一**能复制 C1「先引入机制、证明零行为变更 → 再逐项迁移」的路径。
+替代方案 default-deny 在引入瞬间改变全部 gateway 行为，
+使 C2-A2 的「等价性对拍」**不可能存在**（没有可比基线）。
+
+### Focus B —— C2-OD-3 拒绝语义（⚠ 含 BLOCKING 缺口）
+
+已冻结的部分（§9.1 表格 1–10 行逐条给出）：
+
+```
+physical  deny   → **无人**收到 response（不产生任何帧）
+functional deny  → 无额外表示；功能寻址恒返回 []；被拒 ECU 的 EcuState 不变
+多 target A 允 / B 拒 → **仍返回 []**（功能寻址不收集响应的语义不变）
+Gateway 是否合成 7F   → **否**
+使用什么 NRC          → **无 NRC**
+```
+
+**⚠ 但存在一个未冻结的缺口（C2-OQ-5，BLOCKING）：**
+
+拒绝**无法**仅凭返回值与其它 `[]` 情形区分 —— 未知物理地址、功能寻址、
+以及「**放行但服务抑制正响应**」都返回 `[]`。拒绝的唯一可观测差异是
+"目标 ECU 的 `EcuState` 未变"，而对**本身不修改状态的服务**（如 `3E 80`）
+连该差异也不存在。
+
+**后果**：C2-A2 的对拍与 C2-A4 的 override 审计**写不出有效断言**。
+
+**请在评审中决定** `C2-OQ-5`：策略决策是否需要（以及以何种形式）
+对调用方/测试可观测。若需要返回值形态变更，那是**接口变更**，须单独评审。
+
+> **在 C2-OQ-5 冻结之前，不应进入 C2-A1 / A2 / A4。**
+
+### Focus C —— C2-OD-4 功能寻址逐 target 判定（请确认）
+
+```
+0x7DF
+  ├─ ECU_A → policy decision A
+  ├─ ECU_B → policy decision B
+  └─ ECU_C → policy decision C
+```
+
+**不得**"一次整体判定 → 授权结果被所有 ECU 共用"——
+否则「允许 A 的规则」会**顺带**授权 B，违反多 ECU 隔离（C2-OD-5）。
+
+### Focus D —— C2-OD-6 override 不变量（请确认与 C1 概念一致）
+
+```
+override **may** replace:  implementation / topology / transport
+override **may not** replace:  authorization
+```
+
+与 **C1 的 OD-4 A′** 同构（"可覆盖实现，不可覆盖授权"）。
+判据：策略在 `route()` 内、`target.process()` 之前求值，
+因此位于 `VirtualEcu.handler` 注入点**之外**。
+
+### Focus E —— C2-OQ-3 策略载体（请给设计意见，**不要提前实现**）
+
+```
+policy carrier:
+    (a) 源码常量   —— 与 C1 的 _SPEC_EXECUTION 一致：随 commit 评审、可回滚
+    (b) 数据配置   —— 灵活，但引入"配置即行为"的运行时可变性
+```
+
+本设计**倾向 (a)**，理由与 C1 §15.3 相同：**回滚应是一次可审计的代码变更，
+而不是一次环境配置变更**。仅需 reviewer 给出设计意见。
+
+### 评审检查清单
+
+| # | 检查项 | 对应 |
+|---|---|---|
+| 1 | C1 / C2 authorization boundary（需读 `EcuState` 的规则属 C1） | §4 |
+| 2 | `default-allow` rationale（机制缺省 vs 部署姿态） | Focus A / §8.2 |
+| 3 | Gateway deny response semantics（含 **C2-OQ-5** 缺口） | Focus B / §9.1 |
+| 4 | functional addressing per-ECU semantics | Focus C / §10.2 |
+| 5 | multi-ECU isolation（判定单位与结论独立） | §11 |
+| 6 | override cannot bypass policy | Focus D / §12 |
+| 7 | C3 / 0x27 boundary（C2 不预置 0x27 分支） | §14 |
+| 8 | implementation observability（**= C2-OQ-5**） | §15.1 |
+| 9 | legacy → policy migration feasibility（六段式 + 空策略等价） | §13 |
+| 10 | policy carrier | Focus E / §15.2 |
+
+### 本次评审的放行条件
+
+```
+C2-OQ-5 获得明确决定           ← **必须**（BLOCKING）
+Focus A / C / D 明确确认
+Focus E 给出设计意见（不阻塞）
+```
+
+满足后方可进入下一阶段（C2-A0 legacy Gateway golden capture）。
