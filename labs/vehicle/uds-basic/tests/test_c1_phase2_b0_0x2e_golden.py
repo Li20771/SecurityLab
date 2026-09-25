@@ -88,11 +88,23 @@ class TestCorpusProvenance(unittest.TestCase):
         """记录历史事实：B0 发生在 Migration A 之后，0x22 已迁移。"""
         self.assertIn(0x22, self.corpus["spec_execution_at_capture"])
 
-    def test_0x2e_is_still_not_migrated_now(self):
-        """当前运行时白名单中 0x2E 仍须缺席（B0 不开启 0x2E）。"""
-        from uds_server import _SPEC_EXECUTION
+    def test_capture_time_whitelist_is_frozen(self):
+        """
+        corpus 头部记录的白名单是**捕获时的历史事实**，不随阶段推进被重写。
 
-        self.assertNotIn(SID_WRITE, _SPEC_EXECUTION)
+        B1 之后当前 `_SPEC_EXECUTION` 已含 0x2E，但 corpus 头部必须**仍然是**
+        `[0x22]`。因此本文件不断言"0x2E 当前是否已迁移"（那属
+        `test_c1_phase2_framework_unit.py` 的阶段常量），只断言这份**冻结记录**。
+        """
+        self.assertEqual(
+            self.corpus["spec_execution_at_capture"],
+            [0x22],
+            "corpus 头部必须保持 B0 捕获时的事实（[0x22]），不得重写为当前白名单",
+        )
+
+    def test_0x2e_is_not_migrated_per_the_frozen_record(self):
+        """`target_execution_mode = legacy` 是**捕获时**的事实，与当前阶段无关。"""
+        self.assertEqual(self.corpus["target_execution_mode"], "legacy")
 
     def test_state_projection_fields(self):
         self.assertEqual(
@@ -263,42 +275,67 @@ class TestRungPrecedence(unittest.TestCase):
                 self.assertIn(nrc, negatives)
 
 
-class TestCaptureReplayRoundtrip(unittest.TestCase):
+class TestFrozenCaseDefinitions(unittest.TestCase):
     """
-    corpus **自洽性**：在进程内重新捕获一遍，与磁盘上的 corpus 逐条比对。
+    B0 corpus 的**冻结**性：case 定义自捕获以来未变，且 expected 值只能作为
+    **历史 oracle** 被消费。
 
-    这证明捕获端与重放端共用同一套语义（`c1_golden_lib.execute`），
-    且执行是确定的。
+    ## 为什么这里不再"重新捕获一遍再比较"（B1 起）
 
-    .. note::
+    B0 时点 ``0x2E ∉ _SPEC_EXECUTION``，重新执行当前 dispatcher 得到的仍是
+    legacy 输出，因此"重新捕获 == 磁盘 corpus"是合理的**自洽**检查。
 
-       **这不是 B2 的 spec 对拍。** 当前 `0x2E ∉ _SPEC_EXECUTION`，
-       两侧走的都是同一条 legacy 路径。B1 开启 0x2E 之后，
-       同一条 case 才会经 spec 路径执行 —— 那属 B2。
+    **B1 之后 0x2E 已切到 ServiceSpec 执行路径** —— 再执行当前 dispatcher 得到的
+    是 **spec 路径**输出。把它与 legacy golden 直接比较，性质上已经是
+    **B2 的 legacy ↔ spec 对拍**，不应在 B1 里以"自洽检查"的名义发生。
+
+    因此本类改为**不执行**当前 0x2E dispatcher 的结构性检查：
+
+    * case 定义（case_id / request / initial_state / description）与冻结 corpus 一致；
+    * **不**重新生成 `legacy_response` / `legacy_final_state`；
+    * **不**调用 `lib2e.build_corpus()` 作为 oracle。
     """
 
-    def test_fresh_capture_equals_stored_corpus(self):
-        stored = lib2e.load_corpus()
-        fresh = lib2e.build_corpus()
+    def test_case_definitions_match_frozen_corpus(self):
+        """``build_cases()`` 的**定义**必须与 corpus 中冻结的定义逐条一致。"""
+        stored = {e["case_id"]: e for e in lib2e.load_corpus()["cases"]}
+        fresh = {c["case_id"]: c for c in lib2e.build_cases()}
 
-        stored_by_id = {e["case_id"]: e for e in stored["cases"]}
-        fresh_by_id = {e["case_id"]: e for e in fresh["cases"]}
-
-        self.assertEqual(set(stored_by_id), set(fresh_by_id))
-        for case_id, stored_entry in stored_by_id.items():
+        self.assertEqual(set(stored), set(fresh), "case 集合与冻结 corpus 不一致")
+        for case_id, entry in stored.items():
             with self.subTest(case_id=case_id):
-                fresh_entry = fresh_by_id[case_id]
-                self.assertEqual(fresh_entry["request"], stored_entry["request"])
-                self.assertEqual(
-                    fresh_entry["initial_state"], stored_entry["initial_state"]
-                )
-                self.assertEqual(
-                    fresh_entry["legacy_response"], stored_entry["legacy_response"]
-                )
-                self.assertEqual(
-                    fresh_entry["legacy_final_state"],
-                    stored_entry["legacy_final_state"],
-                )
+                definition = fresh[case_id]
+                self.assertEqual(definition["request"].hex(), entry["request"])
+                self.assertEqual(definition["initial_state"], entry["initial_state"])
+                self.assertEqual(definition["description"], entry["description"])
+
+    def test_expected_values_come_from_the_frozen_file(self):
+        """
+        corpus 必须**自带** expected 值，且每条都齐全 ——
+        B1 之后它们只能作为**历史 oracle** 被读取，不得由运行时重算。
+        """
+        for entry in lib2e.load_corpus()["cases"]:
+            with self.subTest(case_id=entry["case_id"]):
+                self.assertTrue(entry["legacy_response"])
+                self.assertIn("legacy_final_state", entry)
+                self.assertIn("session", entry["legacy_final_state"])
+                self.assertIn("security_level", entry["legacy_final_state"])
+                self.assertIn("did_overrides", entry["legacy_final_state"])
+
+    def test_build_corpus_is_no_longer_the_legacy_oracle(self):
+        """
+        B1 起当前 dispatcher 对 0x2E 走 spec 路径，因此 `build_corpus()`
+        **不再**是 legacy oracle —— 本文件不得再用它做等价性结论。
+
+        这条断言把该事实**显式化**：0x2E 现在确实在 `_SPEC_EXECUTION` 中。
+        """
+        from uds_server import _SPEC_EXECUTION
+
+        self.assertIn(
+            SID_WRITE,
+            _SPEC_EXECUTION,
+            "B1 之后 0x2E 应在 spec 执行路径；若不在，说明阶段回退了",
+        )
 
     def test_state_is_rebuilt_per_case(self):
         """§23 —— 每条 case 用**全新** state，成功写入不污染后续 case。"""
