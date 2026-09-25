@@ -15,8 +15,10 @@ UDS Basic —— C1 Phase 1 服务规格模型（``service_spec``）单元测试
    **模型对 legacy 行为的解释与 legacy 实际响应逐字节一致** —— 这是 Phase 2
    迁移的对拍基准。
 
-**Phase 1 不执行 guards**：dispatcher（``handle_uds_request``）仍走
-``SERVICES[sid] -> handler``。本文件只读模型 + 对拍，**不**改变任何执行路径。
+**本文件不执行 guards**：Phase 1 建立模型时，dispatcher（``handle_uds_request``）
+仍走 ``SERVICES[sid] -> handler``；**Phase 2 Step 1** 起 dispatcher 改为经
+``resolve_service_spec()`` 进入框架，但 ``_SPEC_EXECUTION`` 为空，
+**仍不执行任何 guard**。本文件只读模型 + 对拍，**不**改变任何执行路径。
 
 运行：
 
@@ -162,17 +164,23 @@ class TestModelStructure(unittest.TestCase):
         with self.assertRaises(Exception):  # noqa: B017 - dataclasses.FrozenInstanceError
             spec.payload_scoped = False  # type: ignore[misc]
 
-    def test_model_is_not_executed_by_the_dispatcher(self):
+    def test_dispatcher_does_not_directly_access_service_specs(self):
         """
-        结构性证据：``handle_uds_request()`` 的**函数体**不引用 ``SERVICE_SPECS``。
+        Phase 2 Step 1 结构性不变量：
 
-        行为证据见 ``TestModelAgreesWithLegacy``：Phase 1 的实际请求仍通过
-        ``handle_uds_request()`` 的 legacy ``SERVICES -> handler`` 路径执行；
-        模型本身只在测试侧被独立求值。
+        dispatcher **可以**通过 ``resolve_service_spec()`` 进入 ServiceSpec
+        执行框架，但**不得**直接访问全局 ``SERVICE_SPECS`` 注册表。
 
-        这里用 AST 精确定位 ``FunctionDef`` 的源码范围，只检查该函数体 ——
-        不依赖"从某个字符串 split 到文件末尾"（那会因该函数之后新增引用
-        ``SERVICE_SPECS`` 的代码而误报）。
+        guard 是否真正执行由 ``_SPEC_EXECUTION`` **单独**决定 —— Step 1 中该
+        白名单为空，故没有任何 guard 被执行；运行时行为（``_guards_for()`` 恒返回
+        ``()``、dispatcher 响应等同 legacy handler）由
+        ``test_c1_phase2_framework_unit.py`` 覆盖，本用例**不**重跑请求矩阵。
+
+        因此本用例保护的是 **dispatcher 边界**（必须经由 resolver 进入框架），
+        而不是断言"ServiceSpec 模型完全不参与派发" —— 后者在 Phase 2 接入
+        ``resolve_service_spec()`` 之后已不再成立。
+
+        AST 定位 ``FunctionDef`` 的源码范围，只检查该函数体，不做字符串 split。
         """
         with open(os.path.join(_ECU_DIR, "uds_server.py"), encoding="utf-8") as handle:
             source = handle.read()
@@ -190,10 +198,23 @@ class TestModelStructure(unittest.TestCase):
         body = ast.get_source_segment(source, dispatcher)
         self.assertIsNotNone(body, "无法定位 handle_uds_request 的源码范围")
 
+        # 正向：必须**调用** resolve_service_spec(...)，而不仅仅是在注释/文档里提到它。
+        called = {
+            node.func.id
+            for node in ast.walk(dispatcher)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        self.assertIn(
+            "resolve_service_spec",
+            called,
+            "Phase 2 dispatcher 必须**调用** resolve_service_spec() 进入 ServiceSpec 框架",
+        )
+
+        # 负向：不得绕过 resolver 直接访问全局注册表。
         self.assertNotIn(
             "SERVICE_SPECS",
             body,
-            "Phase 1 的 dispatcher 不得引用 SERVICE_SPECS（切换执行路径属 Phase 2）",
+            "dispatcher 不得直接访问 SERVICE_SPECS；必须经由 resolve_service_spec()",
         )
 
 
