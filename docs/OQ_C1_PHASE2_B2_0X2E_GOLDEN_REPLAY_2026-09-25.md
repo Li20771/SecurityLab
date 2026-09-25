@@ -43,14 +43,28 @@ path = labs/vehicle/uds-basic/tests/golden/c1_phase2_0x2e_legacy.json
 
 ## 4. Corpus SHA256
 
+**行尾规范化后的内容哈希**（= git blob 哈希，平台无关）：
+
 ```
-B0  0ad204331c390a00f0906d294f6a8024a048082fb2266a69ff07e428b966f974
-A0  d0d83244c85d7916924227c09dc3565ce33e5534e485650aa1f32efbd520cf79
+B0  5b7d7e43f79590c8282937631764d2f4824f9c47c8a9134dc29a8a2b1d19f642
+A0  604d906e21906e2e6148977b5d5c162bdfb4ca41020fc51e610e42d3c8d07f8d
 ```
 
 两个哈希在 B2 前后**完全一致**（见 §10–§12）。
 两个 SHA256 已**硬编码进 B2 测试**，使"任何人改写 corpus"成为一个**立刻失败**的事实 ——
-B2 的 expected 只有在文件逐字节未变时才有意义。
+B2 的 expected 只有在文件未变时才有意义。
+
+> **⚠ 关于哈希口径的更正（由 CI 发现，见 §15）**
+>
+> 本文件与更早的报告曾给出另一组值
+> （`0ad20433…` / `d0d83244…`）。那组值是**工作区 CRLF 字节**的哈希 ——
+> Windows 的 `core.autocrlf=true` 会把仓库中的 LF 内容以 CRLF 写到工作区，
+> 因此它**是检出平台的产物，不是仓库内容**。
+>
+> 那组值在更早各阶段被用于"前后一致"的**比较**（同环境下 before/after），
+> 比较结论有效；但作为**绝对值**引用时是平台相关的，故此处更正为
+> 规范化口径。B2 测试现在对**规范化内容**求哈希，因此在
+> LF（Linux/WSL 原生检出）与 CRLF（Windows autocrlf 检出）下结果一致。
 
 ## 5. Corpus size
 
@@ -125,13 +139,13 @@ git diff -- labs/vehicle/uds-basic/tests/golden/   →  无 diff
 ## 11. A0 hash unchanged
 
 ```
-d0d83244c85d7916924227c09dc3565ce33e5534e485650aa1f32efbd520cf79   （前后一致）
+604d906e21906e2e6148977b5d5c162bdfb4ca41020fc51e610e42d3c8d07f8d   （前后一致）
 ```
 
 ## 12. B0 hash unchanged
 
 ```
-0ad204331c390a00f0906d294f6a8024a048082fb2266a69ff07e428b966f974   （前后一致）
+5b7d7e43f79590c8282937631764d2f4824f9c47c8a9134dc29a8a2b1d19f642   （前后一致）
 ```
 
 **未重新捕获、未 regenerate、未以当前 spec execution 重算 expected。**
@@ -200,9 +214,40 @@ M4 replay 重复执行第一条 case               -> DETECTED
 
 ---
 
-## 15. CI
+## 15. CI（含一次由 CI 发现并修复的真实缺陷）
 
-PR 上运行 Fast QA（ruff + mypy + offline tests）；结果记录于 PR。
+PR #39 第一次 CI 运行 **FAIL**，且**只在 CI 失败、本地 WSL 全绿**。
+按 §7 的要求"不修改 Golden、不放宽断言、定位实际差异"，先查日志再结论：
+
+```
+FAIL: test_a0_corpus_sha256_unchanged
+FAIL: test_b0_corpus_sha256_unchanged
+AssertionError: '604d906e…' != 'd0d83244…'
+AssertionError: '5b7d7e43…' != '0ad20433…'
+FAILED (failures=2)        ← 20 例中仅 2 例失败
+```
+
+**根因**：第一版把 `_sha256` 直接作用在**工作区字节**上。Windows 的
+`core.autocrlf=true` 把仓库中的 LF 内容以 CRLF 写到工作区，于是：
+
+| corpus | 工作区(CRLF) | 规范化 / git blob |
+|---|---|---|
+| A0（0x22） | `d0d83244…` | `604d906e…` |
+| B0（0x2E） | `0ad20433…` | `5b7d7e43…` |
+
+我硬编码的是**左列**（检出平台产物），而 Linux CI 算出的是**右列**（仓库内容）。
+这是一个**平台相关的断言缺陷** —— 正是 Issue #28 的同一环境现象。
+
+**修复**：`_sha256` 先把 CRLF 折成 LF 再哈希，常量改用右列值。
+修复后本地验证 LF 与 CRLF 检出下哈希**完全一致**。
+
+**关键**：CI 上**只有这 2 例失败**，B2 的其余 18 例（含
+`test_replay_response_bytes_match` 70/70、`test_replay_state_projection_matches` 70/70、
+`test_every_case_is_executed_exactly_once_in_order`、
+`test_replay_does_not_recompute_expected_from_current_execution`）
+**全部通过** —— 即 **B2 的等价性结论在 CI 上成立**，出错的只是冻结哈希的口径。
+
+修复后的 CI 结果见 PR #39。
 
 ---
 
