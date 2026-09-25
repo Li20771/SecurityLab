@@ -62,9 +62,10 @@ SID_SECURITY_ACCESS = 0x27
 #: 硬编码在测试里，使"任何人改写 corpus"成为一个**立刻失败**的事实 ——
 #: B2 的 expected 只有在文件未变时才有意义。
 #:
-#: **哈希的是行尾规范化后的内容**（见 ``_sha256``），因此
-#:   * 与 git blob 逐字节相同；
-#:   * 在 LF（Linux/WSL 原生检出）与 CRLF（Windows autocrlf 检出）下**结果一致**。
+#: **这是"行尾规范化后的文件内容 SHA-256（平台无关）"**（见 ``_sha256``），
+#: **不是 Git 对象哈希** —— 后者的对象 ID 是在对象头 + 内容上另算的另一个量。
+#:
+#: 该口径在 LF（Linux/WSL 原生检出）与 CRLF（Windows autocrlf 检出）下**结果一致**。
 #:
 #: 这一点是必要的：第一版直接把工作区字节哈希，于是本用例在 Windows/WSL
 #: 通过、在 Linux CI 失败（`0ad20433…` vs `5b7d7e43…`）。
@@ -77,11 +78,14 @@ A0_CORPUS_PATH = os.path.join(lib.GOLDEN_DIR, "c1_phase2_0x22_legacy.json")
 
 def _sha256(path: str) -> str:
     """
-    对文件的**规范化内容**求 SHA256（先把 CRLF 折成 LF）。
+    对文件的**行尾规范化内容**求 SHA-256（先把 CRLF 折成 LF）。
 
-    这样得到的值等于 git blob 的哈希，且**与检出平台无关**：
-    Windows 的 ``core.autocrlf=true`` 会把仓库中的 LF 内容以 CRLF 写到工作区，
-    直接哈希工作区字节会得到一个平台相关的值。
+    得到的是"**行尾规范化后的文件内容 SHA-256（平台无关）**"。
+    它**不是** Git 对象哈希 —— 后者是对对象头 + 内容另算的对象 ID。
+
+    之所以要规范化：Windows 的 ``core.autocrlf=true`` 会把仓库中的 LF 内容
+    以 CRLF 写到工作区，直接哈希工作区字节会得到一个**平台相关**的值
+    （在 Windows/WSL 通过、在 Linux CI 失败）。
     """
     with open(path, "rb") as handle:
         data = handle.read().replace(b"\r\n", b"\n")
