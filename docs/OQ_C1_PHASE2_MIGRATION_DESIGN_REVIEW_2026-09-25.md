@@ -89,8 +89,16 @@ legacy dispatcher unchanged          → handle_uds_request 仍走 SERVICES → 
 
 > **迁移后 observable response bytes 必须与迁移前逐请求完全一致。**
 
-不是"让新架构工作"，而是"**在不改变任何可观测行为的前提下**，把 0x22 / 0x2E 的执行路径
-从 legacy inline 逻辑切到 `ServiceSpec.guards → handler`"。
+"完全一致"的**准确范围**定义为（详见 §6.5.2）：
+
+> **既有生产路径与既有 contract-covered behavior 不发生非预期变化。**
+
+而**不是**"不存在任何新的调用方可观察语义" —— 后者是一个更强、
+且本 Phase 从未承诺过的要求（§6.5.1 记录了 A′ 有意引入的一项语义收紧）。
+
+因此 Phase 2 做的是：在**既有路径与既有契约不发生变化**的前提下，
+把 0x22 / 0x2E 的执行路径从 legacy inline 逻辑切到
+`ServiceSpec.guards → handler`。
 
 ### 3.2 具体目标
 
@@ -291,10 +299,54 @@ resolve_service_spec(sid, services) -> ServiceSpec | None:
 
 **语义**：`services=` 覆盖的是**实现**（handler），**不覆盖授权**（guards）。
 
+#### 6.5.1 兼容范围的精确定义
+
+A′ **不是**"对外语义完全不变"。准确表述如下：
+
+| 维度 | 状态 |
+|---|---|
+| API shape（参数名、类型 `Mapping[int, Callable] \| None`、关键字限定） | **不变** |
+| 表取代语义（override 取代而非合并；缺 SID → `7F <sid> 11`） | **不变** |
+| SID **存在性**由 override 决定 | **不变** |
+| 自定义 handler 覆盖（`test_override_can_install_a_custom_handler`） | **仍然支持** |
+| N6 三条既有 contract pins | **不变、不弱化** |
+| `ecu.py` / `gateway.py` 调用点 | **一行不改** |
+| **已建模且 `guards` 非空的 SID（至少 `0x22` / `0x2E`）的运行时授权语义** | **有意收紧** |
+
+最后一行是本次修订的核心：**对带 guards 的已建模 SID，调用方通过 `services=`
+覆盖 handler 时，不再能够顺带取消该 SID 的 guards。**
+
+即：**`services=` 的 API 形态不变，但对带 guards 的已建模 SID，
+其授权不再可被 override 绕过。** 这是一项**有意的语义收紧**，
+**不得**被表述为"无变化"或"语义完全不变"。
+
+#### 6.5.2 为什么不违背 Phase 2 的 migration objective
+
+Phase 2 的 **byte-for-byte compatibility** 必须定义为：
+
+> **既有生产路径与既有 contract-covered behavior 不发生非预期变化。**
+
+而**不是**"不存在任何新的调用方可观察语义"。二者区别在于：
+
+- **既有生产路径**：`ecu.py:374` 传 `{**SERVICES, 0x27: ...}`，其中 `0x22` / `0x2E`
+  的 handler 就是 `SERVICES` 中的**同一对象**；在 A′ 下其 `guards` 与 `handler`
+  都取自同一服务身份 → 响应字节与 Phase 1 **完全一致**。
+- **既有 contract-covered behavior**：N6 三条 pin **全部原样通过**（§6.7）。
+- **新增的调用方可观察语义**仅出现在一个形态上：**对带 guards 的已建模 SID
+  传入自定义 handler**。该形态在 Phase 1 **从未被任何调用方使用**，
+  也**从未被任何测试覆盖**（N6 的自定义 handler 用例用的是 `0x3E`，`guards == ()`）。
+  A′ 对该形态的行为是**明确设计**的收紧，而非回归。
+
+因此 Phase 2 的判据是"既有路径与既有契约不发生非预期变化"，
+A′ 满足该判据；而"没有任何新的调用方可观察语义"是一个**更强、
+且 Phase 2 从未承诺过**的要求。
+
 ### 6.6 为什么选 A′
 
-1. **对外契约零变化**：`ecu.py`（`ecu/ecu.py:374`）与 `gateway.py:73` 一行不改；
+1. **既有调用点零改动**：`ecu.py`（`ecu/ecu.py:374`）与 `gateway.py:73` 一行不改；
    N6 三条 pin **全部原样通过**（逐条验证见 §6.7）。
+   代价是**对带 guards 的已建模 SID 有意收紧授权不可覆盖性**（§6.5.1）——
+   这不是缺陷，而是本方案的设计取舍。
 2. **消除 §6.3 的路径分叉**：无论经 ECU 入口还是网关，0x22/0x2E 的 guards 都会执行。
 3. **安全默认（fail-closed）**：授权不可被调用方静默移除。
    显式替换 handler 仍然允许（N6 的 `test_override_can_install_a_custom_handler` 需要），
@@ -314,6 +366,15 @@ resolve_service_spec(sid, services) -> ServiceSpec | None:
 | `ecu.py` 0x27 注入 | `{**SERVICES, 0x27: ...}`，请求 0x27 | 0x27 ∉ `SERVICE_SPECS` → `ServiceSpec(guards=())` → handler 正常执行 | ✅ |
 | `ecu.py` 0x22 / 0x2E | 同上，请求 0x22 | guards 取自 `SERVICE_SPECS[0x22]` → **授权链生效** | ✅（修复 §6.3） |
 
+此外，A′ **新增**了一条既有测试未覆盖的行为（§6.5.1）：
+
+| 场景 | A′ 下的结果 | 性质 |
+|---|---|---|
+| `services={0x22: custom_handler}`，state `(EXTENDED, LOCKED)` | guard 先返回 `0x33` → `7F 22 33`，custom_handler **不被调用** | **新增的有意收紧**（Phase 1 无此语义，因 Phase 1 不执行 guards） |
+| `services={0x2E: custom_handler}`，state `(DEFAULT, LOCKED)` | guard ③ 返回 `0x7F` → `7F 2E 7F`，custom_handler **不被调用** | 同上 |
+
+该行为**必须**由 §6.9 的强制 case 锁定。
+
 ### 6.8 对 OD-1 冻结规则的关系（必须显式说明）
 
 A′ **偏离**了"覆盖 = 整体替换，`guards=()`"的**字面**表述，但**符合其意图**：
@@ -329,14 +390,47 @@ A′ **偏离**了"覆盖 = 整体替换，`guards=()`"的**字面**表述，但
 ### 6.9 冻结决定
 
 > **OD-4 = FROZEN：方案 A′。**
-> `handle_uds_request(..., services=...)` 的**对外签名与语义保持不变**
-> （`Mapping[int, Callable]`；取代而非合并；缺 SID → `11`）。
-> dispatcher 内部按 §6.5 归一化：**存在性取自 override，guards 取自 `SERVICE_SPECS`，
-> handler 取自 override**。
-> **`services=` 不可覆盖授权。**
+>
+> **保持不变（unchanged）：**
+> - **API shape**：`services: Mapping[int, Callable[[bytes, EcuState], bytes]] | None`，关键字限定
+> - **table replacement semantics**：override **取代而非合并**；缺 SID → `7F <sid> 11`
+> - SID **存在性**由 override 决定
+> - **custom handler override remains supported**
+> - N6 三条既有 contract pins 不变、不弱化
+> - `ecu.py` / `gateway.py` 调用点一行不改
+>
+> **有意收紧（intentional semantic tightening）：**
+> - **authorization semantics for guarded `ServiceSpec` entries are intentionally
+>   no longer overrideable** —— 对已建模且 `guards` 非空的 SID（至少
+>   `0x22` / `0x2E`），`services=` 可替换 handler，**不可**绕过 guards。
+>
+> dispatcher 内部按 §6.5 归一化：**存在性取自 override，`guards` 取自
+> `SERVICE_SPECS`，`handler` 取自 override**。
 
 **对 Phase 2 的约束**：`ecu.py`、`gateway.py` 不得修改；
 N6 三条 pin 不得修改、不得弱化。
+
+**Phase 2 必须新增的 contract / regression case（强制性）**
+
+§6.5.1 的收紧语义**必须有测试锁定**，否则它只是一个未被验证的意图。
+Phase 2 实现**至少**要新增一条用例，验证"对带 guards 的已建模 SID
+安装自定义 handler **不会**绕过 guards"：
+
+```
+services = {0x22: custom_handler}，state = (EXTENDED, LOCKED)，请求 22 F1 87
+    → 响应必须是 7F 22 33          （guard 生效）
+    → 且 custom_handler **不得被调用**
+
+services = {0x2E: custom_handler}，state = (DEFAULT, LOCKED)，请求 2E F1 02 58
+    → 响应必须是 7F 2E 7F          （guard ③ 生效）
+    → 且 custom_handler **不得被调用**
+
+services = {0x2E: custom_handler}，state = (EXTENDED, LEVEL1)，请求 2E F1 02 58
+    → guards 全部通过 → custom_handler **被调用**
+```
+
+该用例同时构成 §17 判据 10（"no unresolved migration path"）的直接证据，
+并与 §16.2 的新增测试清单一致。
 
 ---
 
@@ -487,7 +581,7 @@ def resolve_service_spec(
 
 ```python
 def handle_uds_request(request, state, *, services=None) -> bytes:
-    # ① 空请求（必须在查表之前）—— 语义完全不变
+    # ① 空请求（必须在查表之前）—— 该分支语义不变（§9.3）
     if not request:
         return uds_types.negative_response(0x00, NRC_INCORRECT_MESSAGE_LENGTH)
 
@@ -496,7 +590,7 @@ def handle_uds_request(request, state, *, services=None) -> bytes:
     # ② 解析 spec（唯一新增的步骤）
     spec = resolve_service_spec(service, services)
 
-    # ③ 未注册 SID —— 语义完全不变
+    # ③ 未注册 SID —— 该分支语义不变（§9.3）
     if spec is None:
         return uds_types.negative_response(service, NRC_SERVICE_NOT_SUPPORTED)
 
@@ -625,7 +719,7 @@ _SPEC_EXECUTION: frozenset[int]    A 阶段 = {0x22}      B 阶段 = {0x22, 0x2E
 | 10 | 畸形长度 | `22`、`22 F1`、`22 F1 90 F1` |
 | 11 | 三种会话 | DEFAULT / EXTENDED / PROGRAMMING |
 | 12 | 安全态 | LOCKED / LEVEL1 |
-| 13 | DID override | 先 `2E F1 02` 写入，再 `22 F1 02` 读回 overridden 值 |
+| 13 | DID override | `initial_state` **直接预置** `did_overrides[0xF102]=<bytes>`，请求 `22 F1 02`；**不得**用第二个 UDS 请求做 setup（§13.5） |
 | 14 | 边界 | `22 F1 87 FF FF`（受保护在前，**必须** `7F 22 33`）<br>`22 FF FF F1 87`（未知在前，**必须** `7F 22 31`） |
 
 第 14 项是**冻结锚点**，同时被 29 pins 中的 N2 与 Phase 1 的 28 例覆盖。
@@ -681,7 +775,22 @@ B4  确认 legacy inline 保留（§10.4）
 | 9 | 可写 DID | `2E F1 02 58` |
 | 10 | 数据长度非法 | 长度 0（同上 #1）、长度 17（`WRITABLE_DID_LENGTHS[0xF102] = (1,16)`） |
 | 11 | 合法写入 | 长度 1 与长度 16（闭区间边界） |
-| 12 | 写后读 | 写入后 `22 F1 02` 读回新值 |
+| 12 | 状态副作用 | **每个** case 都必须满足 `did_overrides` 的 state projection 相等（§14）：成功路径写入、失败路径**不**写入 |
+
+**关于"写后读"（重要，与 §13.5 一致）**
+
+"写入 `2E F1 02` 后再用 `22 F1 02` 读回"是一个**跨服务的多请求序列**，
+**不是** GoldenCase。GoldenCase 是**单请求**结构（§13.2），无法表达序列。
+该场景属于**普通 regression test**（既有 unit / e2e 层的职责），
+**不进入** golden corpus。
+
+**B0 阶段尤其不能依赖它**：Migration B 的 B0 发生在 **Migration A 完成之后**
+（§11.1 → §12.1），此时 **`0x22` 已经运行在 spec 路径上**。
+若 B0 的 golden 采用"先 `2E` 写、再 `22` 读"的双请求序列，
+则**第二个请求不再来自 legacy 路径**，捕获到的就不是纯 legacy oracle，
+对拍基准被污染。因此 B0 **必须**只捕获单请求 case，
+其状态前置条件（session / security / 既有 `did_overrides`）
+一律通过 `initial_state` 构造。
 
 ### 12.4 必须冻结的 rung 顺序
 
@@ -724,12 +833,16 @@ B4  确认 legacy inline 保留（§10.4）
 
 ### 13.2 数据结构
 
+> **GoldenCase 是单请求结构。** 它**不含** `sequence` / `steps` 字段，
+> **不能**表达多请求序列。所有前置条件必须由 `initial_state` 一次性给出。
+> 需要多请求序列的场景属普通 regression test，见 §13.5。
+
 ```
 GoldenCase:
     case_id      : str
     sid          : int
-    request      : bytes
-    initial_state: StateSnapshot          # 见 §14
+    request      : bytes                  # 单条 UDS 请求
+    initial_state: StateSnapshot          # 见 §14；一次性给出全部前置条件
     legacy_response : bytes               # A0/B0 阶段由 legacy 路径捕获
     legacy_final_state : StateSnapshot    # 同上（捕获副作用）
 
@@ -748,6 +861,7 @@ GoldenCorpus:
 | 格式 | JSON（可 diff、可人工审计、可 code review） |
 | 生成 | 由脚本从 legacy 路径生成并提交 —— 生成脚本本身属测试代码 |
 | 重放 | 对同一 `(request, initial_state)` 走 spec 路径，逐字节比较 |
+| 粒度 | **每 case 单请求**（§13.2 / §13.5）；重放时**每条 case 使用全新的 state 实例**，不得复用被前一条 case 修改过的 state |
 | 保留 | **迁移完成后长期保留**（作为 §16 的 migration contract test） |
 
 ### 13.4 生成时机约束
@@ -756,6 +870,32 @@ GoldenCorpus:
 - 捕获 commit 必须记录，且该 commit 必须**早于** A1 / B1；
 - golden 一旦捕获，**不得**为"让测试通过"而重新生成 —— 任何重新生成
   都必须视为**行为变更**并单独评审。
+
+### 13.5 单请求不变式（为什么必须如此）
+
+**不变式**：`GoldenCase` 的 `legacy_response` 必须是**恰好一条**
+`handle_uds_request(request, state_from(initial_state))` 调用的返回值。
+
+**违反该不变式的两种方式，以及各自的后果：**
+
+| 反模式 | 后果 |
+|---|---|
+| 用第二个 UDS 请求做 setup（如"先 `2E` 写、再 `22` 读"） | 若 setup 请求所涉 SID **已迁移**，其响应对应的就不是 legacy 路径 → oracle 被污染 |
+| 用同一 `state` 对象连续跑多条请求 | `state` 被前一条请求修改，后续 case 的 `initial_state` 不再是声明的那个 → 重放不可复现 |
+
+**阶段相关的具体约束：**
+
+- **A0**（Capture 0x22 golden）时 `_SPEC_EXECUTION == frozenset()`，
+  全路径均为 legacy，**技术上**多请求序列仍可捕获到纯 legacy 行为；
+  但**仍然禁止** —— 因为重放阶段（A2）`0x22` 已迁移，
+  序列中后续请求的执行路径会与捕获时不同，对拍失去意义。
+- **B0**（Capture 0x2E golden）时 **`0x22` 已迁移**（Migration A 已完成），
+  任何"`2E` 写 + `22` 读"的序列都**必然**在第二步偏离 legacy 路径。
+
+因此：**需要多请求交互的场景（写后读、跨服务状态传递、序号依赖）
+一律不进 golden corpus**，由既有 unit / e2e 测试层承担。
+golden corpus 只回答一个问题：
+**"对同一条请求与同一个初始状态，迁移前后的响应字节与状态投影是否相同？"**
 
 ---
 
@@ -793,6 +933,16 @@ StateSnapshot = (
 ```
 ∀ case:  snapshot_after(legacy) == snapshot_after(spec_path)
 ```
+
+**双用途说明（与 §13.2 / §13.5 一致）**：
+
+`StateSnapshot` 既是 **`GoldenCase.initial_state` 的格式**，
+也是 **final-state 的强制比较对象**。两者共用同一投影，故：
+
+- `initial_state` **只**能由这三个字段构造；
+- **"DID override 已存在"这类前置条件，唯一合法构造方式是
+  直接预置 `did_overrides`**，而不是先跑一条 `0x2E` 请求（§13.5）；
+- 因 `did_overrides` 用 `frozenset(items())` 规范化，比较与预置都与插入顺序无关。
 
 ### 14.3 关于"全状态比较"的取舍
 
@@ -890,7 +1040,13 @@ def _guards_for(spec):
 | golden 生成脚本 | 工具 | 保留（可审计性） |
 | golden replay 测试 | **migration contract test** | **保留** —— 它是 Phase 3 逐服务迁移的可复用夹具 |
 | `resolve_service_spec()` 单测 | 长期 contract test | 保留（§6.5 五条契约） |
+| **OD-4 授权不可覆盖 测试**（§6.9 强制 case） | **长期 contract test** | **保留** —— 它锁定 §6.5.1 的有意收紧语义；**缺失即视为 Phase 2 未完成**（§17 判据 10） |
 | `_SPEC_EXECUTION` 回滚测试 | 长期 | 保留（证明 per-SID 隔离有效） |
+
+> **关于 OD-4 强制 case 的必要性**：§6.5.1 的收紧语义是一个**新的**、
+> 此前**未被任何测试覆盖**的行为（Phase 1 不执行 guards，故该形态无从体现）。
+> 若不显式测试，它就只是一个未被验证的意图 —— 未来任何重构都可能静默地
+> 把它退回"override 可绕过授权"，而**全部既有测试仍会通过**。
 
 ### 16.3 明确禁止
 
@@ -932,6 +1088,11 @@ def _guards_for(spec):
 "`sid ∈ _SPEC_EXECUTION` ⟺ 该 SID 的 guards 在 dispatcher 中被求值"。
 避免出现"代码看起来迁移了、实际没生效"（§6.3 类问题的通用防线）。
 
+**判据 10 的第二个组成（§6.9 强制 case）**：`services=` 覆盖路径下
+guards 求值必须仍然发生 —— 即"§6.5.1 的收紧语义"必须由 §6.9 / §16.2
+的强制测试**实际锁定**。仅声明该语义而无可执行的锁定，视为
+"migration path 未收敛"，判据 10 不满足。
+
 ---
 
 ## 18. C2 / C3 Boundary
@@ -968,10 +1129,12 @@ C3 = 0x27 through Gateway             ← NOT STARTED
 | R4 | 为"通过测试"重新生成 golden，抹掉真实回归 | 中 | §13.4：重新生成 = 行为变更，须单独评审 |
 | R5 | 一次性迁移 0x22 + 0x2E，失败时无法定位 | 中 | §11/§12 强制分两次；§15 per-SID 白名单 |
 | R6 | 范围蔓延到"顺手迁移其余 12 个服务" | 中 | §4 N1/N2；§15.4 明文禁止 |
-| R7 | 改动 `services=` 契约导致 `ecu.py` / 网关连带变更 | 中 | §6.9 冻结对外签名不变；N6 三条 pin 不得改动 |
+| R7 | 改动 `services=` **API shape** 导致 `ecu.py` / 网关连带变更 | 中 | §6.9 冻结 API shape / 表取代语义 / 存在性判定；N6 三条 pin 不得改动 |
 | R8 | Phase 2 顺手修 `WRITABLE_DID_LENGTHS` KeyError 风险（§10.4 备注） | 低 | 明确列为独立设计项，不在 Phase 2 修复 |
 | R9 | Issue #28（CRLF）干扰验证，产生假失败 | 中 | 独立处理；验证时使用不受 CRLF 影响的方式并在报告中说明 |
 | R10 | 迁移后 `SERVICE_SPECS` 与 `SERVICES` 出现双源漂移 | 低 | 保留 Phase 1 的导入期集合一致性护栏 |
+| R11 | §6.5.1 的**有意收紧语义**未被测试锁定 → 未来重构静默退回"override 可绕过授权"，而既有测试全绿 | **高** | §6.9 强制 case + §16.2 列为必须新增；缺失即 §17 判据 10 不满足 |
+| R12 | 把 §6.5.1 的收紧**误述**为"对外语义完全不变"，导致评审者以为无需新增测试 | 中 | 全文统一采用 §6.5.1 的七维表述；禁止"语义完全不变"类措辞 |
 
 ---
 
@@ -982,15 +1145,15 @@ C3 = 0x27 through Gateway             ← NOT STARTED
 | ID | 决定 | 状态 |
 |---|---|---|
 | **OD-3** | 不 BLOCK Phase 2；强制机制属 Phase 3，选定 **C（test/lint enforcement）**，排除 A / D | **FROZEN** |
-| **OD-4** | **方案 A′** —— 对外 `Mapping[int, Callable]` 不变；内部归一定义见 §6.5；**`services=` 不可覆盖授权** | **FROZEN** |
+| **OD-4** | **方案 A′** —— API shape / 表取代语义 / 存在性判定 / 自定义 handler 支持**均不变**；**对带 guards 的已建模 SID 有意收紧：授权不可被 override 绕过**。精确定义见 §6.5.1，归一化见 §6.5，强制测试见 §6.9 | **FROZEN** |
 | **OD-5** | **保持 `== SESSION_DEFAULT`**，不得改写 | **FROZEN** |
 | **OD-6** | **方案 A（维持现状）** —— `0x27 ∉ SERVICE_SPECS`、`∈ SPECS_EXCLUDED` | **FROZEN** |
 | Migration architecture | `resolve_service_spec()` + ordered guards + handler（§9） | **FROZEN** |
 | guards / handler | **方案 1 保留 handler 防御检查**（§10.4） | **FROZEN** |
 | Migration A | 0x22 原子迁移，A0–A4 五阶段（§11） | **FROZEN** |
 | Migration B | 0x2E 原子迁移，B0–B4 五阶段，**须在 A 通过后**（§12） | **FROZEN** |
-| Golden corpus | legacy oracle 捕获 + 重放，JSON 存储，长期保留（§13） | **FROZEN** |
-| State equality | response + state projection（§14.2） | **FROZEN** |
+| Golden corpus | legacy oracle 捕获 + 重放，JSON 存储，长期保留；**GoldenCase 为单请求结构，不含 sequence/steps**（§13.2 / §13.5） | **FROZEN** |
+| State equality | response + state projection（§14.2）；`StateSnapshot` 兼作 `initial_state` 格式，DID override 前置条件**只能**由预置构造 | **FROZEN** |
 | Rollback | per-SID `_SPEC_EXECUTION` 白名单；**拒绝** feature flag（§15） | **FROZEN** |
 | Exit criteria | 十条，见 §17 | **FROZEN** |
 | C2 / C3 边界 | `gateway.py` / `gateway_runtime.py` / `ecu.py` 零改动（§18） | **FROZEN** |
@@ -1012,6 +1175,11 @@ C3 = 0x27 through Gateway             ← NOT STARTED
 **第 2 步不可跳过**：它证明"引入 spec 执行框架本身"是零行为变更的，
 把"框架引入"与"服务迁移"两类变更**分离**，使失败可归因。
 
+> 第 2 步之所以确实"零行为变更"：`_SPEC_EXECUTION` 为空 ⇒ `_guards_for()` 恒返回 `()`，
+> 故 §6.5.1 的收紧语义在此阶段**尚不可观测**（guards 根本不执行）；
+> 而 handler 的来源在 A′ 与 Phase 1 完全一致（override 命中则用 override）。
+> 收紧语义**只有在 A1（`_SPEC_EXECUTION = {0x22}`）之后**才开始可观测。
+
 ### 20.3 本文档不做的事
 
 | 项 | 状态 |
@@ -1028,11 +1196,18 @@ C3 = 0x27 through Gateway             ← NOT STARTED
 
 以下为本文档作出的**判断性**决定，请在评审中明确接受或推翻：
 
-1. **OD-4 选择 A′ 而非字面的 `guards=()`**（§6.8 / §6.9）——
-   这是本文档**最重要**的决定，因为它偏离了上游文档 §18.1 的字面表述。
+1. **OD-4 选择 A′ 而非字面的 `guards=()`**（§6.8 / §6.9 / §6.5.1）——
+   这是本文档**最重要**的决定。它包含**两个**需要分别确认的部分：
+   - **(1a) 偏离上游字面表述**（§6.8）：上游 §18.1 写"覆盖 = 整体替换，`guards=()`"；
+   - **(1b) 有意收紧对外语义**（§6.5.1）：对带 guards 的已建模 SID，
+     `services=` **不再能够绕过授权**。这是 Phase 1 从不存在的新语义，
+     **必须**由 §6.9 的强制 case 锁定（§16.2 / §17 判据 10）。
 2. **OD-3 选定 C 而非 A**（§5.3）。
 3. **§14.3**：全状态比较作为**建议**而非强制判据。
 4. **§15.3**：拒绝 feature flag，改用源码常量白名单。
+5. **§13.5 单请求不变式**：golden corpus **不接受**多请求序列，
+   "写后读"等跨服务场景下沉到普通 regression test。
+   请确认接受该限制（代价：golden 无法覆盖跨服务交互；收益：oracle 纯净、可复现）。
 
 ---
 
