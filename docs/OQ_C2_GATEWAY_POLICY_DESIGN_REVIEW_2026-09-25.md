@@ -169,6 +169,27 @@ DID 权限）的前提下做出。C2 只能基于**路由层可见的信息**（
 若一条规则的成立条件需要读取 `EcuState` 的内部字段（session、security_level、
 did_overrides），**那条规则属于 C1，不属于 C2**。
 
+### 4.1 边界示例（据此消除 SID 归属歧义）
+
+以"某 SID 未被目标 ECU 实现"为例：
+
+```
+C2 合法表达：
+    「允许 ECU_B 的 0x99 请求通过」
+    ↑ 合法 —— Gateway **只关心 SID 这个标识符**，不关心它意味着什么
+
+C1 / handler 职责：
+    「0x99 是否由 ECU_B 实现 / 应当返回什么 NRC」
+    ↑ 属 ECU service semantics；由 handler 返回 `7F 99 11`
+```
+
+**推论（C2-OD-8 的一半）**：C2 **不得**为了判断"SID 是否被实现"而引入
+`SERVICE_SPECS` / UDS service registry / handler registry ——
+否则 C2 就开始知道 C1 的 service semantics，边界即被打破。
+
+因此：**任何非空 payload 都是 policy 输入**（SID = `payload[0]`）；
+只有"未解析出 target"与"无 SID 可取（空 payload）"两种情形不进入策略。
+
 ---
 
 ## 5. Policy Model Candidates
@@ -292,8 +313,8 @@ PolicyInput = (target: VirtualEcu, addressing_mode: PHYSICAL | FUNCTIONAL, sid: 
 |---|---|---|
 | **未匹配任何规则** | **放行** | C2-OD-2（default-allow） |
 | **未知物理 target**（`_by_request` 无此 ID） | **不进入策略**，维持 `route()` 现有 `return []` | 这是**路由归属**判定（"不是我的地址"），不是授权；若策略在此返回"拒绝"，会与"不是本网关的地址"混淆语义。**行为完全不变。** |
-| **未知 SID**（ECU 未实现） | **不进入策略**，交给 handler → `7F <sid> 11` | 响应形态由 ECU 决定，网关不代答 |
-| **payload 为空** | **不进入策略**，交给 handler | 畸形请求的 NRC 语义属 ECU |
+| **payload 为空**（无 SID 可取） | **不进入策略**，交给 handler | 结构上取不到 SID，畸形请求的 NRC 语义属 ECU |
+| **payload 非空（任何 SID）** | **进入策略**，以 `payload[0]` 作为 SID 输入 | 网关**不判断**该 SID 是否由目标 ECU 实现 —— 那是 **C1 / handler** 的语义（见 §4）。若某 SID 未被 ECU 实现，`target.process()` 会照常返回 `7F <sid> 11` |
 | **功能寻址（广播）** | **逐 ECU 进入策略**（见 §10） | 扇出目标不同 ⇒ 授权结论可以不同 |
 
 ---
@@ -433,11 +454,24 @@ A2 等价性对拍、A4 bypass 审计、functional per-ECU 证明；将来需要
 未进入策略求值的情形**不产生任何 decision 记录** ——
 **不得**把它们伪装成 `allowed = True`：
 
-| 情形 | `trace.decisions` |
-|---|---|
-| 未知物理 target（`route(0x7E5, …)`） | **`[]`** —— 是"**不进入 policy**"，不是 deny |
-| 空 payload（`route(0x7E0, b"")`） | **`[]`** —— 交由既有 handler/protocol 语义 |
-| 未知 SID | **`[]`** —— 保持 C2-OD-8；**不得**记为 `allowed=True` |
+| 情形 | policy evaluated | `trace.decisions` |
+|---|---|---|
+| unknown physical target（`route(0x7E5, …)`） | **no** | **`[]`** —— 是"**不进入 policy**"，不是 deny |
+| empty payload（`route(0x7E0, b"")`） | **no** | **`[]`** —— 交由既有 handler/protocol 语义 |
+| known target + non-empty payload，**任何 SID** | **yes** | **physical = 1 / functional = N** |
+| policy allow | yes | `allowed=true` |
+| policy deny | yes | `allowed=false` |
+
+**明确冻结**：
+
+> **"该 SID 是否由目标 ECU 实现"不由 C2 判断。**
+
+理由：C2 的 policy 输入已冻结为 `(target, addressing_mode, SID)`（§7）。
+若 Gateway 为了判断"SID 是否实现"而引入 `SERVICE_SPECS` / UDS service registry /
+handler registry，**C2 就开始知道 C1 的 service semantics**，直接违反 §4 的边界。
+
+因此：**任何非空 payload 都是 policy 输入**；未被 ECU 实现的 SID 会照常
+`target.process()`，由 handler 返回 `7F <sid> 11` —— 那属 **C1 / handler** 的语义。
 
 #### 9.2.5 functional 寻址必须**逐 ECU**产生 decision
 
@@ -519,15 +553,18 @@ route_with_trace()   = **同一个** route core，返回 results + trace
 
 | 情形 | policy evaluated | trace record | wire result |
 |---|---|---|---|
-| known physical + valid SID | yes | **1** | existing behavior |
-| functional + valid SID | **yes, per ECU** | **N** | `[]` |
+| known physical target + non-empty payload（**任何 SID**） | **yes** | **1** | existing behavior |
+| functional + non-empty payload（**任何 SID**） | **yes, per ECU** | **N** | `[]` |
 | unknown physical target | **no** | **0** | `[]` |
 | empty payload | **no** | **0** | existing handler/protocol result |
-| unknown SID | **no** | **0** | existing handler result |
 | policy allow | yes | `allowed=true` | target may execute |
 | policy deny | yes | `allowed=false` | **no response** |
 
 > `N` = 参与广播的 ECU 数量（默认网段为 3）。
+>
+> **注意**：表中**没有**"unknown SID"一行 —— 因为 C2 **不判断** SID 是否由 ECU 实现
+> （§9.2.4）。未被实现的 SID 仍会进入策略求值并产生 decision，
+> 其 `7F <sid> 11` 由 handler 返回。
 
 #### 9.2.11 C2-A4 bypass 审计如何使用 trace
 
@@ -773,7 +810,7 @@ Deferred = 属于未来架构议题，当前机制不被其阻塞。
 | **C2-OD-5** | 判定单位 = `(target ECU, addressing_mode, SID)`；ECU 之间结论独立 | **FROZEN** |
 | **C2-OD-6** | `handler` / 拓扑 / transport / 构造路径的 override **不能**绕过策略 | **FROZEN** |
 | **C2-OD-7** | C2 用 SID 表达服务，天然容纳 C3 的 0x27；**不得**为 0x27 预置特殊分支 | **FROZEN** |
-| **C2-OD-8** | 未知物理 target / 未知 SID / 空 payload **不进入策略**，维持既有路由与 NRC 语义 | **FROZEN** |
+| **C2-OD-8** | **未知物理 target 与空 payload 不进入 policy**；对任何已解析 target 的**非空 payload**，C2 仅把 `payload[0]` 作为 SID 输入，**不判断该 SID 是否由 ECU 实现** | **FROZEN** |
 | **C2-OD-9** | **Policy decision observability**：策略决策仅通过**显式的每次调用有序 trace** 对调用方/测试可见；`route()` 的**返回类型与 wire 行为保持不变**（§9.2） | **FROZEN** |
 | Policy dimensions | `target` / `addressing_mode` / `SID`（**不含** payload 内容、session、source） | **FROZEN** |
 | C1 / C2 边界 | 需要读 `EcuState` 内部字段才能成立的规则属 **C1** | **FROZEN** |
