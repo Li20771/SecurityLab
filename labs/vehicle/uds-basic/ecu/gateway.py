@@ -60,6 +60,93 @@ RouteResult = tuple[int, bytes]
 UdsHandler = Callable[[bytes], bytes]
 
 
+# ======================================================================
+# C2 —— Gateway policy（机制层）
+# ======================================================================
+#
+# 设计出处：``docs/OQ_C2_GATEWAY_POLICY_DESIGN_REVIEW_2026-09-25.md``
+# （C2-OD-1 … C2-OD-9 均已 **DESIGN FROZEN**）。
+#
+# **C2-A1 只引入机制，不引入任何实际策略。**
+# 默认策略是**空策略**（对一切放行），因此本节的引入**不改变任何
+# wire 行为或 state 行为**（C2-OD-2 的 default-allow）。
+
+#: 物理寻址（单播）。
+ADDRESSING_PHYSICAL = "physical"
+
+#: 功能寻址（广播，``0x7DF``）。
+ADDRESSING_FUNCTIONAL = "functional"
+
+
+@dataclass(frozen=True)
+class PolicyDecision:
+    """
+    一次策略求值的**真实结果**（C2-OD-9）。
+
+    .. note::
+       这是**测试 / 调用方观测**用的结构，**不是** wire semantics ——
+       ``route()`` 的返回类型不因它而改变。
+
+    字段刻意保持最小（设计文档 §9.2.3）：只有
+    ``target`` / ``addressing_mode`` / ``sid`` / ``allowed``；
+    **不含** reason / rule_id / message / timestamp / logger。
+    """
+
+    #: 目标 ECU 的 ``request_id`` —— 稳定、唯一、可断言的寻址身份。
+    #: （刻意**不用** ``id()`` / ``repr()`` / 对象身份。）
+    target: int
+
+    #: ``ADDRESSING_PHYSICAL`` 或 ``ADDRESSING_FUNCTIONAL``。
+    #: （刻意用字符串而非 ``True``/``False``，让测试报告能直接表达语义。）
+    addressing_mode: str
+
+    #: 策略的 SID 输入（``payload[0]``）。
+    sid: int
+
+    #: 是否放行。``False`` ⇒ 目标 ECU **不会**执行该请求（C2-OD-3）。
+    allowed: bool
+
+
+@dataclass(frozen=True)
+class PolicyTrace:
+    """
+    **单次** ``route_with_trace()`` 的策略决策记录（C2-OD-9）。
+
+    语义（设计文档 §9.2.2 / §9.2.4 / §9.2.8）：
+
+    * **per-call** —— 本次调用独有，与其它调用互不污染；
+      **没有** global last_decision / 计数器 / 模块级可变状态，
+      也不允许靠日志 grep 事后重建；
+    * **immutable** —— ``decisions`` 是 ``tuple``；
+    * **ordered** —— 顺序 = 策略**实际被求值**的顺序；
+    * 只包含**真正进入策略求值**的请求：**未知物理 target** 与
+      **空 payload** 不产生 decision（C2-OD-8）。
+    """
+
+    decisions: tuple[PolicyDecision, ...] = ()
+
+
+#: 策略判定函数：吃 ``(目标 ECU, 寻址模式, SID)``，返回是否放行。
+#:
+#: **C2 只能看到这三样** —— 策略**不得**感知 ``EcuState``（session /
+#: security_level）、service registry（``SERVICE_SPECS``）或 DID 权限：
+#: "该 SID 是否由目标 ECU 实现"属 **C1 / handler** 的语义（C2-OD-8）。
+GatewayPolicy = Callable[["VirtualEcu", str, int], bool]
+
+
+def allow_all_policy(ecu: "VirtualEcu", addressing_mode: str, sid: int) -> bool:
+    """
+    **空策略** —— C2-OD-2 的 default-allow（机制默认，**不是**部署姿态）。
+
+    对一切放行，因此与"策略机制尚未引入"时的行为**逐字节相同**。
+    """
+    return True
+
+
+#: 默认策略：空策略（全放行）。空策略 ⇒ 本机制是 **no-op**。
+DEFAULT_POLICY: GatewayPolicy = allow_all_policy
+
+
 def _default_handler_for(state: EcuState) -> UdsHandler:
     """
     为一个 ECU 状态绑定协议层 dispatcher（静态 SERVICES 表）。
@@ -118,12 +205,22 @@ class DiagnosticGateway:
         self,
         ecus: list[VirtualEcu],
         functional_address: int = FUNCTIONAL_ADDRESS,
+        policy: GatewayPolicy | None = None,
     ) -> None:
+        """
+        :param policy: 可选的 Gateway 策略。``None`` ⇒ **空策略**
+            （``DEFAULT_POLICY``，全放行）—— 因此既有调用方**无需改动**，
+            行为与策略机制引入前**逐字节相同**（C2-OD-2）。
+        """
         if not ecus:
             raise ValueError("网关至少需要一个 ECU")
 
         self.functional_address = functional_address
         self.ecus: list[VirtualEcu] = list(ecus)
+
+        #: 本网关的策略（C2-OD-1：求值点在 ``route`` core 内、
+        #: ``target.process()`` **之前**）。
+        self.policy: GatewayPolicy = policy if policy is not None else DEFAULT_POLICY
 
         # request_id → ECU，便于 O(1) 物理寻址
         self._by_request: dict[int, VirtualEcu] = {}
@@ -153,30 +250,114 @@ class DiagnosticGateway:
         """
         路由一条进入网关的 CAN 报文。
 
+        **返回契约与策略机制引入前完全一致**（C2-OD-9）——
+        策略决策**不**出现在返回值里；需要决策证据时用 :meth:`route_with_trace`。
+
         :param can_id: 报文 CAN 标识符（物理请求 ID 或功能地址 0x7DF）。
         :param payload: ISO-TP 重组后的 UDS payload。
         :returns: 需要发回总线的 ``(response_id, response_payload)`` 列表；
                   物理寻址且服务抑制响应、或功能寻址广播时为空列表。
         """
+        results, _trace = self._route_core(can_id, payload, collect_trace=False)
+        return results
+
+    def route_with_trace(
+        self, can_id: int, payload: bytes
+    ) -> tuple[list[RouteResult], PolicyTrace]:
+        """
+        与 :meth:`route` **共用同一条 route core**，额外返回本次调用的
+        :class:`PolicyTrace`（C2-OD-9）。
+
+        **这不是第二条实现路径** —— 两者调用同一个 ``_route_core``，
+        因此"生产路径"与"测试路径"的语义**不可能分叉**（§9.2.9）。
+        唯一差别是**是否记录**决策；策略本身在两条路径上都会被求值并生效。
+
+        :returns: ``(results, trace)``，其中 ``results`` 与 :meth:`route`
+            的返回**逐字节相同**。
+        """
+        return self._route_core(can_id, payload, collect_trace=True)
+
+    def _route_core(
+        self, can_id: int, payload: bytes, *, collect_trace: bool
+    ) -> tuple[list[RouteResult], PolicyTrace]:
+        """
+        **唯一**的 route core（C2-OD-1 / C2-OD-9）。
+
+        策略求值位置：**目标解析之后、``target.process()`` 之前**，
+        因此被拒请求**不会到达目标 ECU**（其 ``EcuState`` 不变）。
+
+        ``C2-OD-8`` —— 只有两种情形**不进入策略**：
+
+        * **未知物理 target**（路由归属失败，**不是** deny）；
+        * **空 payload**（结构上取不到 SID）。
+
+        其余情形：``payload[0]`` 就是策略的 SID 输入 —— **不判断**该 SID
+        是否由目标 ECU 实现（那是 **C1 / handler** 的语义）。
+        """
+        decisions: list[PolicyDecision] = []
+        sid = payload[0] if payload else None
+
         # ---- 功能寻址：广播给所有 ECU，不收集响应 ----
+        # C2-OD-4：**逐 ECU** 求值，而非整体判定一次。
         if can_id == self.functional_address:
             for ecu in self.ecus:
-                ecu.process(payload)
-            return []
+                if self._allow(ecu, ADDRESSING_FUNCTIONAL, sid, decisions, collect_trace):
+                    ecu.process(payload)
+            return [], PolicyTrace(tuple(decisions))
 
         # ---- 物理寻址：精确单播 ----
         target = self._by_request.get(can_id)
         if target is None:
-            # 本网关不认识的请求 ID：不回应（交给链路上其它网关/设备）
-            return []
+            # 本网关不认识的请求 ID：不回应（交给链路上其它网关/设备）。
+            # **不进入策略** —— 这是路由归属判定，不是授权判定。
+            return [], PolicyTrace(tuple(decisions))
+
+        if not self._allow(target, ADDRESSING_PHYSICAL, sid, decisions, collect_trace):
+            # C2-OD-3：拒绝 = **静默丢弃** ——
+            # 不产生帧、不合成 7F、不生成 NRC，且 target.process() **不被调用**。
+            return [], PolicyTrace(tuple(decisions))
 
         response = target.process(payload)
 
         # 空响应（如 3E 80 suppress bit）：不发任何帧
         if not response:
-            return []
+            return [], PolicyTrace(tuple(decisions))
 
-        return [(target.response_id, response)]
+        return [(target.response_id, response)], PolicyTrace(tuple(decisions))
+
+    def _allow(
+        self,
+        ecu: VirtualEcu,
+        addressing_mode: str,
+        sid: int | None,
+        decisions: list[PolicyDecision],
+        collect_trace: bool,
+    ) -> bool:
+        """
+        对**单个**目标求值策略。
+
+        ``sid is None``（空 payload）⇒ **不进入策略**：直接放行，且
+        **不记录** decision（C2-OD-8）。
+
+        否则调用 ``self.policy(...)``，并把**真实求值结果**追加进
+        ``decisions`` —— 决策**只**在这里产生：不存在"先执行策略、事后补写
+        trace"，也不存在"根据 results / state 事后推断 decision"（§9.2.8）。
+        """
+        if sid is None:
+            return True
+
+        allowed = self.policy(ecu, addressing_mode, sid)
+
+        if collect_trace:
+            decisions.append(
+                PolicyDecision(
+                    target=ecu.request_id,
+                    addressing_mode=addressing_mode,
+                    sid=sid,
+                    allowed=allowed,
+                )
+            )
+        return allowed
 
 
 def build_default_gateway() -> DiagnosticGateway:

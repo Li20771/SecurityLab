@@ -191,6 +191,14 @@ run_unit() {
 
     echo
 
+    if "$PYTHON_BIN" "$TESTS_DIR/test_c2_a1_empty_policy_trace.py"; then
+        ok "C2 A1 empty policy + policy trace mechanism tests passed"
+    else
+        fail "C2 A1 empty policy / trace tests failed"
+    fi
+
+    echo
+
     if "$PYTHON_BIN" "$TESTS_DIR/test_dtc_unit.py"; then
         ok "0x19 ReadDTCInformation unit tests passed"
     else

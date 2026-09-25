@@ -371,11 +371,22 @@ def route_result_to_json(results: list) -> list:
 
 def policy_execution_present() -> bool:
     """
-    A0 的 fail-closed 前提：**C2 policy 机制是否已经出现**。
+    **捕获护栏**：C2 policy 机制是否已经出现在生产代码中。
 
-    当前生产代码中不存在任何 Gateway policy 机制；若将来引入
-    （例如 `gateway.py` 出现 policy 相关符号），本函数返回 True，
-    捕获脚本据此**拒绝**重新生成 legacy Golden。
+    A0 的 Golden 是"**策略机制尚不存在**时的 legacy 行为"快照。
+    一旦 ``gateway.py`` 出现 policy 相关符号（**A1 起就会如此**），
+    当前代码路径**已不再是"纯 legacy"** —— 此时再跑捕获脚本会写出
+    一份语义不同的 corpus，污染 C2-A2 的对拍基准。
+
+    因此捕获脚本以本函数为 **fail-closed** 前提：返回 True 即
+    **拒绝写入并 ``exit 2``**。
+
+    .. note::
+
+       **本护栏在 A1 之后仍然保留，而且是刻意保留的** ——
+       它保证"legacy oracle 只存在一份、且此后不可再生成"。
+       A0 结构测试中对应的 live 断言已在 A1 迁移为
+       "机制存在 ⇒ 捕获被拒绝"（见 ``test_capture_guard_refuses_…``）。
     """
     source_path = os.path.join(_ECU_DIR, "gateway.py")
     with open(source_path, encoding="utf-8") as handle:
