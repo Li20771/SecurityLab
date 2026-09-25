@@ -233,6 +233,51 @@ A0 结构测试现为 **28/28 PASS**（原 27 + 迁移后新增 1）。
 `target` 为 `request_id`；`addressing_mode` 为语义字符串；
 **未知 SID 仍进入策略**（C2-OD-8）；**策略输入不含 `EcuState` 字段**（C2-OD-8）。
 
+### 11.1 A1 验收门 —— **A0 Golden 逐字节复现**
+
+设计文档 §13 对 C2-A1 的三项要求，第 ① 项（"空策略下 Golden **逐字节不变**"）
+需要把 **A0 冻结的 20 条 corpus 当作完整 oracle** 跑一遍 —— 这是
+`TestEmptyPolicyMatchesFrozenA0Golden` 的职责。
+
+**这不是重新生成 Golden**：测试只**读取** `c2_gateway_legacy.json`，
+expected 值**只来自磁盘上的冻结文件**；写入路径仍只属于捕获脚本，
+而该脚本在 A1 之后 **fail-closed（exit 2）**，已不可能再写。
+
+对每条 case：用**其自带的 `ecus` 初始配置**独立构造全新网关
+（`policy` 缺省 ⇒ `DEFAULT_POLICY` 空策略），执行**恰好一次**
+`route_with_trace()`，再把结果按 A0 口径标准化后逐字节比较。
+
+```
+Golden cases 对比数量   = 20 / 20
+response match          = 20 / 20
+state    match          = 20 / 20
+
+trace skip cases        = 3        （U1/U2 未知 target + M1 空 payload）
+physical decisions      = 13
+functional decisions    = 12       （F1–F4 × 3 ECU）
+allowed=True            = 25 / 25   （空策略下**无** allowed=False）
+```
+
+逐 case 的 decision 数：
+
+```
+P1/P2/P3 物理读              1 1 1
+N1/N2    ECU 负响应          1 1
+S1       suppress            1
+U1/U2    未知 target         0 0     ← 路由归属失败，不进入策略
+F1–F4    功能寻址            3 3 3 3 ← 逐 ECU（C2-OD-4）
+W1/I1/I2 写入与隔离          1 1 1
+M1       空 payload          0       ← 无 SID 可取
+M2/C1/C2/D1                  1 1 1 1
+```
+
+trace 形状断言逐 case 校验（空 payload / 未解析 target ⇒ `decisions == ()`；
+physical 非空 ⇒ 恰好 1；functional 非空 ⇒ `len(ecus)` 且顺序 == `self.ecus`），
+并断言**每一条** decision 的 `allowed is True`。
+
+汇总数字另有 `test_aggregate_counts_are_stable` 常驻锁定，
+任何漂移（少比一条、多产生一条 decision）都会立刻失败。
+
 ---
 
 ## 12. 边界（本阶段未做）
@@ -261,9 +306,10 @@ C2-A2 / A3 / A4 / A5 = NOT STARTED
 | 3 | route core 已抽取（单一 `_route_core`） | ✓ |
 | 4 | `route()` 与 `route_with_trace()` 共用核心 | ✓ |
 | 5 | default-allow | ✓ |
-| 6 | trace 单元测试 | ✓（34 例） |
-| 7 | zero-wire-behavior regression | ✓（963 unit / 234 e2e / qa_fast PASS） |
+| 6 | trace 单元测试 | ✓（42 例） |
+| 7 | zero-wire-behavior regression | ✓（971 unit / 234 e2e / qa_fast PASS） |
 | 8 | A0 Golden untouched | ✓ |
+| **9** | **§13 三项要求**：① 空策略下 Golden 逐字节不变 ✓（**20/20 response + 20/20 state**）② `route()` wire 行为不变 ✓ ③ 进入策略的 target 产生 `allowed=True` ✓（**25/25**） | ✓ |
 
 ```
 C2-A1 = PASS

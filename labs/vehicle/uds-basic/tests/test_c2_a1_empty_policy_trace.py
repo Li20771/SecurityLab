@@ -42,6 +42,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _ECU_DIR = os.path.join(os.path.dirname(_HERE), "ecu")
 sys.path.insert(0, _ECU_DIR)
 
+import c2_gateway_golden_lib as c2lib  # noqa: E402
 import uds_types  # noqa: E402
 from gateway import (  # noqa: E402
     ADDRESSING_FUNCTIONAL,
@@ -496,6 +497,198 @@ class TestDenySemantics(unittest.TestCase):
         gw.ecus[0].state.security_level = uds_types.SECURITY_LOCKED
         gw.route(ECU_A_REQ, bytes([SID_READ]))
         self.assertEqual(seen, [(ECU_A_REQ, ADDRESSING_PHYSICAL, SID_READ)])
+
+
+class TestEmptyPolicyMatchesFrozenA0Golden(unittest.TestCase):
+    """
+    **C2-A1 的验收门**（设计文档 §13 对 C2-A1 的三项要求）。
+
+        ① 空策略下 Golden **逐字节不变**
+        ② route() wire 行为不变
+        ③ 实际进入 policy 的 target 产生 ``allowed=True`` 的 trace
+
+    本类把 **A0 冻结的 20 条 Golden corpus** 当作完整 oracle，
+    逐条验证当前空策略路径能够**逐字节复现**它。
+
+    .. important::
+
+       **这是证明 "A0 Golden == A1 empty-policy behavior"，
+       不是重新生成 Golden。** 本文件只**读取** corpus，
+       expected 值**只来自磁盘上的冻结文件**（``c2_gateway_legacy.json``）。
+       写入 Golden 的路径仍然只属于捕获脚本，而该脚本在 A1 之后
+       **fail-closed（exit 2）**，已不可能再写（见 A0 测试与 A1 报告）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.corpus = c2lib.load_corpus()
+        cls.entries = cls.corpus["cases"]
+        cls.functional_address = cls.corpus["functional_address"]
+
+    def _replay(self, entry: dict):
+        """
+        用 **case 自带的 ecus 初始配置**独立构造全新网关（默认空策略），
+        执行**恰好一次** ``route_with_trace()``。
+        """
+        case = c2lib.deserialize_case(entry)
+        gateway = c2lib.build_gateway(case)  # policy 缺省 ⇒ DEFAULT_POLICY（空策略）
+        results, trace = gateway.route_with_trace(case["can_id"], case["payload"])
+        return gateway, results, trace
+
+    # ---- 覆盖完整性 ----
+
+    def test_corpus_has_the_frozen_twenty_cases(self):
+        self.assertEqual(len(self.entries), 20)
+
+    def test_replay_uses_the_empty_policy(self):
+        """验收门的前提：replay 用的必须是**空策略**。"""
+        for entry in self.entries[:3]:
+            with self.subTest(case_id=entry["case_id"]):
+                case = c2lib.deserialize_case(entry)
+                self.assertIs(c2lib.build_gateway(case).policy, DEFAULT_POLICY)
+
+    # ---- ① response 逐字节 ----
+
+    def test_response_matches_frozen_golden_for_every_case(self):
+        for entry in self.entries:
+            with self.subTest(case_id=entry["case_id"]):
+                _gateway, results, _trace = self._replay(entry)
+                self.assertEqual(
+                    c2lib.route_result_to_json(results),
+                    entry["expected_response"],
+                    "空策略下的 response 必须与 A0 legacy Golden 逐字节相同",
+                )
+
+    # ---- ① state 逐 ECU ----
+
+    def test_gateway_state_matches_frozen_golden_for_every_case(self):
+        for entry in self.entries:
+            with self.subTest(case_id=entry["case_id"]):
+                gateway, _results, _trace = self._replay(entry)
+                self.assertEqual(
+                    c2lib.gateway_snapshot(gateway),
+                    entry["expected_gateway_state"],
+                    "空策略下的逐 ECU 状态投影必须与 A0 legacy Golden 相同",
+                )
+
+    # ---- ③ trace 形状 ----
+
+    def test_trace_shape_matches_the_case(self):
+        for entry in self.entries:
+            with self.subTest(case_id=entry["case_id"]):
+                case = c2lib.deserialize_case(entry)
+                payload = case["payload"]
+                can_id = case["can_id"]
+                request_ids = {ecu["request_id"] for ecu in case["ecus"]}
+
+                _gateway, _results, trace = self._replay(entry)
+
+                if not payload:
+                    self.assertEqual(
+                        trace.decisions, (), "空 payload ⇒ 不进入策略（C2-OD-8）"
+                    )
+                elif can_id == self.functional_address:
+                    self.assertEqual(
+                        len(trace.decisions),
+                        len(case["ecus"]),
+                        "functional ⇒ 每个 ECU 一条 decision（C2-OD-4）",
+                    )
+                    self.assertEqual(
+                        [d.target for d in trace.decisions],
+                        [ecu["request_id"] for ecu in case["ecus"]],
+                        "functional decision 顺序 == self.ecus 遍历顺序",
+                    )
+                elif can_id in request_ids:
+                    self.assertEqual(
+                        len(trace.decisions), 1, "physical 非空 payload ⇒ 恰好 1 条"
+                    )
+                else:
+                    self.assertEqual(
+                        trace.decisions,
+                        (),
+                        "未知物理 target ⇒ 路由归属失败，不产生 decision（C2-OD-8）",
+                    )
+
+                for decision in trace.decisions:
+                    self.assertTrue(
+                        decision.allowed,
+                        "空策略（default-allow）下所有 decision 必须 allowed=True",
+                    )
+
+    def test_every_decision_is_allowed_under_empty_policy(self):
+        total, allowed = 0, 0
+        for entry in self.entries:
+            _gateway, _results, trace = self._replay(entry)
+            for decision in trace.decisions:
+                total += 1
+                allowed += bool(decision.allowed)
+        self.assertGreater(total, 0, "验收门必须至少产生若干 decision")
+        self.assertEqual(allowed, total)
+
+    def test_no_decision_for_skipped_requests(self):
+        """C2-OD-8：空 payload 与未知 target 的 case **一条 decision 都不产生**。"""
+        skipped = 0
+        for entry in self.entries:
+            case = c2lib.deserialize_case(entry)
+            request_ids = {ecu["request_id"] for ecu in case["ecus"]}
+            is_skipped = (not case["payload"]) or (
+                case["can_id"] != self.functional_address
+                and case["can_id"] not in request_ids
+            )
+            if not is_skipped:
+                continue
+            skipped += 1
+            with self.subTest(case_id=entry["case_id"]):
+                _gateway, _results, trace = self._replay(entry)
+                self.assertEqual(trace.decisions, ())
+        self.assertGreater(skipped, 0, "corpus 中应当有被跳过的 case")
+
+    # ---- 汇总（供证据报告引用；漂移立刻可见）----
+
+    def test_aggregate_counts_are_stable(self):
+        """
+        验收门的**汇总数字**。这些数字是 A1 证据报告直接引用的口径；
+        任何漂移（少比一条、多产生一条 decision）都会使本用例失败。
+        """
+        counts = {
+            "cases": 0,
+            "response_match": 0,
+            "state_match": 0,
+            "trace_skip_cases": 0,
+            "physical_decisions": 0,
+            "functional_decisions": 0,
+            "allowed_true": 0,
+        }
+        for entry in self.entries:
+            gateway, results, trace = self._replay(entry)
+
+            counts["cases"] += 1
+            counts["response_match"] += (
+                c2lib.route_result_to_json(results) == entry["expected_response"]
+            )
+            counts["state_match"] += (
+                c2lib.gateway_snapshot(gateway) == entry["expected_gateway_state"]
+            )
+            if not trace.decisions:
+                counts["trace_skip_cases"] += 1
+            for decision in trace.decisions:
+                if decision.addressing_mode == ADDRESSING_PHYSICAL:
+                    counts["physical_decisions"] += 1
+                elif decision.addressing_mode == ADDRESSING_FUNCTIONAL:
+                    counts["functional_decisions"] += 1
+                counts["allowed_true"] += bool(decision.allowed)
+
+        self.assertEqual(counts["cases"], 20)
+        self.assertEqual(counts["response_match"], 20)
+        self.assertEqual(counts["state_match"], 20)
+        self.assertEqual(
+            counts["allowed_true"],
+            counts["physical_decisions"] + counts["functional_decisions"],
+            "空策略下不得有 allowed=False",
+        )
+        self.assertGreater(counts["trace_skip_cases"], 0)
+        self.assertGreater(counts["physical_decisions"], 0)
+        self.assertGreater(counts["functional_decisions"], 0)
 
 
 if __name__ == "__main__":
