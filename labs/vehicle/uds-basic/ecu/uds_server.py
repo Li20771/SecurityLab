@@ -49,6 +49,7 @@ from dataclasses import dataclass, field
 
 import dtc_runtime
 import keygen
+import service_spec
 import uds_types
 from did_database import (
     DID_DATABASE,
@@ -2143,6 +2144,221 @@ SERVICES = {
     0x3E: service_tester_present,
     0x85: service_control_dtc_setting,
 }
+
+
+# ======================================================================
+# C1 Phase 1 —— 服务授权规格模型（ServiceSpec / guards）
+# ======================================================================
+#
+# **Phase 1 定位：只建模，不执行。**
+#
+# 下面的 ``SERVICE_SPECS`` 是 ``SERVICES`` 的**平行模型**；Phase 1 的 dispatcher
+# （``handle_uds_request``）**仍然**走 ``SERVICES[sid] -> handler``，**不执行**
+# 任何 ``guards``。切换执行路径属 **Phase 2**（设计文档 §14）。
+#
+# 因此本节的引入**不改变任何可观测行为**；它使当前真实授权语义显式、可校验、可对拍。
+#
+# guards 的语义（见 ``service_spec.Guard``）：返回 NRC 表示拒绝，``None`` 表示通过；
+# **顺序即语义**，必须与下列 handler 内的既有 inline 顺序**逐级一致**。
+
+
+def _guard_read_did(request: bytes, state: EcuState) -> int | None:
+    """
+    ``0x22`` 的**单个** guard：完整复刻 ``service_read_data_by_identifier`` 的
+    判定语义（``uds_server.py`` 内该 handler 的 ① 格式 + ② 逐 DID 循环）。
+
+    顺序与短路规则**必须与 inline 实现一致**：
+
+        ① 格式：``len>=3`` 且 ``(len-1) % 2 == 0``      → ``0x13``
+        ② 逐 DID 循环（**按请求顺序**）：
+             未知 DID                                   → ``0x31``
+             ``security_level < required_security_level(did)`` → ``0x33``
+
+    **首个失败的 DID 决定 NRC**（all-or-nothing）—— 因此 NRC **依赖 DID 在请求中的
+    顺序**（``22 F1 87 FF FF`` → ``33``，而 ``22 FF FF F1 87`` → ``31``）。
+    任何"先解析全部 DID 再统一判定"的写法都会改变该行为。
+    """
+    # ① 格式（至少 0x22 + 2 字节 DID；DID 列表长度必须是偶数）
+    if len(request) < 3 or (len(request) - 1) % 2 != 0:
+        return uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+
+    # ② 逐 DID 循环，短路于**第一个**失败的 DID
+    for offset in range(1, len(request), 2):
+        did = (request[offset] << 8) | request[offset + 1]
+
+        # 与 inline 实现等价：override 优先，其次出厂库；两者都没有 → 未知
+        if did not in state.did_overrides and did not in DID_DATABASE:
+            return uds_types.NRC_REQUEST_OUT_OF_RANGE
+
+        if state.security_level < required_security_level(did):
+            return uds_types.NRC_SECURITY_ACCESS_DENIED
+
+    return None
+
+
+def _guard_write_did_length_format(request: bytes, state: EcuState) -> int | None:
+    """``0x2E`` ①：``len >= 4``（``2E <DID:2> <data...>``）→ 否则 ``0x13``。"""
+    if len(request) < 4:
+        return uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+    return None
+
+
+def _guard_write_did_known(request: bytes, state: EcuState) -> int | None:
+    """``0x2E`` ②：DID 必须在 ``DID_DATABASE`` 中 → 否则 ``0x31``（**先于**会话门控）。"""
+    did = (request[1] << 8) | request[2]
+    if did not in DID_DATABASE:
+        return uds_types.NRC_REQUEST_OUT_OF_RANGE
+    return None
+
+
+def _guard_write_did_session(request: bytes, state: EcuState) -> int | None:
+    """
+    ``0x2E`` ③：``session != DEFAULT`` → 否则 ``0x7F``。
+
+    实现**刻意保留** inline 的 ``== SESSION_DEFAULT`` 写法（而非
+    ``not in allowed``），以避免引入新语义（设计文档 §18.1 OD-5）。
+    """
+    if state.session == uds_types.SESSION_DEFAULT:
+        return uds_types.NRC_SERVICE_NOT_SUPPORTED_IN_SESSION
+    return None
+
+
+def _guard_write_did_security(request: bytes, state: EcuState) -> int | None:
+    """``0x2E`` ④：``security_level >= LEVEL1`` → 否则 ``0x33``。"""
+    if state.security_level < uds_types.SECURITY_LEVEL1:
+        return uds_types.NRC_SECURITY_ACCESS_DENIED
+    return None
+
+
+def _guard_write_did_writable(request: bytes, state: EcuState) -> int | None:
+    """``0x2E`` ⑤：DID 必须可写 → 否则 ``0x22``（已知但只读，如 VIN ``0xF190``）。"""
+    did = (request[1] << 8) | request[2]
+    if did not in WRITABLE_DIDS:
+        return uds_types.NRC_CONDITIONS_NOT_CORRECT
+    return None
+
+
+def _guard_write_did_data_length(request: bytes, state: EcuState) -> int | None:
+    """
+    ``0x2E`` ⑥：数据长度必须在 ``WRITABLE_DID_LENGTHS[did]`` 区间内 → 否则 ``0x13``。
+
+    前置条件：⑤ 已保证 DID 可写，因此这里必然能取到长度区间（链式短路）。
+    """
+    did = (request[1] << 8) | request[2]
+    data = bytes(request[3:])
+    min_len, max_len = WRITABLE_DID_LENGTHS[did]
+    if not min_len <= len(data) <= max_len:
+        return uds_types.NRC_INCORRECT_MESSAGE_LENGTH
+    return None
+
+
+def _build_service_specs() -> dict[int, service_spec.ServiceSpec[EcuState]]:
+    """
+    构造静态 ``SERVICES`` 中 **14 个**服务的完整 spec。
+
+    ``0x27`` SecurityAccess 属**动态注入**服务（不在静态表内），由
+    ``SPECS_EXCLUDED`` 显式记录，本函数**不**为它构造 spec（见该常量处说明）。
+
+    授权语义**完全来自当前 inline 实现**：
+
+    - ``0x22`` / ``0x2E``：**有**授权 guard（见上），且 ``payload_scoped=True``。
+    - 其余 12 个：**没有**授权 guard（其 NRC 全部为格式 / 范围 / 序列类），
+      ``guards=()``。
+      **刻意不因为它们"看起来应该有"而新增 session/security 限制** ——
+      那会是行为变更（设计文档 §8.3 明确禁止）。
+    """
+    specs: dict[int, service_spec.ServiceSpec[EcuState]] = {}
+
+    for sid, handler in SERVICES.items():
+        specs[sid] = service_spec.ServiceSpec[EcuState](sid=sid, handler=handler)
+
+    # 0x22：per-DID 权限 → 无法用单一 required_security 概括；NRC 依赖 DID 顺序
+    specs[0x22] = service_spec.ServiceSpec[EcuState](
+        sid=0x22,
+        handler=SERVICES[0x22],
+        guards=(_guard_read_did,),
+        allowed_sessions=None,
+        required_security=None,          # per-DID：F187 → LEVEL1，F190 → LOCKED
+        payload_scoped=True,
+        note="per-DID 安全等级 + NRC 依赖 DID 请求顺序（all-or-nothing）",
+    )
+
+    # 0x2E：整体要求 LEVEL1（合法声明），但完整链还依赖 payload 与**顺序**
+    specs[0x2E] = service_spec.ServiceSpec[EcuState](
+        sid=0x2E,
+        handler=SERVICES[0x2E],
+        guards=(
+            _guard_write_did_length_format,
+            _guard_write_did_known,
+            _guard_write_did_session,
+            _guard_write_did_security,
+            _guard_write_did_writable,
+            _guard_write_did_data_length,
+        ),
+        allowed_sessions=None,           # 真实约束 = "非 DEFAULT"，由 guard ③ 表达
+        required_security=uds_types.SECURITY_LEVEL1,
+        payload_scoped=True,
+        note="六级链 13→31→7F→33→22→13；顺序依赖 payload（未知 DID 先于会话）",
+    )
+
+    return specs
+
+
+#: C1 Phase 1 的服务规格模型：``sid -> ServiceSpec``。
+#:
+#: **Phase 1 不执行本表**（dispatcher 仍走 ``SERVICES``）；它用于
+#: 模型校验 / capability matrix / 审计 / Phase 2 的迁移对拍基准。
+SERVICE_SPECS: dict[int, service_spec.ServiceSpec[EcuState]] = _build_service_specs()
+
+#: 导入期护栏（fail-fast，与 ``dtc_database`` 的做法一致）：
+#: spec 违反结构约束时**模块直接无法导入**，而不是等到运行时才发现。
+#: 规则见 ``service_spec.validate_specs``（含 OD-2 的
+#: ``payload_scoped=True → guards 非空``）。
+service_spec.validate_specs(SERVICE_SPECS)
+
+#: 规格模型必须与静态注册表**覆盖同一组服务**（防止一边增删、另一边漏改）。
+if set(SERVICE_SPECS) != set(SERVICES):
+    raise ValueError(
+        "SERVICE_SPECS 与 SERVICES 的服务集合不一致："
+        f"缺 spec={sorted(set(SERVICES) - set(SERVICE_SPECS))}，"
+        f"多余 spec={sorted(set(SERVICE_SPECS) - set(SERVICES))}"
+    )
+
+
+#: **未纳入** Phase 1 规格模型的服务 → 原因（capability description，非可执行 spec）。
+#:
+#: ``0x27 SecurityAccess`` 刻意**不**放进 ``SERVICE_SPECS``：
+#:
+#: 1. 它**不在静态 ``SERVICES`` 表内**（见上），由 ``ecu.py`` 每请求注入
+#:    （``now`` + ``SECURITY_CONFIG``）—— 这是既有的分层边界；
+#: 2. 它的 authorization-like 行为是**其自身状态机**（seed/key/锁定/过期），
+#:    而**不是**"某服务被授权门控"（设计文档 §2.4 的两个口径）；
+#: 3. 若要把它做成可执行 spec（即补上一个 ``handler``），就必须在这里
+#:    import / 构造那个注入 handler → **迫使 ``handle_uds_request(..., services=...)``
+#:    的对外契约发生变化** —— 那正是设计文档 §18.1 **OD-4** 尚未冻结的接口变更，
+#:    也是本 Phase 明确禁止的动作（"不要擅自改接口"）。
+#:
+#: 因此 Phase 1 对 ``0x27`` 的表达**仅限本说明**：不建 spec、不动注入路径、
+#: 不改状态机。是否纳入属 **OD-6**（依赖 OD-4），留待后续阶段决定。
+SPECS_EXCLUDED: dict[int, str] = {
+    0x27: (
+        "SecurityAccess 不在静态 SERVICES 内，由 ecu.py 每请求注入；"
+        "其行为属自身状态机而非服务门控；纳入 spec 需先解决 OD-4/OD-6"
+        "（services= 契约与注入路径），Phase 1 刻意不改变注入执行路径"
+    ),
+}
+
+#: 覆盖性护栏（fail-fast）：使"某个服务被静默漏建模"成为一个**可执行的**事实。
+if set(SERVICE_SPECS) & set(SPECS_EXCLUDED):
+    raise ValueError(
+        "同一服务不得既建模又被排除："
+        f"{sorted(hex(s) for s in set(SERVICE_SPECS) & set(SPECS_EXCLUDED))}"
+    )
+
+if 0x27 not in SPECS_EXCLUDED:
+    # 0x27 是**已知的注入型服务**（不在静态表、由入口层注入）。
+    # 它必须显式出现在排除清单里，否则就是被静默漏掉了。
+    raise ValueError("0x27 SecurityAccess 必须显式出现在 SPECS_EXCLUDED 中")
 
 
 def handle_uds_request(
