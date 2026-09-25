@@ -167,6 +167,14 @@ run_unit() {
 
     echo
 
+    if "$PYTHON_BIN" "$TESTS_DIR/test_c1_phase2_b2_0x2e_golden.py"; then
+        ok "C1 phase 2 B2 0x2E legacy oracle replay equivalence passed"
+    else
+        fail "C1 phase 2 B2 0x2E golden replay failed"
+    fi
+
+    echo
+
     if "$PYTHON_BIN" "$TESTS_DIR/test_dtc_unit.py"; then
         ok "0x19 ReadDTCInformation unit tests passed"
     else
