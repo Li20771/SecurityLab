@@ -159,6 +159,14 @@ run_unit() {
 
     echo
 
+    if "$PYTHON_BIN" "$TESTS_DIR/test_c1_phase2_b0_0x2e_golden.py"; then
+        ok "C1 phase 2 B0 0x2E legacy golden corpus structure tests passed"
+    else
+        fail "C1 phase 2 B0 0x2E golden tests failed"
+    fi
+
+    echo
+
     if "$PYTHON_BIN" "$TESTS_DIR/test_dtc_unit.py"; then
         ok "0x19 ReadDTCInformation unit tests passed"
     else
