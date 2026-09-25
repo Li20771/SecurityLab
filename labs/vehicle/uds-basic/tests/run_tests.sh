@@ -183,6 +183,14 @@ run_unit() {
 
     echo
 
+    if "$PYTHON_BIN" "$TESTS_DIR/test_c2_a0_gateway_golden.py"; then
+        ok "C2 A0 legacy gateway golden corpus structure tests passed"
+    else
+        fail "C2 A0 gateway golden tests failed"
+    fi
+
+    echo
+
     if "$PYTHON_BIN" "$TESTS_DIR/test_dtc_unit.py"; then
         ok "0x19 ReadDTCInformation unit tests passed"
     else
