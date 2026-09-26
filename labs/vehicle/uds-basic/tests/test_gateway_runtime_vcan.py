@@ -27,9 +27,12 @@ ISO-TP 客户端只能听到**自己绑定的那一个** CAN ID。"功能寻址�
 "响应没有串到别的应答 ID 上"这两件事只有在总线层看全部帧才能证明。
 
 **本层的服务集 = gateway.VirtualEcu 的静态表**（0x10/0x11/0x14/0x19/0x22/
-0x2E/0x31/0x34–0x38/0x3E/0x85），**不含 0x27 SecurityAccess** —— 这是 gateway.py
-既有的分层边界（0x27 需要运行时注入，归属 ecu.py 入口层），不是 OQ7 的遗漏。
-详见 `test_security_access_is_not_reachable_through_the_gateway_layer`。
+0x2E/0x31/0x34–0x38/0x3E/0x85）**加上 C3 接线的 0x27 SecurityAccess**。
+
+0x27 不在静态表内（它需要请求时依赖），C3 起由**入口层**通过
+`gateway.build_default_gateway(services_provider=…)` 接线注入 ——
+`build_runtime()` 默认接线。状态机仍只有一份（`uds_server.service_security_access`）。
+详见 `test_security_access_is_reachable_through_the_gateway_layer`。
 
 只使用 vcan0，不接触真实 CAN / 真实 ECU / 真实车辆。
 
@@ -107,6 +110,11 @@ TESTER_PRESENT_RESPONSE = bytes([0x7E, 0x00])
 NRC_SERVICE_NOT_SUPPORTED_IN_SESSION = 0x7F
 NRC_SECURITY_ACCESS_DENIED = 0x33
 NRC_SERVICE_NOT_SUPPORTED = 0x11
+
+#: 0x27 RequestSeed 的 seed 长度（与 `keygen.SEED_LENGTH` 一致）。
+#: 本层**刻意不把 ECU 侧模块 import 进本进程**（守护进程以子进程驱动），
+#: 故沿用本文件既有的"本地定义协议常量"风格（同上方的 NRC_* 常量）。
+SECURITY_ACCESS_SEED_LENGTH = 4
 NRC_INCORRECT_MESSAGE_LENGTH = 0x13
 
 #: 可在真实 ISO-TP 上发送的畸形 / 边界请求（写入本文件前实测取得）。
@@ -641,22 +649,41 @@ class TestGatewayRuntimeOnVcan(unittest.TestCase):
                     bytes([0x62, 0xF1, 0x02]) + DEFAULT_CONFIG,
                 )
 
-    def test_security_access_is_not_reachable_through_the_gateway_layer(self):
+    def test_security_access_is_reachable_through_the_gateway_layer(self):
         """
-        边界记录：**0x27 SecurityAccess 当前不经 gateway 层提供**（已知边界）。
+        **C3 契约**：0x27 SecurityAccess **经 gateway 层可达**。
 
-        `gateway.VirtualEcu` 的默认 handler 使用 `uds_server` 的**静态** SERVICES
-        表，该表不含 0x27 —— 见 `gateway.py::_default_handler_for` 的说明：
-        0x27 需要运行时时间/配置注入，归属 `ecu.py` 入口层，网关层聚焦路由。
+        .. important::
+           本用例是 **C3-B1 的迁移结果**（C3-OD-15）。
 
-        因此本 runtime 也不提供 0x27。这不是 OQ7 引入的缺陷，而是既有分层边界
-        的直接结果；本用例把它**显式固化**，避免被误读成漏接。若后续 OQ 决定让
-        网关透传 0x27（需同时解决"每 ECU 独立注入"与"不重复定义注入语义"），
-        本用例应随之更新。
+           C3 之前，本位置断言的是"C2 时代分层边界"：
+
+               Gateway 27 01 → 7F 27 11（serviceNotSupported）
+
+           C3 起该行为被**有意改变**：入口层通过
+           `gateway.build_default_gateway(services_provider=…)` 把 0x27 的
+           **请求时依赖**（now + SECURITY_CONFIG）注入默认 handler；
+           `build_runtime()` 默认接线。状态机**仍只有一份**
+           （`uds_server.service_security_access`），本层不新增第二套。
+
+           实现前的历史基线仍完整保留在
+           `tests/golden/c3_security_access_baseline.json`（**未被重写**）。
         """
+        response = send_request(*ECU_A, bytes([0x27, 0x01]))
+
+        # 肯定响应：67 01 <4 字节 seed>
         self.assertEqual(
-            send_request(*ECU_A, bytes([0x27, 0x01])),
-            bytes([0x7F, 0x27, NRC_SERVICE_NOT_SUPPORTED]),
+            len(response), 2 + SECURITY_ACCESS_SEED_LENGTH, f"响应 = {response.hex(' ')}"
+        )
+        self.assertEqual(response[0], 0x67)
+        self.assertEqual(response[1], 0x01)
+        self.assertNotEqual(response[2:], bytes(SECURITY_ACCESS_SEED_LENGTH), "seed 不应全零")
+
+    def test_other_ecus_do_not_answer_a_physical_security_access(self):
+        """响应只落在目标 ECU 自己的 response_id 上（0x7E1 → 0x7E9）。"""
+        self.assertEqual(
+            len(send_request(*ECU_B, bytes([0x27, 0x01]))),
+            2 + SECURITY_ACCESS_SEED_LENGTH,
         )
 
 

@@ -362,13 +362,14 @@ def _security_services() -> dict:
       只有本函数在每次请求时、于 ``ecu`` 命名空间内按名字解析才能让 patch 生效。
     - ``SECURITY_CONFIG`` 必须**原对象引用**传入，不得 copy 或重建，
       以保持"配置改动即时可见"的语义。
+
+    **绑定本身委托给** ``uds_server.security_access_services()``（C3-OD-4）——
+    与 Gateway 路径**同一份定义**，避免两份注入语义各自漂移。
     """
-    return {
-        0x27: uds_server._make_security_access_handler(
-            now=_now(),
-            security_config=SECURITY_CONFIG,
-        )
-    }
+    return uds_server.security_access_services(
+        now=_now(),
+        security_config=SECURITY_CONFIG,
+    )
 
 
 def handle_uds_request(request: bytes) -> bytes:  # noqa: F811

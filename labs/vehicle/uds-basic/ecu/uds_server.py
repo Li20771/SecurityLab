@@ -2121,6 +2121,31 @@ def _make_security_access_handler(
     return handler
 
 
+def security_access_services(
+    *,
+    now: float,
+    security_config: Mapping[str, int],
+) -> dict[int, Callable[[bytes, EcuState], bytes]]:
+    """
+    0x27 运行时依赖绑定的**唯一定义**（C3-OD-4）。
+
+    直连 ECU 入口（``ecu._security_services``）与 Gateway 路径（``gateway`` 的
+    ``services_provider``）**都必须经本函数**构造 0x27 服务条目 —— 这样
+    "依赖 → services 表"这一步只有一处实现，不会出现两份注入语义各自漂移
+    （设计 §9.2 的"不重复定义注入语义"）。
+
+    与 :func:`_make_security_access_handler` 相同的约束：
+
+    * ``now`` 必须是**已求值的 float**，且调用方必须**每次请求**现场求值
+      （不得缓存结果或缓存 callable，否则时间注入会静默失效）；
+    * ``security_config`` 必须是**原对象引用**，不得 copy/snapshot。
+
+    :returns: ``{0x27: handler}`` —— 可直接与 ``SERVICES`` 合并后交给
+        :func:`handle_uds_request`。
+    """
+    return {0x27: _make_security_access_handler(now=now, security_config=security_config)}
+
+
 #: UDS 静态服务注册表：服务标识符 → 处理函数。
 #:
 #: 所有条目的调用形态统一为 ``handler(request, state) -> bytes``。

@@ -123,22 +123,51 @@ CURRENT_POLICY_REQUIRED_SYMBOLS = (
 )
 
 #: 受控共享依赖 —— 协议层 / ECU 基础设施在 ``4059cf5`` 时的 git blob SHA。
-#:
 #: 这些模块被 Legacy 与 Current **共同调用**。钉住它们使"两条路径只差
 #: gateway.py"成为**可验证事实**而非假设：任何一项漂移都会 fail-closed。
 #: （``gateway.py`` 本体**不在此表** —— 它是被差分的主体。）
+#:
+#: .. important::
+#:    **C3-A1-X1 Shared Dependency Rebaseline（C3 授权，2026-09-26）**
+#:
+#:    本表的 **3 个条目**已按 C3-A1 的**冻结设计**做过一次受控 rebaseline：
+#:
+#:         ecu.py             710d6515… → 0817e17b…
+#:         gateway_runtime.py 85604271… → 0c12cb7b…
+#:         uds_server.py      72342bc1… → 94c74e12…
+#:
+#:    原 pin 指向 ``4059cf5``（C2 捕获）时代的 blob；C3-A1 有意修改了这三个模块
+#:    （新增 ``security_access_services`` / 委托绑定 / 入口层 provider wiring）。
+#:    fail-closed **正确触发**后，按 A2 文档的处置纪律
+#:    （"不得静默更新 pin —— 必须重新评估并记录理由"）完成重新评估与记录。
+#:
+#:    **这不是放宽检查**：本表语义（逐模块字节同一性、任何漂移即失败）**未变**，
+#:    fail-closed 机制**未删除**。新增的 C3 载荷**未**被任何 pin 覆盖为"免检"。
+#:
+#:    影响评估（详见 ``test_c2_a2_legacy_current_differential.py`` 与
+#:    ``docs/OQ_C2_A2_LEGACY_CURRENT_DIFFERENTIAL_2026-09-25.md`` 的 Rebaseline Addendum）：
+#:
+#:    * ``uds_server.py``       **纯增量**（+25 / 0 删除）
+#:    * ``ecu.py``              仅改为委托；``_now()`` 仍按 **ecu 命名空间**解析、
+#:                              ``SECURITY_CONFIG`` 仍是**原对象引用**
+#:    * ``gateway_runtime.py``  入口层纯增量；C2-A2 的 20 条差分执行**不经过**它
+#:
+#:    其余 9 个条目仍指向 ``4059cf5`` 时代的 blob，**未变**。
 CONTROLLED_SHARED_DEPENDENCIES = {
     "did_database.py": "84150295c82134f54b62a09b2f694f1f61f65644",
     "dtc_database.py": "4d80ef2418b007a7fded022d183d4b69c1ecd914",
     "dtc_runtime.py": "cbc63e7e3daf71409cc91e66c18e96b193f17145",
-    "ecu.py": "710d6515e1e50204c398f82e3368559d87b4c806",
+    # C3-A1 rebaseline（原 710d6515e1e50204c398f82e3368559d87b4c806）
+    "ecu.py": "0817e17be858ce7eec132733418b72199de10e50",
     "file_database.py": "b0df31992180b4764bbc0d2d1af8c2576679a75d",
-    "gateway_runtime.py": "85604271db0640c732bb32cffd3f36047ebbcece",
+    # C3-A1 rebaseline（原 85604271db0640c732bb32cffd3f36047ebbcece）
+    "gateway_runtime.py": "0c12cb7bc06771daa72732d5422c94c05cb3fe79",
     "keygen.py": "29162aa930ae84033450aba1dc4505a50e512370",
     "routine_database.py": "addd49e662f3215280a6cf552e31dbf7e5917346",
     "service_spec.py": "128f8e5c287547213d6c345f80b3371ceec7930e",
     "transfer_database.py": "b255083535896f9cb18063df871b5686c211a220",
-    "uds_server.py": "72342bc1a8decc44fdb857071e54cd87a31ec101",
+    # C3-A1 rebaseline（原 72342bc1a8decc44fdb857071e54cd87a31ec101）
+    "uds_server.py": "94c74e126d4114587f8a7888845ef1111990074f",
     "uds_types.py": "2d07d66b709feea2ae51d1fef7a3f0aff5f0da19",
 }
 
