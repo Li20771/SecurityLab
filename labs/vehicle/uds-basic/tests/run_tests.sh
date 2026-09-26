@@ -215,6 +215,14 @@ run_unit() {
 
     echo
 
+    if "$PYTHON_BIN" "$TESTS_DIR/test_c3_a0_baseline.py"; then
+        ok "C3 A0 security access baseline (pre-implementation) passed"
+    else
+        fail "C3 A0 security access baseline failed"
+    fi
+
+    echo
+
     if "$PYTHON_BIN" "$TESTS_DIR/test_dtc_unit.py"; then
         ok "0x19 ReadDTCInformation unit tests passed"
     else
