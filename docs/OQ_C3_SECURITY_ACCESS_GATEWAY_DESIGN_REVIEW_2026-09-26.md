@@ -1,6 +1,7 @@
 # OQ C3 —— 0x27 SecurityAccess through Gateway（设计评审）
 
-> 状态：**DESIGN REVIEW —— 待评审冻结**
+> 状态：**DESIGN REVIEW = PASS —— 待评审冻结**
+> `BLOCKING = 0` ／ `DEFERRED = 3` ／ `RESOLVED = 2`（C3-B1、C3-OQ-12）／ `READY_FOR_REVIEW = YES`
 > 日期：2026-09-26
 > 分支：`audit/oq-c3-security-access-gateway-design-20260926`
 > 基线：`main = 8ed53fa430bcdac81167b4632f60ad98a3b70318`（= C2-A5 merge commit，PR #49）
@@ -173,7 +174,7 @@ SECURITY_CONFIG                              在 test_ecu_unit.py 中被引用 8
 |---|---|---|
 | `test_c1_contract_pins.py::TestFfSecurityAccessInjectionBoundary` | `services=None` 时 `27 01` → `7F 27 11` | **C3 不改变**：C3 只注入，不改静态层 ✓ |
 | `test_c1_contract_pins.py::TestN7StaticRegistryKeySet` | `SERVICES` 的 key set **恰好 14 个**，且 `0x27 not in SERVICES` | **直接否决候选 A**（见 §8） |
-| `test_gateway_runtime_vcan.py::test_security_access_is_not_reachable_through_the_gateway_layer` | 经 gateway（vcan）`27 01` → `7F 27 11` | **C3 必然改变它** → BLOCKING（见 §16） |
+| `test_gateway_runtime_vcan.py::test_security_access_is_not_reachable_through_the_gateway_layer` | 经 gateway（vcan）`27 01` → `7F 27 11` | **C2 历史边界契约；C3 有意改变它** → **C3-B1 = RESOLVED**（§16.2 / C3-OD-15） |
 
 第三条的 docstring 原文：
 
@@ -823,38 +824,105 @@ DESIGN DECISION：C3 不定义任何新的 reset 语义；上表行为由既有�
 
 ### C3-OQ-12 —— provider 的返回值是否允许覆盖 0x27 以外的服务
 
+**RESOLVED —— 允许，并与既有 `services=` override contract 同构。**
+
 ```
 FACT：`{**uds_server.SERVICES, **provider()}` —— provider 的键**会覆盖**静态表同名 SID。
-问题：这是否是一个新的 override 面（可替换 0x22/0x2E 等）？
-状态：**OPEN QUESTION（评审确认项）**。
-倾向：**接受**，因为它与既有 `services=` 覆盖契约同构
-      （`resolve_service_spec` 已明确"覆盖取代而非合并；对已建模 SID 仅替换 handler、
-      不替换授权"）。但必须由 C3-A4 显式固化该语义，不能默认。
+
+DECISION：允许。语义与既有 `resolve_service_spec()` 的覆盖契约**同构**：
+
+    同名 SID       由 provider **覆盖**
+    未同名 SID     保留静态 service
+    对已有 ServiceSpec 的 SID：**handler 可以被替换，但 C1 guards 语义不得被绕过**
+                    （既有契约原文："services= 覆盖的是**实现**，**不是授权**"）
+```
+
+**冻结的 10 条限制（C3-A1 必须遵守，C3-A4 必须显式审计）**：
+
+```
+ 1  provider **仅**负责 runtime dependency binding
+ 2  不得改变 C1 ServiceSpec / guard 语义
+ 3  不得改变 C2 policy 维度
+ 4  C2 policy 仍严格为 (target, addressing_mode, SID)
+ 5  0x27 状态机仍**只有** uds_server.service_security_access()
+ 6  keygen 仍**只有** keygen.generate_seed / derive_key / verify_key
+ 7  now 必须**每次请求重新求值**
+ 8  不得缓存旧 now
+ 9  SECURITY_CONFIG 继续保持现有**对象引用**语义
+10  C3-A4 必须显式审计：provider override / same-SID override
+    **不得**造成第二套 0x27 状态机，
+    **不得**绕过 C2 policy 或 C1 guard
+```
+
+### C3-OQ-13 —— 是否还需要独立的 runtime dependency carrier 层（候选 D）
+
+**DEFERRED**（不阻塞 C3 实现）
+
+```
+问题：是否把"运行时依赖"抽象成独立 carrier 层，供 ecu.py 与 gateway.py 共用？
+
+为何暂缓（§8 候选 D 的评估结论）：
+    · 现有 `uds_server._make_security_access_handler` + 本设计的
+      `security_access_services()` 已构成"依赖 → handler"的绑定器，再包一层无新增表达力；
+    · 需要迁移 `_now` / `SECURITY_CONFIG`，而它们被既有测试强耦合
+      （patch 3 处 / 引用 8 次）⇒ 会破坏既有测试契约；
+    · 每多一层抽象就多一个 C3-A4 需要审计的 override 面。
+
+归属：未来架构 —— **若出现第二个依赖消费者**（例如 0x29/0x28 等同样需要
+      请求时依赖的服务）再重新评估。
 ```
 
 ---
 
 ## 16. Blocking vs Deferred
 
-### 16.1 BLOCKING（1 项）
+### 16.1 BLOCKING（0 项）
 
-| # | 项 | 为何阻塞 | 需要什么才能解除 |
-|---|---|---|---|
-| **C3-B1** | `test_gateway_runtime_vcan.py::test_security_access_is_not_reachable_through_the_gateway_layer` 断言"经 gateway `27 01` → `7F 27 11`"，而 C3 的目标正是**改变**该行为 | C3-A1 一旦落地，该 vcan pin **必然失败**；而 C3 约束为"不修改 tests" ⇒ 必须先取得显式授权 | 用户明确授权：在 C3-A1 中**按该 pin docstring 自身的指引更新它**（改为"经 gateway `27 01` → `67 01 <seed>`"）。**本设计阶段不修改该文件。** |
+```
+当前无 BLOCKING 项。
+```
 
-**该 pin 的 docstring 原文已授权此更新**：
+### 16.2 RESOLVED（2 项）
 
+| # | 项 | 冻结表述 |
+|---|---|---|
+| **C3-B1** | vcan pin `test_security_access_is_not_reachable_through_the_gateway_layer` | **RESOLVED**（见下） |
+| **C3-OQ-12** | provider 覆盖 0x27 以外服务的语义 | **RESOLVED**（§15，含 10 条限制） |
+
+#### C3-B1 = RESOLVED
+
+```
+C2 阶段该测试断言"Gateway 当前不提供 0x27"，
+属于 **C2 历史边界契约**。
+
+进入 C3 后，该行为将被**有意改变**。
+
+C3-A1 implementation 必须：
+    · 更新该旧 pin
+    · 改为 Gateway 0x27 **正常可达**契约
+    · 增加必要的 0x27 Gateway 覆盖
+    · 本 Design 阶段**不修改测试文件**
+
+因此：C3-B1 = RESOLVED
+      不是 implementation 缺失造成的设计 blocker。
+```
+
+> 该 pin 的 docstring 原文已预告此更新：
 > "若后续 OQ 决定让网关透传 0x27（需同时解决"每 ECU 独立注入"与"不重复定义注入语义"），
 > 本用例应随之更新。"
+> 本设计正是"后续 OQ 的决定"，且 §9.2 已给出两个技术难点的解法。
+>
+> **归属澄清（避免误读）**：C3-B1 从来不是"设计缺口"，而是**跨阶段契约交接**
+> —— 该 pin 冻结的是 C2 时期的可达性事实，C3 有意改变它，
+> 因此更新动作属于 **C3-A1 的实现范围**，由本节显式授权并限定范围。
 
-本设计正是"后续 OQ 的决定"，且 §9.2 已给出两个技术难点的解法。
-
-### 16.2 DEFERRED（3 项，不阻塞）
+### 16.3 DEFERRED（3 项，不阻塞）
 
 ```
 C3-OQ-10  functional 0x27 空转副作用的专门抑制机制
 C3-OQ-11  per-ECU SECURITY_CONFIG
-C3-OQ-12  provider 覆盖 0x27 以外服务的语义（倾向接受，需 C3-A4 显式固化）
+C3-OQ-13  provider 之外是否还需要独立的 runtime dependency carrier 层
+          （候选 D；当前判定为过度抽象，若出现第二个依赖消费者再评估）
 ```
 
 ### 16.3 NON-GOAL（回顾）
@@ -885,6 +953,8 @@ C3-OQ-12  provider 覆盖 0x27 以外服务的语义（倾向接受，需 C3-A4 
 | **C3-OD-11** | C3-A2 采用 **Direct ECU ↔ Gateway 双路径差分**（oracle = 直连 ECU 路径） | 待冻结 |
 | **C3-OD-12** | 迁移沿用六段式；每个阶段只承担单一证据职责 | 待冻结 |
 | **C3-OD-13** | C2-OD-1 … C2-OD-9 **一条也不修改**；若 C3 必须改 C2 冻结内容，须作为 BLOCKING OQ 提出而非直接实现 | 待冻结 |
+| **C3-OD-14** | provider override 语义：`{**SERVICES, **provider()}` 允许同名覆盖，与既有 `services=` 契约同构；但 provider **仅**做 runtime dependency binding，**不得**改变 C1 guard 语义 / C2 policy 维度，**不得**产生第二套 0x27 状态机（§15 C3-OQ-12 的 10 条限制即为本条内容） | 待冻结 |
+| **C3-OD-15** | C3-B1 的处置：该 vcan pin 属 **C2 历史边界契约**，C3 **有意改变**该行为；更新动作属 **C3-A1 实现范围**，须改为"Gateway 0x27 正常可达"契约并补充必要覆盖；**Design 阶段不修改该测试文件** | 待冻结 |
 
 ---
 
@@ -895,7 +965,7 @@ C3-Design（本文档）            ← 待评审冻结
       ↓
 C3-A0  baseline evidence       （冻结直连 ECU 的 0x27 行为；**不创建 Golden 于本阶段**）
       ↓
-C3-A1  implementation          （机制 + 接线；**需先解除 C3-B1**）
+C3-A1  implementation          （机制 + 接线；含按 C3-OD-15 更新 C3-B1 的旧 pin）
       ↓
 C3-A2  Direct ECU ↔ Gateway differential
       ↓
@@ -915,6 +985,19 @@ C3-A5  Exit Review
 | 分类 | 数量 | 明细 |
 |---|---|---|
 | **FACT** | §3 / §4 / §6 的源码事实 + §7.3 的 **9 组实测** + §3.5 的测试资产与 **3 条冻结断言** | 均以 `main` 实际源码或只读实测为准 |
-| **DESIGN DECISION** | **13 条** | C3-OD-1 … C3-OD-13（§17） |
-| **OPEN QUESTION** | **1 项 BLOCKING（C3-B1）+ 3 项 DEFERRED（C3-OQ-10/11/12）** | §16 |
+| **DESIGN DECISION** | **15 条** | C3-OD-1 … C3-OD-15（§17） |
+| **OPEN QUESTION** | **BLOCKING = 0**；**RESOLVED = 2**（C3-B1、C3-OQ-12）；**DEFERRED = 3**（C3-OQ-10/11/13） | §16 |
 | **NON-GOAL** | **7 条** | §1 |
+
+```
+BLOCKING       = 0
+DEFERRED       = 3
+RESOLVED       = 2      （C3-B1、C3-OQ-12）
+DECIDED（OQ）   = 8      （C3-OQ-1/2/3/4/5/6/7/8/9 —— OQ-1 为 ALLOW + KNOWN LIMITATION）
+DESIGN DECISION = 15    （C3-OD-1 … OD-15）
+
+C3-B1     = RESOLVED
+C3-OQ-12  = RESOLVED
+当前 BLOCKING = 0
+READY_FOR_REVIEW = YES
+```
