@@ -397,3 +397,143 @@ C3    = NOT STARTED
 ```
 
 **A2 完成后不自动进入 A3。**
+
+---
+
+# C3-A1-X1 Shared Dependency Rebaseline Addendum
+
+> 追加日期：2026-09-26 ／ 触发阶段：**C3-A1** ／ 裁决：**X1-a**
+>
+> **本节为追加记录。上文第 1–13 节为 C2-A2 当时的历史事实，一字未改。**
+
+## X1.1 原始 C2-A2 baseline（历史事实，未变）
+
+C2-A2 当时，受控共享依赖被钉在 **`4059cf5`（C2 捕获 commit）时代** 的 blob：
+
+```
+uds_server.py       72342bc1a8decc44fdb857071e54cd87a31ec101
+ecu.py              710d6515e1e50204c398f82e3368559d87b4c806
+gateway_runtime.py  85604271db0640c732bb32cffd3f36047ebbcece
+（另 9 个模块的 pin 一并见 tests/c2_differential_lib.py）
+```
+
+该 pin 使"**两条路径只差 `gateway.py`**"成为**可验证事实**而非假设 —
+任何一项漂移都会 **fail-closed**。本节记录的原始结论**完整保留**：
+
+```
+4059cf5-era
+response matches     = 20 / 20
+state    matches     = 20 / 20
+legacy  anchor       = 20 / 20
+current anchor       = 20 / 20
+mismatches           = 0
+```
+
+## X1.2 C3-A1 的有意修改
+
+C3-A1（按 **C3 Design Freeze** 的候选 C）**有意**修改了上表中的三个模块：
+
+```
+uds_server.py       新增 security_access_services(*, now, security_config)
+                    —— 0x27 运行时依赖绑定的**唯一定义**（C3-OD-4）
+ecu.py              _security_services() 改为**委托**上述唯一绑定定义
+gateway_runtime.py  新增入口层 runtime provider wiring
+                    （_gateway_services_provider + build_runtime 参数）
+```
+
+## X1.3 三处修改的性质（逐项核实）
+
+| 模块 | 性质 | 对 C2-A2 的 20 条差分执行路径 |
+|---|---|---|
+| `uds_server.py` | **纯增量**：`+25` 行 / **0 删除行**，只新增函数 | 无影响 |
+| `ecu.py` | 仅改变**绑定实现**；`_now()` 仍按 **`ecu` 命名空间**解析、`SECURITY_CONFIG` 仍是**原对象引用** | 无影响 |
+| `gateway_runtime.py` | **入口层**纯增量 | **C2-A2 的 20 条差分执行不经过 `gateway_runtime`** |
+
+独立佐证（C3-A1 阶段实测）：
+
+```
+22 组输入（覆盖全部 14 个 SID + 未注册 SID + 空请求）在
+    services=None  vs  {**SERVICES}  vs  {**SERVICES, 0x27}
+三种解析路径下逐一比较 ⇒ 不一致数 = 0 / 0
+```
+
+另：C3-A1 对 `gateway.py` 的改动中**没有任何 policy 相关行**
+（`DEFAULT_POLICY` / `PolicyDecision` / `_allow(` / `self.policy` 一处未碰）
+⇒ **C2 policy 语义未被触碰**。
+
+## X1.4 fail-closed 已正确触发
+
+```
+[FAIL] test_no_shared_dependency_drift
+    "协议层共享依赖已偏离 4059cf5 —— A2 的差分前提失效，
+     必须重新评估（而不是静默更新 pin）"
+```
+
+**该失败是 pin 的预期行为，不是 C3 实现缺陷。** 它精确地报告了
+"C3-A1 已按冻结设计修改了被锁定的模块"这一事实。
+
+## X1.5 本次处置的性质
+
+```
+这不是"放宽检查"，而是一次：
+    "C3-authorized shared dependency baseline rebaseline"
+```
+
+具体地：
+
+```
+未删除   CONTROLLED_SHARED_DEPENDENCIES
+未删除   shared_dependency_drift()
+未删除   fail-closed 检查
+未弱化   为模糊的语义检查（未采用 X1-c）
+未修改   旧 legacy source pin（4059cf5 的 commit / blob / LF SHA 全部不变）
+未修改   20 条 frozen case
+未修改   c2_gateway_legacy.json
+未修改   legacy gateway frozen copy
+```
+
+**只做了**：把上表中 3 个条目的 active pin 从 `4059cf5` 时代的值
+**受控迁移**到 C3-A1 之后的值，并在 pin 表处与本节留下
+**old → new 的显式记录**。表语义（逐模块字节同一性、任何漂移即失败）**未变**。
+
+```
+uds_server.py       72342bc1… → 94c74e12…
+ecu.py              710d6515… → 0817e17b…
+gateway_runtime.py  85604271… → 0c12cb7b…
+（其余 9 个条目仍指向 4059cf5 时代的 blob，未变）
+```
+
+## X1.6 Rebaseline 后的重新验证
+
+按 A2 文档 §4.1 的处置纪律（"不得静默更新 pin —— 必须先重新评估
+A2 差分是否仍然成立，并记录理由"），rebaseline 之后**重新执行**了完整差分：
+
+```
+python3 labs/vehicle/uds-basic/tests/test_c2_a2_legacy_current_differential.py
+
+Ran 46 tests … OK
+
+cases                = 20
+legacy executions    = 20
+current executions   = 20
+response matches     = 20 / 20
+state    matches     = 20 / 20
+legacy  anchor       = 20 / 20
+current anchor       = 20 / 20
+mismatches           = 0
+
+test_no_shared_dependency_drift = PASS
+```
+
+同时确认：
+
+```
+frozen case set      = 仍为原 20 条（首 P1-physical-ecu-a / 末 D1-tester-present）
+legacy impl blob     = e64cd088fc86bf9e6b1c5dfb2bb1b80cae5ab39a（不变）
+C2 Golden blob       = 541395b82e74ce915830fea23369e21c65fe7b27（不变）
+corpus 头            = policy_execution = "absent" / captured_at_commit = 83d1f52d…（不变）
+C2 policy semantics  = 未被触碰
+```
+
+**结论**：原始历史结论（§X1.1）与 Rebaseline 后的重新验证（§X1.6）一致 ——
+差分在 C3-A1 之后**仍然成立**。
