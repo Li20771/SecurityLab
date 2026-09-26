@@ -207,6 +207,14 @@ run_unit() {
 
     echo
 
+    if "$PYTHON_BIN" "$TESTS_DIR/test_c2_a4_override_bypass.py"; then
+        ok "C2 A4 override / bypass invariant audit passed"
+    else
+        fail "C2 A4 override / bypass audit failed"
+    fi
+
+    echo
+
     if "$PYTHON_BIN" "$TESTS_DIR/test_dtc_unit.py"; then
         ok "0x19 ReadDTCInformation unit tests passed"
     else
