@@ -1,0 +1,2850 @@
+{
+  "schema_version": 1,
+  "description": "C3-A0 —— 0x27 SecurityAccess 实现前基线（direct ECU + gateway）",
+  "captured_at_commit": "4cb85274b35ab52fa7df06a346f7afe495ab6714",
+  "c2_design_baseline": "4cb85274b35ab52fa7df06a346f7afe495ab6714",
+  "c3_implementation_present": false,
+  "gateway_0x27_reachable": false,
+  "functional_address": 2015,
+  "base_clock": 1000.0,
+  "security_config": {
+    "max_attempts": 3,
+    "lockout_seconds": 10,
+    "seed_expiry_seconds": 5
+  },
+  "state_projection_fields": [
+    "session",
+    "security_level",
+    "did_overrides"
+  ],
+  "security_state_projection_fields": [
+    "pending_seed",
+    "seed_consumed",
+    "failed_attempts",
+    "lockout_until",
+    "seed_counter"
+  ],
+  "cases": [
+    {
+      "case_id": "D1-request-seed",
+      "description": "直连 ECU：27 01 → 67 01 <seed>",
+      "path": "direct_ecu",
+      "addressing": "physical",
+      "target": null,
+      "policy": "default_allow",
+      "clock": 1000.0,
+      "frozen_boundary": null,
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        "2701"
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "2701",
+            "responses": [
+              [
+                null,
+                "670185ebda6b"
+              ]
+            ]
+          }
+        ],
+        "state": {
+          "ECU": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU": {
+            "pending_seed": "85ebda6b",
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 1
+          }
+        }
+      }
+    },
+    {
+      "case_id": "D2-send-key-without-seed",
+      "description": "直连 ECU：27 02 无 seed → 7F 27 24",
+      "path": "direct_ecu",
+      "addressing": "physical",
+      "target": null,
+      "policy": "default_allow",
+      "clock": 1000.0,
+      "frozen_boundary": null,
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        "270200000000"
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "270200000000",
+            "responses": [
+              [
+                null,
+                "7f2724"
+              ]
+            ]
+          }
+        ],
+        "state": {
+          "ECU": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          }
+        }
+      }
+    },
+    {
+      "case_id": "D3-malformed-length-seed",
+      "description": "直连 ECU：27 01 带多余字节 → 7F 27 13",
+      "path": "direct_ecu",
+      "addressing": "physical",
+      "target": null,
+      "policy": "default_allow",
+      "clock": 1000.0,
+      "frozen_boundary": null,
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        "270100"
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "270100",
+            "responses": [
+              [
+                null,
+                "7f2713"
+              ]
+            ]
+          }
+        ],
+        "state": {
+          "ECU": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          }
+        }
+      }
+    },
+    {
+      "case_id": "D4-malformed-length-key",
+      "description": "直连 ECU：27 02 key 长度不足 → 7F 27 13",
+      "path": "direct_ecu",
+      "addressing": "physical",
+      "target": null,
+      "policy": "default_allow",
+      "clock": 1000.0,
+      "frozen_boundary": null,
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        "270200"
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "270200",
+            "responses": [
+              [
+                null,
+                "7f2713"
+              ]
+            ]
+          }
+        ],
+        "state": {
+          "ECU": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          }
+        }
+      }
+    },
+    {
+      "case_id": "D5-unsupported-subfunction",
+      "description": "直连 ECU：27 03 未支持子功能 → 7F 27 12",
+      "path": "direct_ecu",
+      "addressing": "physical",
+      "target": null,
+      "policy": "default_allow",
+      "clock": 1000.0,
+      "frozen_boundary": null,
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        "2703"
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "2703",
+            "responses": [
+              [
+                null,
+                "7f2712"
+              ]
+            ]
+          }
+        ],
+        "state": {
+          "ECU": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          }
+        }
+      }
+    },
+    {
+      "case_id": "D6-wrong-key",
+      "description": "直连 ECU：seed 后发错误 key → 7F 27 35（failed_attempts=1）",
+      "path": "direct_ecu",
+      "addressing": "physical",
+      "target": null,
+      "policy": "default_allow",
+      "clock": 1000.0,
+      "frozen_boundary": null,
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        "2701",
+        {
+          "wrong_key_for_previous_seed": true
+        }
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "2701",
+            "responses": [
+              [
+                null,
+                "670185ebda6b"
+              ]
+            ]
+          },
+          {
+            "request": "2702d5eb1b7d",
+            "responses": [
+              [
+                null,
+                "7f2735"
+              ]
+            ]
+          }
+        ],
+        "state": {
+          "ECU": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU": {
+            "pending_seed": "85ebda6b",
+            "seed_consumed": false,
+            "failed_attempts": 1,
+            "lockout_until": null,
+            "seed_counter": 1
+          }
+        }
+      }
+    },
+    {
+      "case_id": "D7-third-failure-lockout",
+      "description": "直连 ECU：连续三次错误 key → 35 / 35 / 36 并进入 lockout；随后 27 01 → 37",
+      "path": "direct_ecu",
+      "addressing": "physical",
+      "target": null,
+      "policy": "default_allow",
+      "clock": 1000.0,
+      "frozen_boundary": null,
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        "2701",
+        {
+          "wrong_key_for_previous_seed": true
+        },
+        "2701",
+        {
+          "wrong_key_for_previous_seed": true
+        },
+        "2701",
+        {
+          "wrong_key_for_previous_seed": true
+        },
+        "2701"
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "2701",
+            "responses": [
+              [
+                null,
+                "670185ebda6b"
+              ]
+            ]
+          },
+          {
+            "request": "2702d5eb1b7d",
+            "responses": [
+              [
+                null,
+                "7f2735"
+              ]
+            ]
+          },
+          {
+            "request": "2701",
+            "responses": [
+              [
+                null,
+                "67012423541c"
+              ]
+            ]
+          },
+          {
+            "request": "270288cb1f0c",
+            "responses": [
+              [
+                null,
+                "7f2735"
+              ]
+            ]
+          },
+          {
+            "request": "2701",
+            "responses": [
+              [
+                null,
+                "6701c25acdcd"
+              ]
+            ]
+          },
+          {
+            "request": "27026e255f8b",
+            "responses": [
+              [
+                null,
+                "7f2736"
+              ]
+            ]
+          },
+          {
+            "request": "2701",
+            "responses": [
+              [
+                null,
+                "7f2737"
+              ]
+            ]
+          }
+        ],
+        "state": {
+          "ECU": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 3,
+            "lockout_until": 1010.0,
+            "seed_counter": 3
+          }
+        }
+      }
+    },
+    {
+      "case_id": "D8-lockout-expires",
+      "description": "直连 ECU：锁定到期后再 27 01 → 恢复正常（failed_attempts 归零）",
+      "path": "direct_ecu",
+      "addressing": "physical",
+      "target": null,
+      "policy": "default_allow",
+      "clock": 1000.0,
+      "frozen_boundary": null,
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        "2701",
+        {
+          "wrong_key_for_previous_seed": true
+        },
+        "2701",
+        {
+          "wrong_key_for_previous_seed": true
+        },
+        "2701",
+        {
+          "wrong_key_for_previous_seed": true
+        },
+        {
+          "advance_clock": 11.0
+        },
+        "2701"
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "2701",
+            "responses": [
+              [
+                null,
+                "670185ebda6b"
+              ]
+            ]
+          },
+          {
+            "request": "2702d5eb1b7d",
+            "responses": [
+              [
+                null,
+                "7f2735"
+              ]
+            ]
+          },
+          {
+            "request": "2701",
+            "responses": [
+              [
+                null,
+                "67012423541c"
+              ]
+            ]
+          },
+          {
+            "request": "270288cb1f0c",
+            "responses": [
+              [
+                null,
+                "7f2735"
+              ]
+            ]
+          },
+          {
+            "request": "2701",
+            "responses": [
+              [
+                null,
+                "6701c25acdcd"
+              ]
+            ]
+          },
+          {
+            "request": "27026e255f8b",
+            "responses": [
+              [
+                null,
+                "7f2736"
+              ]
+            ]
+          },
+          {
+            "request": "2701",
+            "responses": [
+              [
+                null,
+                "67016092477e"
+              ]
+            ]
+          }
+        ],
+        "state": {
+          "ECU": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU": {
+            "pending_seed": "6092477e",
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 4
+          }
+        }
+      }
+    },
+    {
+      "case_id": "D9-seed-expiry",
+      "description": "直连 ECU：seed 过期后 27 02 → 7F 27 24",
+      "path": "direct_ecu",
+      "addressing": "physical",
+      "target": null,
+      "policy": "default_allow",
+      "clock": 1000.0,
+      "frozen_boundary": null,
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        "2701",
+        {
+          "advance_clock": 6.0
+        },
+        {
+          "key_for_previous_seed": true
+        }
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "2701",
+            "responses": [
+              [
+                null,
+                "670185ebda6b"
+              ]
+            ]
+          },
+          {
+            "request": "27022a14e482",
+            "responses": [
+              [
+                null,
+                "7f2724"
+              ]
+            ]
+          }
+        ],
+        "state": {
+          "ECU": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU": {
+            "pending_seed": "85ebda6b",
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 1
+          }
+        }
+      }
+    },
+    {
+      "case_id": "D10-replay-consumed-seed",
+      "description": "直连 ECU：成功解锁后重放同一 key → 7F 27 24",
+      "path": "direct_ecu",
+      "addressing": "physical",
+      "target": null,
+      "policy": "default_allow",
+      "clock": 1000.0,
+      "frozen_boundary": null,
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        "2701",
+        {
+          "key_for_previous_seed": true
+        },
+        {
+          "key_for_previous_seed": true
+        }
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "2701",
+            "responses": [
+              [
+                null,
+                "670185ebda6b"
+              ]
+            ]
+          },
+          {
+            "request": "27022a14e482",
+            "responses": [
+              [
+                null,
+                "6702"
+              ]
+            ]
+          },
+          {
+            "request": "27022a14e482",
+            "responses": [
+              [
+                null,
+                "7f2724"
+              ]
+            ]
+          }
+        ],
+        "state": {
+          "ECU": {
+            "session": 1,
+            "security_level": 1,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU": {
+            "pending_seed": null,
+            "seed_consumed": true,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 1
+          }
+        }
+      }
+    },
+    {
+      "case_id": "D11-seed-while-unlocked",
+      "description": "直连 ECU：已解锁时再 27 01 → 7F 27 22",
+      "path": "direct_ecu",
+      "addressing": "physical",
+      "target": null,
+      "policy": "default_allow",
+      "clock": 1000.0,
+      "frozen_boundary": null,
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        "2701",
+        {
+          "key_for_previous_seed": true
+        },
+        "2701"
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "2701",
+            "responses": [
+              [
+                null,
+                "670185ebda6b"
+              ]
+            ]
+          },
+          {
+            "request": "27022a14e482",
+            "responses": [
+              [
+                null,
+                "6702"
+              ]
+            ]
+          },
+          {
+            "request": "2701",
+            "responses": [
+              [
+                null,
+                "7f2722"
+              ]
+            ]
+          }
+        ],
+        "state": {
+          "ECU": {
+            "session": 1,
+            "security_level": 1,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU": {
+            "pending_seed": null,
+            "seed_consumed": true,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 1
+          }
+        }
+      }
+    },
+    {
+      "case_id": "D12-session-switch-relocks",
+      "description": "直连 ECU：解锁后切 extended → security_level 归 LOCKED，惩罚状态保留",
+      "path": "direct_ecu",
+      "addressing": "physical",
+      "target": null,
+      "policy": "default_allow",
+      "clock": 1000.0,
+      "frozen_boundary": null,
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        "2701",
+        {
+          "key_for_previous_seed": true
+        },
+        "1003"
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "2701",
+            "responses": [
+              [
+                null,
+                "670185ebda6b"
+              ]
+            ]
+          },
+          {
+            "request": "27022a14e482",
+            "responses": [
+              [
+                null,
+                "6702"
+              ]
+            ]
+          },
+          {
+            "request": "1003",
+            "responses": [
+              [
+                null,
+                "5003006403e8"
+              ]
+            ]
+          }
+        ],
+        "state": {
+          "ECU": {
+            "session": 3,
+            "security_level": 0,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 1
+          }
+        }
+      }
+    },
+    {
+      "case_id": "D13-ecu-reset-relocks",
+      "description": "直连 ECU：解锁后 0x11 reset → security_level 归 LOCKED（惩罚状态保留）",
+      "path": "direct_ecu",
+      "addressing": "physical",
+      "target": null,
+      "policy": "default_allow",
+      "clock": 1000.0,
+      "frozen_boundary": null,
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        "2701",
+        {
+          "key_for_previous_seed": true
+        },
+        "1101"
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "2701",
+            "responses": [
+              [
+                null,
+                "670185ebda6b"
+              ]
+            ]
+          },
+          {
+            "request": "27022a14e482",
+            "responses": [
+              [
+                null,
+                "6702"
+              ]
+            ]
+          },
+          {
+            "request": "1101",
+            "responses": [
+              [
+                null,
+                "5101"
+              ]
+            ]
+          }
+        ],
+        "state": {
+          "ECU": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 1
+          }
+        }
+      }
+    },
+    {
+      "case_id": "D14-protected-did-while-locked",
+      "description": "直连 ECU：未解锁读受保护 DID → 7F 22 33",
+      "path": "direct_ecu",
+      "addressing": "physical",
+      "target": null,
+      "policy": "default_allow",
+      "clock": 1000.0,
+      "frozen_boundary": null,
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        "22f187"
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "22f187",
+            "responses": [
+              [
+                null,
+                "7f2233"
+              ]
+            ]
+          }
+        ],
+        "state": {
+          "ECU": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          }
+        }
+      }
+    },
+    {
+      "case_id": "D15-protected-did-after-unlock",
+      "description": "直连 ECU：解锁（需 extended）后读受保护 DID → 62 F1 87 …",
+      "path": "direct_ecu",
+      "addressing": "physical",
+      "target": null,
+      "policy": "default_allow",
+      "clock": 1000.0,
+      "frozen_boundary": null,
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        "1003",
+        "2701",
+        {
+          "key_for_previous_seed": true
+        },
+        "22f187"
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "1003",
+            "responses": [
+              [
+                null,
+                "5003006403e8"
+              ]
+            ]
+          },
+          {
+            "request": "2701",
+            "responses": [
+              [
+                null,
+                "670185ebda6b"
+              ]
+            ]
+          },
+          {
+            "request": "27022a14e482",
+            "responses": [
+              [
+                null,
+                "6702"
+              ]
+            ]
+          },
+          {
+            "request": "22f187",
+            "responses": [
+              [
+                null,
+                "62f18753504152452d504152542d30303031"
+              ]
+            ]
+          }
+        ],
+        "state": {
+          "ECU": {
+            "session": 3,
+            "security_level": 1,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU": {
+            "pending_seed": null,
+            "seed_consumed": true,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 1
+          }
+        }
+      }
+    },
+    {
+      "case_id": "G1-physical-27-on-ecu-a",
+      "description": "Gateway 物理 0x7E0 27 01 → 当前 7F 27 11（C2 时代分层边界）",
+      "path": "gateway",
+      "addressing": "physical",
+      "target": 2016,
+      "policy": "default_allow",
+      "clock": 1000.0,
+      "frozen_boundary": "c2_era_gateway_0x27_unreachable",
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        "2701"
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "2701",
+            "can_id": 2016,
+            "responses": [
+              [
+                2024,
+                "7f2711"
+              ]
+            ],
+            "policy_decisions": [
+              {
+                "target": 2016,
+                "addressing_mode": "physical",
+                "sid": 39,
+                "allowed": true
+              }
+            ]
+          }
+        ],
+        "state": {
+          "ECU_A": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          },
+          "ECU_B": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          },
+          "ECU_C": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU_A": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          },
+          "ECU_B": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          },
+          "ECU_C": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          }
+        }
+      }
+    },
+    {
+      "case_id": "G2-response-id-mapping",
+      "description": "Gateway 物理 0x7E1 读公开 DID → 回应在 0x7E9（响应 ID 映射现状）",
+      "path": "gateway",
+      "addressing": "physical",
+      "target": 2017,
+      "policy": "default_allow",
+      "clock": 1000.0,
+      "frozen_boundary": null,
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        "22f190"
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "22f190",
+            "can_id": 2017,
+            "responses": [
+              [
+                2025,
+                "62f1905445535445435530303030303030303031"
+              ]
+            ],
+            "policy_decisions": [
+              {
+                "target": 2017,
+                "addressing_mode": "physical",
+                "sid": 34,
+                "allowed": true
+              }
+            ]
+          }
+        ],
+        "state": {
+          "ECU_A": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          },
+          "ECU_B": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          },
+          "ECU_C": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU_A": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          },
+          "ECU_B": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          },
+          "ECU_C": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          }
+        }
+      }
+    },
+    {
+      "case_id": "G3-old-pin-explicit",
+      "description": "Gateway 物理 0x7E0 27 01 的**当前**取值（C3-B1 旧 pin 所断言的事实）",
+      "path": "gateway",
+      "addressing": "physical",
+      "target": 2016,
+      "policy": "default_allow",
+      "clock": 1000.0,
+      "frozen_boundary": "c2_era_gateway_0x27_unreachable",
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        "2701"
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "2701",
+            "can_id": 2016,
+            "responses": [
+              [
+                2024,
+                "7f2711"
+              ]
+            ],
+            "policy_decisions": [
+              {
+                "target": 2016,
+                "addressing_mode": "physical",
+                "sid": 39,
+                "allowed": true
+              }
+            ]
+          }
+        ],
+        "state": {
+          "ECU_A": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          },
+          "ECU_B": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          },
+          "ECU_C": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU_A": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          },
+          "ECU_B": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          },
+          "ECU_C": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          }
+        }
+      }
+    },
+    {
+      "case_id": "G4-unknown-physical-target",
+      "description": "Gateway 未知物理 target 0x7E5 27 01 → []（路由归属失败，不进入策略）",
+      "path": "gateway",
+      "addressing": "physical",
+      "target": 2021,
+      "policy": "default_allow",
+      "clock": 1000.0,
+      "frozen_boundary": null,
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        "2701"
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "2701",
+            "can_id": 2021,
+            "responses": [],
+            "policy_decisions": []
+          }
+        ],
+        "state": {
+          "ECU_A": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          },
+          "ECU_B": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          },
+          "ECU_C": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU_A": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          },
+          "ECU_B": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          },
+          "ECU_C": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          }
+        }
+      }
+    },
+    {
+      "case_id": "G5-functional-27",
+      "description": "Gateway 功能寻址 27 01 → []，且**当前**不触及任何 ECU 的 0x27 状态",
+      "path": "gateway",
+      "addressing": "functional",
+      "target": null,
+      "policy": "default_allow",
+      "clock": 1000.0,
+      "frozen_boundary": "c2_era_gateway_0x27_unreachable",
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        "2701"
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "2701",
+            "can_id": 2015,
+            "responses": [],
+            "policy_decisions": [
+              {
+                "target": 2016,
+                "addressing_mode": "functional",
+                "sid": 39,
+                "allowed": true
+              },
+              {
+                "target": 2017,
+                "addressing_mode": "functional",
+                "sid": 39,
+                "allowed": true
+              },
+              {
+                "target": 2018,
+                "addressing_mode": "functional",
+                "sid": 39,
+                "allowed": true
+              }
+            ]
+          }
+        ],
+        "state": {
+          "ECU_A": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          },
+          "ECU_B": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          },
+          "ECU_C": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU_A": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          },
+          "ECU_B": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          },
+          "ECU_C": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          }
+        }
+      }
+    },
+    {
+      "case_id": "M1-physical-27-each-ecu",
+      "description": "Gateway 逐个物理寻址 0x7E0/0x7E1/0x7E2 发 27 01（当前均 7F 27 11）",
+      "path": "gateway",
+      "addressing": "physical",
+      "target": 2016,
+      "policy": "default_allow",
+      "clock": 1000.0,
+      "frozen_boundary": "c2_era_gateway_0x27_unreachable",
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        {
+          "route_to": 2016,
+          "request": "2701"
+        },
+        {
+          "route_to": 2017,
+          "request": "2701"
+        },
+        {
+          "route_to": 2018,
+          "request": "2701"
+        }
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "2701",
+            "can_id": 2016,
+            "responses": [
+              [
+                2024,
+                "7f2711"
+              ]
+            ],
+            "policy_decisions": [
+              {
+                "target": 2016,
+                "addressing_mode": "physical",
+                "sid": 39,
+                "allowed": true
+              }
+            ]
+          },
+          {
+            "request": "2701",
+            "can_id": 2017,
+            "responses": [
+              [
+                2025,
+                "7f2711"
+              ]
+            ],
+            "policy_decisions": [
+              {
+                "target": 2017,
+                "addressing_mode": "physical",
+                "sid": 39,
+                "allowed": true
+              }
+            ]
+          },
+          {
+            "request": "2701",
+            "can_id": 2018,
+            "responses": [
+              [
+                2026,
+                "7f2711"
+              ]
+            ],
+            "policy_decisions": [
+              {
+                "target": 2018,
+                "addressing_mode": "physical",
+                "sid": 39,
+                "allowed": true
+              }
+            ]
+          }
+        ],
+        "state": {
+          "ECU_A": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          },
+          "ECU_B": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          },
+          "ECU_C": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU_A": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          },
+          "ECU_B": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          },
+          "ECU_C": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          }
+        }
+      }
+    },
+    {
+      "case_id": "M2-security-state-untouched-by-gateway-27",
+      "description": "Gateway 物理 27 01 后，三个 ECU 的 security state 全部保持初始值",
+      "path": "gateway",
+      "addressing": "physical",
+      "target": 2016,
+      "policy": "default_allow",
+      "clock": 1000.0,
+      "frozen_boundary": "c2_era_gateway_0x27_unreachable",
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        "2701",
+        "2701"
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "2701",
+            "can_id": 2016,
+            "responses": [
+              [
+                2024,
+                "7f2711"
+              ]
+            ],
+            "policy_decisions": [
+              {
+                "target": 2016,
+                "addressing_mode": "physical",
+                "sid": 39,
+                "allowed": true
+              }
+            ]
+          },
+          {
+            "request": "2701",
+            "can_id": 2016,
+            "responses": [
+              [
+                2024,
+                "7f2711"
+              ]
+            ],
+            "policy_decisions": [
+              {
+                "target": 2016,
+                "addressing_mode": "physical",
+                "sid": 39,
+                "allowed": true
+              }
+            ]
+          }
+        ],
+        "state": {
+          "ECU_A": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          },
+          "ECU_B": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          },
+          "ECU_C": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU_A": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          },
+          "ECU_B": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          },
+          "ECU_C": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          }
+        }
+      }
+    },
+    {
+      "case_id": "M3-functional-27-state-effect",
+      "description": "Gateway 功能寻址 27 01 对三个 ECU 安全状态的影响（当前：无）",
+      "path": "gateway",
+      "addressing": "functional",
+      "target": null,
+      "policy": "default_allow",
+      "clock": 1000.0,
+      "frozen_boundary": "c2_era_gateway_0x27_unreachable",
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        "2701"
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "2701",
+            "can_id": 2015,
+            "responses": [],
+            "policy_decisions": [
+              {
+                "target": 2016,
+                "addressing_mode": "functional",
+                "sid": 39,
+                "allowed": true
+              },
+              {
+                "target": 2017,
+                "addressing_mode": "functional",
+                "sid": 39,
+                "allowed": true
+              },
+              {
+                "target": 2018,
+                "addressing_mode": "functional",
+                "sid": 39,
+                "allowed": true
+              }
+            ]
+          }
+        ],
+        "state": {
+          "ECU_A": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          },
+          "ECU_B": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          },
+          "ECU_C": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU_A": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          },
+          "ECU_B": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          },
+          "ECU_C": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          }
+        }
+      }
+    },
+    {
+      "case_id": "M4-per-ecu-isolation-preserved",
+      "description": "Gateway 对 0x7E0 发 27 01 后，0x7E1/0x7E2 的状态不受影响（隔离现状）",
+      "path": "gateway",
+      "addressing": "physical",
+      "target": 2016,
+      "policy": "default_allow",
+      "clock": 1000.0,
+      "frozen_boundary": "c2_era_gateway_0x27_unreachable",
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        {
+          "route_to": 2016,
+          "request": "2701"
+        },
+        {
+          "route_to": 2017,
+          "request": "22f190"
+        }
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "2701",
+            "can_id": 2016,
+            "responses": [
+              [
+                2024,
+                "7f2711"
+              ]
+            ],
+            "policy_decisions": [
+              {
+                "target": 2016,
+                "addressing_mode": "physical",
+                "sid": 39,
+                "allowed": true
+              }
+            ]
+          },
+          {
+            "request": "22f190",
+            "can_id": 2017,
+            "responses": [
+              [
+                2025,
+                "62f1905445535445435530303030303030303031"
+              ]
+            ],
+            "policy_decisions": [
+              {
+                "target": 2017,
+                "addressing_mode": "physical",
+                "sid": 34,
+                "allowed": true
+              }
+            ]
+          }
+        ],
+        "state": {
+          "ECU_A": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          },
+          "ECU_B": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          },
+          "ECU_C": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU_A": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          },
+          "ECU_B": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          },
+          "ECU_C": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          }
+        }
+      }
+    },
+    {
+      "case_id": "C1-policy-allow-27",
+      "description": "policy allow（默认）下 Gateway 27 01 的当前行为",
+      "path": "gateway",
+      "addressing": "physical",
+      "target": 2016,
+      "policy": "default_allow",
+      "clock": 1000.0,
+      "frozen_boundary": "c2_era_gateway_0x27_unreachable",
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        "2701"
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "2701",
+            "can_id": 2016,
+            "responses": [
+              [
+                2024,
+                "7f2711"
+              ]
+            ],
+            "policy_decisions": [
+              {
+                "target": 2016,
+                "addressing_mode": "physical",
+                "sid": 39,
+                "allowed": true
+              }
+            ]
+          }
+        ],
+        "state": {
+          "ECU_A": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          },
+          "ECU_B": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          },
+          "ECU_C": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU_A": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          },
+          "ECU_B": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          },
+          "ECU_C": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          }
+        }
+      }
+    },
+    {
+      "case_id": "C2-policy-deny-27",
+      "description": "policy deny(0x7E1) 下对 0x7E1 发 27 01 → 静默丢弃（[]）",
+      "path": "gateway",
+      "addressing": "physical",
+      "target": 2017,
+      "policy": "deny_target_7e1",
+      "clock": 1000.0,
+      "frozen_boundary": null,
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        "2701"
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "2701",
+            "can_id": 2017,
+            "responses": [],
+            "policy_decisions": [
+              {
+                "target": 2017,
+                "addressing_mode": "physical",
+                "sid": 39,
+                "allowed": false
+              }
+            ]
+          }
+        ],
+        "state": {
+          "ECU_A": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          },
+          "ECU_B": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          },
+          "ECU_C": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU_A": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          },
+          "ECU_B": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          },
+          "ECU_C": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          }
+        }
+      }
+    },
+    {
+      "case_id": "C3-policy-deny-is-silent-drop",
+      "description": "deny 语义：无帧、不合成 NRC、目标 EcuState 不变（含 security state）",
+      "path": "gateway",
+      "addressing": "physical",
+      "target": 2017,
+      "policy": "deny_target_7e1",
+      "clock": 1000.0,
+      "frozen_boundary": null,
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        {
+          "route_to": 2017,
+          "request": "2701"
+        },
+        {
+          "route_to": 2017,
+          "request": "22f190"
+        }
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "2701",
+            "can_id": 2017,
+            "responses": [],
+            "policy_decisions": [
+              {
+                "target": 2017,
+                "addressing_mode": "physical",
+                "sid": 39,
+                "allowed": false
+              }
+            ]
+          },
+          {
+            "request": "22f190",
+            "can_id": 2017,
+            "responses": [],
+            "policy_decisions": [
+              {
+                "target": 2017,
+                "addressing_mode": "physical",
+                "sid": 34,
+                "allowed": false
+              }
+            ]
+          }
+        ],
+        "state": {
+          "ECU_A": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          },
+          "ECU_B": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          },
+          "ECU_C": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU_A": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          },
+          "ECU_B": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          },
+          "ECU_C": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          }
+        }
+      }
+    },
+    {
+      "case_id": "C4-policy-dimensions",
+      "description": "策略输入维度 baseline：(target, addressing_mode, SID) 三元组",
+      "path": "gateway",
+      "addressing": "physical",
+      "target": 2016,
+      "policy": "default_allow",
+      "clock": 1000.0,
+      "frozen_boundary": "c2_era_gateway_0x27_unreachable",
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        "2701"
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "2701",
+            "can_id": 2016,
+            "responses": [
+              [
+                2024,
+                "7f2711"
+              ]
+            ],
+            "policy_decisions": [
+              {
+                "target": 2016,
+                "addressing_mode": "physical",
+                "sid": 39,
+                "allowed": true
+              }
+            ]
+          }
+        ],
+        "state": {
+          "ECU_A": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          },
+          "ECU_B": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          },
+          "ECU_C": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU_A": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          },
+          "ECU_B": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          },
+          "ECU_C": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          }
+        }
+      }
+    },
+    {
+      "case_id": "X1-same-request-both-paths",
+      "description": "同一请求在两条路径上的**实现前**结果对照（A0 不要求相等，只冻结现状）",
+      "path": "gateway",
+      "addressing": "physical",
+      "target": 2016,
+      "policy": "default_allow",
+      "clock": 1000.0,
+      "frozen_boundary": "c2_era_gateway_0x27_unreachable",
+      "ecus": [
+        {
+          "name": "ECU_A",
+          "request_id": 2016,
+          "response_id": 2024,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_B",
+          "request_id": 2017,
+          "response_id": 2025,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        },
+        {
+          "name": "ECU_C",
+          "request_id": 2018,
+          "response_id": 2026,
+          "session": 1,
+          "security_level": 0,
+          "did_overrides": {}
+        }
+      ],
+      "steps": [
+        "2701"
+      ],
+      "expected": {
+        "steps": [
+          {
+            "request": "2701",
+            "can_id": 2016,
+            "responses": [
+              [
+                2024,
+                "7f2711"
+              ]
+            ],
+            "policy_decisions": [
+              {
+                "target": 2016,
+                "addressing_mode": "physical",
+                "sid": 39,
+                "allowed": true
+              }
+            ]
+          }
+        ],
+        "state": {
+          "ECU_A": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          },
+          "ECU_B": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          },
+          "ECU_C": {
+            "session": 1,
+            "security_level": 0,
+            "did_overrides": {}
+          }
+        },
+        "security_state": {
+          "ECU_A": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          },
+          "ECU_B": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          },
+          "ECU_C": {
+            "pending_seed": null,
+            "seed_consumed": false,
+            "failed_attempts": 0,
+            "lockout_until": null,
+            "seed_counter": 0
+          }
+        }
+      }
+    }
+  ]
+}
