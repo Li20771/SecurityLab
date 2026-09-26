@@ -65,6 +65,7 @@ from types import FrameType
 from typing import Protocol
 
 import isotp
+import uds_server
 from ecu import _is_recoverable_isotp_error, _isotp_error_detail
 from gateway import (
     FUNCTIONAL_ADDRESS,
@@ -488,11 +489,34 @@ class GatewayRuntime:
         self._log(f"TX 0x{response_id:03X}: {payload.hex(' ')}")
 
 
+def _gateway_services_provider():
+    """
+    入口层的 0x27 运行时依赖提供者（C3-OD-3 / C3-OD-4）。
+
+    每次调用都**现场求值**（provider 由 :func:`gateway.build_default_gateway`
+    的默认 handler **每请求**调用一次）：
+
+    * ``ecu._now()`` —— 必须在 ``ecu`` **命名空间内按名字解析**，
+      使 ``mock.patch.object(ecu, "_now", …)`` 这一既有测试 seam 继续生效；
+    * ``ecu.SECURITY_CONFIG`` —— **原对象引用**，不得 copy（配置改动即时可见）。
+
+    绑定本身委托给 ``uds_server.security_access_services()`` —— 与直连 ECU 路径
+    **同一份定义**（不重复定义注入语义）。
+    """
+    import ecu
+
+    return uds_server.security_access_services(
+        now=ecu._now(),
+        security_config=ecu.SECURITY_CONFIG,
+    )
+
+
 def build_runtime(
     interface: str = DEFAULT_INTERFACE,
     *,
     wait_timeout: float = DEFAULT_WAIT_TIMEOUT,
     log: Callable[[str], None] = print,
+    wire_security_access: bool = True,
 ) -> GatewayRuntime:
     """
     构造默认三 ECU 网段的实时网关（transport 尚未 ``open()``）。
@@ -500,12 +524,18 @@ def build_runtime(
     transport 的地址表直接取自协议的网关对象，因此**发送映射与路由表
     必然一致** —— 不会出现"路由到一个没有 socket 的应答地址"。
 
+    :param wire_security_access: 是否接线 0x27 SecurityAccess（C3）。默认为真 ——
+        网关守护进程因此能执行既有的 0x27 状态机；置假可构造"未接线"网关，
+        用于对照与测试。
+
     .. note::
        本工厂**不做**接口策略判断；"只允许 vcan0"的 fail-closed 边界由命令行
        入口 ``main()`` 在调用本函数**之前**强制。以编程方式直接调用本函数
        （测试 / 实验脚本）时，调用方需自行遵守同一安全边界。
     """
-    gateway = build_default_gateway()
+    gateway = build_default_gateway(
+        services_provider=_gateway_services_provider if wire_security_access else None
+    )
 
     transport = IsotpTransport(
         interface,

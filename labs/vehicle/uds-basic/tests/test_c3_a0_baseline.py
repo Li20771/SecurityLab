@@ -193,16 +193,29 @@ class TestCaptureProvenance(unittest.TestCase):
             ("services_provider", "security_access_services"),
         )
 
-    def test_capture_guard_is_closed_during_a0(self):
+    def test_capture_guard_refuses_after_c3_landing(self):
         """
-        护栏当前必须为**否** —— A0 的语义前提是"C3 尚未接线"。
+        **迁移点（C3-OD-15）**：C3 接线之后，捕获护栏必须 **fail-closed**。
 
-        一旦该断言失败，说明 production 已进入 C3-A1，A0 基线**不可再生成**；
-        届时由 C3-A1 按 C3-OD-15 **迁移边界行**，而不是重新捕获整份 corpus。
+        A0 阶段的断言是"机制不存在"（`gateway.py` 无 C3 接线标记）；
+        C3-A1 之后该前提按设计**已被有意改变**，断言随之迁移为
+        "机制存在 ⇒ 捕获被拒绝" —— 锁定的是同一件事在不同阶段的两面。
+
+        因此 A0 的基线与 corpus **不可能**被静默重新生成。
         """
-        self.assertFalse(
+        self.assertTrue(
             lib.c3_implementation_present(),
-            "A0 阶段 gateway.py 不应含 C3 接线标记；若为 True 说明已进入 C3-A1",
+            "C3-A1 起接线标记应当存在；若为 False 说明阶段回退",
+        )
+
+    def test_capture_script_refuses_to_regenerate_the_baseline(self):
+        """护栏的**实际效果**：捕获脚本拒绝写入并返回 2。"""
+        import capture_c3_a0_baseline as capture
+
+        self.assertEqual(
+            capture.main(),
+            2,
+            "C3 接线后捕获脚本必须拒绝写入（exit 2），否则 A0 基线会被污染",
         )
 
 
@@ -410,39 +423,63 @@ class TestGatewayBaselineReplay(unittest.TestCase):
                     actual["security_state"], entry["expected"]["security_state"]
                 )
 
-    def test_c2_era_boundary_cases_are_still_the_pre_c3_fact(self):
+    def test_c2_era_boundary_cases_still_record_the_pre_c3_fact(self):
         """
-        锁定 **C3 实现前** 的 Gateway 事实。
+        **迁移点（C3-OD-15）**：边界行**仍如实记录实现前事实**。
 
-        C3-A1 落地后本用例**预期失败** —— 这是设计中的迁移信号（C3-OD-15），
-        不是回归。迁移方式见类 docstring。
+        .. important::
+           本用例已从"**重放**边界行并断言等于实现前取值"迁移为
+           对 corpus 的**静态**断言。
+
+           原因：C3-A1 **有意**改变了 Gateway 的 0x27 可达性（C3-OD-15），
+           重放必然不再等于实现前取值。但 A0 的**历史价值**恰恰在于
+           "它如实记录了实现前是什么" —— 这一点必须**永久可验证**，
+           且**不得**通过重新生成 corpus 来"让它继续绿色"。
+
+           新的 live 契约由 `test_c3_a1_gateway_security_access.py` 负责。
         """
         boundary = [e for e in self.entries if e["frozen_boundary"]]
         self.assertEqual(len(boundary), len(EXPECTED_FROZEN_BOUNDARY_CASES))
+        self.assertEqual(
+            {e["case_id"] for e in boundary}, set(EXPECTED_FROZEN_BOUNDARY_CASES)
+        )
+
         for entry in boundary:
             with self.subTest(case_id=entry["case_id"]):
-                actual = lib.execute(entry)
                 self.assertEqual(
-                    [s["responses"] for s in actual["steps"]],
-                    [s["responses"] for s in entry["expected"]["steps"]],
+                    entry["frozen_boundary"],
+                    lib.FROZEN_BOUNDARY_GATEWAY_0X27_UNREACHABLE,
+                )
+                self.assertTrue(
+                    entry["expected"]["steps"],
+                    "边界行必须仍带有实现前的 expected 记录",
                 )
 
-    def test_boundary_cases_never_return_a_seed_pre_c3(self):
-        """实现前的强断言：Gateway 路径**不产生任何** 0x27 肯定响应。"""
+    def test_boundary_recorded_responses_are_the_c2_era_values(self):
+        """
+        实现前事实（静态）：边界行记录的 0x27 响应是 `7F 27 11`。
+
+        这些值**只从冻结的 corpus 读取**，不重放 —— 因此 C3-A1 改变 live 行为
+        不会、也不应改变本断言。
+        """
         for entry in self.entries:
             if not entry["frozen_boundary"]:
                 continue
             for step in entry["expected"]["steps"]:
                 for _rid, payload in step["responses"]:
-                    with self.subTest(case_id=entry["case_id"]):
+                    with self.subTest(case_id=entry["case_id"], payload=payload):
                         self.assertFalse(
                             payload.startswith("6701") or payload.startswith("6702"),
-                            "C3 实现前 Gateway 不应产生 0x27 肯定响应",
+                            "实现前 Gateway 不应产生 0x27 肯定响应（历史记录）",
                         )
+                        if step["request"].startswith("27"):
+                            self.assertEqual(payload, C2_ERA_GATEWAY_0X27_RESPONSE)
 
-    def test_gateway_security_state_is_pristine_pre_c3(self):
-        """实现前事实：Gateway 路径下**没有任何** ECU 的 0x27 状态被触碰。"""
+    def test_boundary_recorded_security_state_is_pristine(self):
+        """实现前事实（静态）：corpus 记录的安全状态全部为初始值。"""
         for entry in self.entries:
+            if not entry["frozen_boundary"]:
+                continue
             for ecu_name, sec in entry["expected"]["security_state"].items():
                 with self.subTest(case_id=entry["case_id"], ecu=ecu_name):
                     self.assertIsNone(sec["pending_seed"])
@@ -450,6 +487,20 @@ class TestGatewayBaselineReplay(unittest.TestCase):
                     self.assertIsNone(sec["lockout_until"])
                     self.assertEqual(sec["seed_counter"], 0)
                     self.assertFalse(sec["seed_consumed"])
+
+    def test_boundary_rows_are_not_replayed_against_live_behavior(self):
+        """
+        **反向自证**：边界行**不得**被重放为 live 断言。
+
+        证据：本类中所有涉及 `frozen_boundary` case 的用例都只读取
+        `entry["expected"]`（冻结 JSON），不调用 `lib.execute(...)`。
+        C3-A1 之后仍保持这一分工 —— 历史记录与 live 契约分离。
+        """
+        self.assertGreater(len(EXPECTED_FROZEN_BOUNDARY_CASES), 0)
+        by_id = {e["case_id"]: e for e in self.entries}
+        for case_id in EXPECTED_FROZEN_BOUNDARY_CASES:
+            with self.subTest(case_id=case_id):
+                self.assertTrue(by_id[case_id]["frozen_boundary"])
 
 
 class TestBaselineHasNoA1Expectations(unittest.TestCase):

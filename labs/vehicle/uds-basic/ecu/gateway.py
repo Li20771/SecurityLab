@@ -59,6 +59,22 @@ RouteResult = tuple[int, bytes]
 #: UDS handler 签名：吃 payload，吐 UDS 响应（b"" 表示抑制响应）。
 UdsHandler = Callable[[bytes], bytes]
 
+#: 运行时服务条目：``{sid: handler(request, state) -> bytes}``。
+ServiceTable = dict[int, Callable[[bytes, "EcuState"], bytes]]
+
+#: 运行时依赖提供者（C3）：**每次请求**调用一次，返回本次请求要合并进静态
+#: ``SERVICES`` 的条目。
+#:
+#: 契约（C3-OD-14）：
+#:
+#: * 只做 **runtime dependency binding** —— 不得改变 C1 guard 语义，
+#:   不得改变 C2 policy 维度，不得产生第二套 0x27 状态机；
+#: * 返回的表与静态 ``SERVICES`` 合并（``{**SERVICES, **provider()}``）：
+#:   同名 SID 由 provider 覆盖，未同名 SID 保留静态服务；
+#: * 对已建模 SID，被替换的只是 **handler**，授权 guard 仍由
+#:   ``resolve_service_spec`` 保留（覆盖的是实现，不是授权）。
+ServicesProvider = Callable[[], ServiceTable]
+
 
 # ======================================================================
 # C2 —— Gateway policy（机制层）
@@ -147,17 +163,41 @@ def allow_all_policy(ecu: "VirtualEcu", addressing_mode: str, sid: int) -> bool:
 DEFAULT_POLICY: GatewayPolicy = allow_all_policy
 
 
-def _default_handler_for(state: EcuState) -> UdsHandler:
+def _default_handler_for(
+    state: EcuState,
+    services_provider: ServicesProvider | None = None,
+) -> UdsHandler:
     """
-    为一个 ECU 状态绑定协议层 dispatcher（静态 SERVICES 表）。
+    为一个 ECU 状态绑定协议层 dispatcher。
 
-    静态表包含 0x10/0x11/0x22/0x2E/0x3E；0x27 SecurityAccess 需要运行时
-    时间/配置注入，网关的默认工厂不包含它（网关层聚焦路由，安全解锁的
-    端到端行为由 ecu.py 入口层与既有 e2e 测试覆盖）。
+    ``services_provider is None``（**默认**）
+        走静态 ``SERVICE_SPECS`` —— 与 C3 引入前**逐字节相同**。
+        网关层因此**不感知**时钟与安全配置（本模块保持纯协议层）。
+
+    ``services_provider`` 非 None（C3）
+        **每次请求**现场调用 provider，得到运行时依赖条目，与静态
+        ``SERVICES`` 合并后交给协议层 dispatcher：
+
+            {**uds_server.SERVICES, **services_provider()}
+
+        这使 0x27 SecurityAccess（需要请求时依赖）在网关路径上可达，而
+        **状态机仍只有一份**（``uds_server.service_security_access``）。
+
+    .. important::
+       provider 必须**每请求**调用 —— 不得缓存其返回值、也不得缓存它内部的
+       ``now``，否则时间注入会陈旧（C3-OD-14 限制 7/8）。
+       provider 只负责**依赖绑定**，不得携带或修改 ``EcuState``。
     """
 
     def handle(payload: bytes) -> bytes:
-        return uds_server.handle_uds_request(payload, state)
+        if services_provider is None:
+            return uds_server.handle_uds_request(payload, state)
+
+        return uds_server.handle_uds_request(
+            payload,
+            state,
+            services={**uds_server.SERVICES, **services_provider()},
+        )
 
     return handle
 
@@ -172,9 +212,17 @@ class VirtualEcu:
     state: EcuState = field(default_factory=EcuState)
     handler: UdsHandler | None = None
 
+    #: 可选的运行时依赖提供者（C3）：每次请求调用一次，返回形如
+    #: ``{sid: handler}`` 的条目，与静态 ``SERVICES`` 合并。
+    #:
+    #: ``None``（默认）⇒ 与 C3 引入前行为**逐字节相同**。
+    #: 它只提供**依赖**（如 0x27 的 now / security_config），**不提供状态** ——
+    #: ``EcuState`` 始终由 :meth:`process` 的调用方按本 ECU 独立持有。
+    services_provider: ServicesProvider | None = None
+
     def __post_init__(self) -> None:
         if self.handler is None:
-            self.handler = _default_handler_for(self.state)
+            self.handler = _default_handler_for(self.state, self.services_provider)
 
     def process(self, payload: bytes) -> bytes:
         """把一条 UDS payload 交给本 ECU，返回其 UDS 响应（可能为 b""）。"""
@@ -206,17 +254,30 @@ class DiagnosticGateway:
         ecus: list[VirtualEcu],
         functional_address: int = FUNCTIONAL_ADDRESS,
         policy: GatewayPolicy | None = None,
+        services_provider: ServicesProvider | None = None,
     ) -> None:
         """
         :param policy: 可选的 Gateway 策略。``None`` ⇒ **空策略**
             （``DEFAULT_POLICY``，全放行）—— 因此既有调用方**无需改动**，
             行为与策略机制引入前**逐字节相同**（C2-OD-2）。
+        :param services_provider: 可选的运行时依赖提供者（C3）。``None`` ⇒
+            **不接线**，网关行为与 C3 引入前**逐字节相同**。
+            非 None 时应用到**未自带** provider 的 ECU（ECU 级优先，保持
+            override 语义）。**本参数不参与策略判定** —— 策略仍只看
+            ``(target, addressing_mode, SID)``（C3-OD-5）。
         """
         if not ecus:
             raise ValueError("网关至少需要一个 ECU")
 
         self.functional_address = functional_address
         self.ecus: list[VirtualEcu] = list(ecus)
+
+        if services_provider is not None:
+            for ecu in self.ecus:
+                if ecu.services_provider is None:
+                    ecu.services_provider = services_provider
+                    if ecu.handler is not None:
+                        ecu.handler = _default_handler_for(ecu.state, services_provider)
 
         #: 本网关的策略（C2-OD-1：求值点在 ``route`` core 内、
         #: ``target.process()`` **之前**）。
@@ -360,12 +421,18 @@ class DiagnosticGateway:
         return allowed
 
 
-def build_default_gateway() -> DiagnosticGateway:
+def build_default_gateway(
+    services_provider: ServicesProvider | None = None,
+) -> DiagnosticGateway:
     """
     构造默认三 ECU 实验网段（ECU_A / ECU_B / ECU_C，各自独立状态）。
+
+    :param services_provider: 可选（C3）。**默认 ``None`` ⇒ 不接线**，
+        离线网关行为与 C3 引入前逐字节相同（C3-OD-7：机制与接线分离 ——
+        由入口层 ``gateway_runtime.build_runtime`` 或测试显式注入）。
     """
     ecus = [
         VirtualEcu(name=name, request_id=req, response_id=resp)
         for name, req, resp in DEFAULT_ECUS
     ]
-    return DiagnosticGateway(ecus)
+    return DiagnosticGateway(ecus, services_provider=services_provider)
