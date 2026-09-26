@@ -220,9 +220,34 @@ class VirtualEcu:
     #: ``EcuState`` 始终由 :meth:`process` 的调用方按本 ECU 独立持有。
     services_provider: ServicesProvider | None = None
 
+    #: ``__post_init__`` 自动绑定的 default handler 的**引用**（C3-DEFECT-1）。
+    #:
+    #: 用于判定 ``handler`` 的**真实来源**：
+    #:
+    #: * ``handler is default_handler`` ⇒ framework 自动创建 ⇒ 网关可重绑
+    #:   （使 provider 生效，见 :meth:`DiagnosticGateway.__init__`）；
+    #: * ``handler is not default_handler`` ⇒ **用户显式提供**（或事后重赋）
+    #:   ⇒ **任何情况下都不得被替换**。
+    #:
+    #: 刻意用**身份**而非 boolean：boolean 会在 ``ecu.handler = …`` 事后赋值后过期，
+    #: 而身份判定天然跟随真实来源。
+    default_handler: UdsHandler | None = field(default=None, repr=False, compare=False)
+
     def __post_init__(self) -> None:
         if self.handler is None:
             self.handler = _default_handler_for(self.state, self.services_provider)
+            self.default_handler = self.handler
+
+    @property
+    def has_custom_handler(self) -> bool:
+        """
+        ``handler`` 是否**用户显式提供**（而非 framework 自动绑定）。
+
+        ``True`` ⇒ 它是调用方明确指定的实现，网关的 ``services_provider``
+        接线**不得**替换它（C2-OD-6：override 可替换**实现**；而这里用户已经
+        自己给出了实现，gateway 更无权覆盖）。
+        """
+        return self.handler is not self.default_handler
 
     def process(self, payload: bytes) -> bytes:
         """把一条 UDS payload 交给本 ECU，返回其 UDS 响应（可能为 b""）。"""
@@ -274,10 +299,15 @@ class DiagnosticGateway:
 
         if services_provider is not None:
             for ecu in self.ecus:
-                if ecu.services_provider is None:
-                    ecu.services_provider = services_provider
-                    if ecu.handler is not None:
-                        ecu.handler = _default_handler_for(ecu.state, services_provider)
+                # C3-DEFECT-1：**只重绑 framework 自动创建的 default handler**。
+                # 用户显式注入的 custom handler 在任何情况下都不得被替换 ——
+                # 旧的 `handler is not None` 判据无法区分二者，会静默覆盖 custom handler。
+                if ecu.services_provider is not None or ecu.has_custom_handler:
+                    continue
+
+                ecu.services_provider = services_provider
+                ecu.handler = _default_handler_for(ecu.state, services_provider)
+                ecu.default_handler = ecu.handler
 
         #: 本网关的策略（C2-OD-1：求值点在 ``route`` core 内、
         #: ``target.process()`` **之前**）。
