@@ -2,7 +2,7 @@
 
 > 状态：**C2-A5 = PASS** ／ **C2_EXIT = PASS**
 > 日期：2026-09-26
-> 分支：`audit/oq-c2-a5-exit-review-20260926`
+> 分支：`audit/oq-c2-a5-final-exit-20260926`
 > 基线 / `main`：`8120b551d6c6318b09b0b4dc4db8a403d507f8b3`（= C2-A4 merge commit，PR #48）
 > 设计出处：`docs/OQ_C2_GATEWAY_POLICY_DESIGN_REVIEW_2026-09-25.md`
 
@@ -23,7 +23,7 @@
 |---|---|
 | `main` SHA | `8120b551d6c6318b09b0b4dc4db8a403d507f8b3` |
 | 含义 | Merge PR #48 = **C2-A4 merge commit**；parents = `b24b816`（A3 merge）+ `db74f35`（A4 head） |
-| A5 分支 | `audit/oq-c2-a5-exit-review-20260926`（从 `8120b55` 建立） |
+| A5 分支 | `audit/oq-c2-a5-final-exit-20260926`（从 `8120b55` 建立） |
 | working tree（开始 / 本次审计后） | clean（`git status --short` 空） |
 | 远程 `origin/main` | `8120b55…`（与本地一致） |
 
@@ -48,7 +48,8 @@
 ## 3. Evidence Chain：Design → Implementation → Differential → Regression → Bypass → Exit
 
 ```
-Design        §16.1 冻结 12 项（OD-1…OD-9 + dimensions + C1/C2 边界 + 迁移策略 + C3 边界）
+Design        §16.1 冻结 **13 项**（C2-OD-1…OD-9 + Policy dimensions +
+              C1/C2 边界 + Migration strategy + C3 边界）
    │
    ▼
 A0 Capture    在 **policy 机制尚不存在** 时捕获 legacy 行为 → 冻结 oracle
@@ -98,7 +99,10 @@ A5 Exit       本文件：冻结项逐项核验 + 全链 scope 审计 + exit SHA
 | **迁移策略** | 沿用 C1 六段式 | A0→A1→A2→A3→A4→A5 一一对应，本表即为该链 | ✓ |
 | **C3 边界** | C2 不碰 0x27 / SecurityAccess / keygen / `_now()` / C1 任何面 | `keygen.py`、`uds_server.py`、`service_spec.py`、`ecu.py` 等 12 个模块全 UNCHANGED | ✓ |
 
-**12 / 12 FROZEN 项均有实现证据。**
+**13 / 13 FROZEN 项均有实现证据。**
+
+> 计数口径：本表 13 行 = `C2-OD-1 … C2-OD-9`（9 项）+ `Policy dimensions` +
+> `C1 / C2 边界` + `迁移策略` + `C3 边界`（4 项），与设计文档 §16.1 表格的行数一致。
 
 ---
 
@@ -304,7 +308,7 @@ A4 首版中 C2 / D2 的第 1 层证据由**另一个新建网关**的 `route_wi
 
 | # | 判据 | 结果 |
 |---|---|---|
-| 1 | Design Freeze 完整（OD-1…OD-9 + dimensions + 边界） | ✓ 12/12 有实现证据 |
+| 1 | Design Freeze 完整（OD-1…OD-9 + dimensions + 边界） | ✓ **13/13** 有实现证据 |
 | 2 | C2-A0 冻结 oracle 来源可证、未被后续修改 | ✓ 仅 1 次提交；blob 逐阶段相同 |
 | 3 | C2-A1 空策略零行为变更 | ✓ 42/42；A2 差分 20/20 + 20/20 |
 | 4 | C2-A2 独立双实现差分 + Golden 仅作 anchor | ✓ mismatches 0；anchor 独立于 gate |
