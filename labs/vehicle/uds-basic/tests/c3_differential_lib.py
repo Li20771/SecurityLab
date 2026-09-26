@@ -795,8 +795,9 @@ def build_cases() -> list:
             target=0x7E0,
         ),
         DifferentialCase(
-            "D16-a-request-seed-b-request-seed",
-            "A 与 B 各自请求 seed：两侧状态逐 ECU 独立且与 Direct 一致",
+            "D16-target-ecu-a-seed-only",
+            "**只对目标 ECU_A** 请求一次 seed：A 与 oracle 一致，"
+            "B/C 保持初始（per-ECU 隔离基线）",
             steps=(REQUEST_SEED.hex(),),
             target=0x7E0,
         ),

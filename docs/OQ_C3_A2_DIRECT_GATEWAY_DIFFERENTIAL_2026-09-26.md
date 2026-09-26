@@ -81,6 +81,9 @@ functional  Direct（单 ECU）  vs  Gateway 的**每一个** ECU
 
 ```
 equivalent   两侧必须等价（默认）—— 覆盖 22 条 case
+             · physical  ：response 逐字节相等 ∧ state 等价
+             · functional：Gateway response 恒空（C2-OD-4）∧ **逐 ECU** state 等价
+                           —— 两侧 response **不**逐字节相等，这是冻结语义
 policy_deny  Gateway 因 **C2 policy deny** 静默丢弃 ⇒ 两侧**必然不同**
              （直连路径**没有** policy 层），故改判"丢弃由策略引起"：
                  ① Gateway 不产生任何帧
@@ -114,7 +117,7 @@ policy_deny  Gateway 因 **C2 policy deny** 静默丢弃 ⇒ 两侧**必然不�
 | `D13a/b/c-target-ecu-{a,b,c}` | 12 response_id mapping | `0x7E8 / 0x7E9 / 0x7EA` |
 | `D14-isolation-unlock-a` | 13 / 14 target isolation | A 解锁，B/C 保持初始 |
 | `D15-isolation-lockout-a` | 13 / 15 lockout isolation | A 锁定，B/C 正常 |
-| `D16-a-request-seed-b-request-seed` | 16 / 17 per-ECU seed | 逐 ECU 独立 |
+| `D16-target-ecu-a-seed-only` | 16 / 17 per-ECU seed | 只对 A 请求；B/C 保持初始 |
 | `D17-per-ecu-seed-counter` | 18 per-ECU failed_attempts / counter | A=2，B/C=0 |
 | `D18-policy-allow` | 19 policy allow | 两侧等价 |
 | `D19-policy-deny` | 19 policy deny | **policy_deny 模型**（见 §3.1） |
@@ -127,18 +130,43 @@ policy_deny  Gateway 因 **C2 policy deny** 静默丢弃 ⇒ 两侧**必然不�
 
 ```
 cases                = 23
-equivalent cases     = 22
+equivalent cases     = 22    （physical 20 / functional 2）
 policy_deny cases    =  1
 
-response matches     = 22 / 22      （equivalent 集合）
-state    matches     = 22 / 22      （含逐 ECU 的 3 字段 + 5 个 0x27 字段）
+state    matches     = 22 / 22   （equivalent 集合；含逐 ECU 的 3 个常规字段
+                                  + 5 个 0x27 字段）
 mismatches           =  0
 ```
 
-**核心判据**：`response mismatch = 0` ∧ `state mismatch = 0` ✓
+### 5.1 response 口径（**必须分类陈述，不可笼统合并**）
 
-> 汇总数字由 `test_aggregate_counts_are_locked` 常驻锁定 —— 任何漂移
-> （少比一条、多一条 case）立刻失败。
+`response` 两侧关系的语义**随寻址模式不同**：
+
+```
+physical（20 条）  两侧 response **逐字节相等**           → 20 / 20
+functional（2 条） 两侧**并不逐字节相等**
+                   （Direct 产出 seed、Gateway 恒不收集响应）
+                   —— 这是 C2-OD-4 冻结语义，不是差异
+                   此时 response 侧的正确判据是：
+                       Gateway 每一步恒为空                  → 2 / 2
+                   而**等价性由状态层建立**：
+                       每个 ECU 的 state / security_state == oracle
+```
+
+因此**不应**把两种语义笼统写成"response 22/22 等价"。准确表述是：
+
+```
+physical    response 逐字节等价                    20 / 20
+functional  Gateway response 恒空（C2-OD-4）         2 / 2
+            且逐 ECU 状态等价（见 §7）
+```
+
+**核心判据**：`response mismatch = 0` ∧ `state mismatch = 0` ✓
+（其中 functional 的贡献在状态层，不在 response 字节相等性。）
+
+> 上述分类构成由 `test_aggregate_counts_are_locked` **常驻锁定** ——
+> 包括"functional 两侧逐字节相等条数 == 0"这一**反直觉但正确**的断言，
+> 使该口径不可能被后续阶段悄悄写回"22/22 等价"。
 
 ---
 
@@ -317,7 +345,7 @@ shared dependency pin = 未再次修改
 |---|---|---|
 | 1 | oracle = 未被修改的直连 ECU 路径（非手写 / 非 A0 golden） | ✓ |
 | 2 | 同一输入 · 同一初始 security state · 同一时间与配置 | ✓ |
-| 3 | response 等价 | ✓ **22 / 22** |
+| 3 | response 等价 | ✓ physical 逐字节 **20/20**；functional Gateway 恒空 **2/2**（见 §5.1） |
 | 4 | state 等价（3 字段 + 5 个 0x27 字段，逐 ECU） | ✓ **22 / 22** |
 | 5 | **mismatches = 0** | ✓ |
 | 6 | 两侧各自新建实例、不共享状态 | ✓ |

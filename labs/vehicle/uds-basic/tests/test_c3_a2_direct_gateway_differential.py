@@ -92,7 +92,7 @@ REQUIRED_COVERAGE = {
     ),
     "target ECU isolation": ("D14-isolation-unlock-a", "D15-isolation-lockout-a"),
     "per-ECU seed_counter / pending_seed / failed_attempts": (
-        "D16-a-request-seed-b-request-seed",
+        "D16-target-ecu-a-seed-only",
         "D17-per-ecu-seed-counter",
     ),
     "physical policy allow / deny": ("D18-policy-allow", "D19-policy-deny"),
@@ -162,16 +162,53 @@ class TestDifferentialGate(unittest.TestCase):
                 self.assertTrue(result.state_matches, result.failure_report())
 
     def test_aggregate_counts_are_locked(self):
-        """gate 的**汇总数字**（A2 报告直接引用的口径）。"""
+        """
+        gate 的**汇总数字**（A2 报告直接引用的口径）。
+
+        .. important::
+           **``response_matches`` 的语义随寻址模式不同，不可笼统合并**：
+
+           ```
+           physical    = 两侧 response **逐字节相等**
+           functional  = Gateway response 恒空（C2-OD-4 冻结语义），
+                         此时两侧**并不逐字节相等**
+                         （Direct 产出 seed、Gateway 不收集响应）
+           ```
+
+           因此本用例把两类分别锁定，避免把"20 条逐字节相等 + 2 条恒空"
+           笼统写成"22/22 等价"。
+        """
         equivalent = [r for r in self.results if r.case.expectation == "equivalent"]
-        response_matches = sum(1 for r in equivalent if r.response_matches)
-        state_matches = sum(1 for r in equivalent if r.state_matches)
-        mismatches = sum(1 for r in self.results if not r.matched)
+        physical = [r for r in equivalent if r.case.addressing == lib.ADDRESSING_PHYSICAL]
+        functional = [r for r in equivalent if r.case.addressing == lib.ADDRESSING_FUNCTIONAL]
+        policy_deny = [r for r in self.results if r.case.expectation == "policy_deny"]
 
         self.assertEqual(len(self.results), EXPECTED_CASE_COUNT)
-        self.assertEqual(response_matches, len(equivalent))
-        self.assertEqual(state_matches, len(equivalent))
-        self.assertEqual(mismatches, 0)
+        self.assertEqual(len(equivalent), 22)
+        self.assertEqual(len(physical), 20)
+        self.assertEqual(len(functional), 2)
+        self.assertEqual(len(policy_deny), 1)
+
+        # physical：逐字节等价
+        self.assertEqual(
+            sum(1 for r in physical if r.direct.responses == r.gateway.responses),
+            len(physical),
+        )
+        # functional：**不**逐字节相等，而是 Gateway 恒空 + 状态逐 ECU 等价
+        self.assertEqual(
+            sum(1 for r in functional if r.direct.responses == r.gateway.responses), 0
+        )
+        self.assertEqual(
+            sum(1 for r in functional if all(not s for s in r.gateway.responses)),
+            len(functional),
+        )
+        for result in functional:
+            with self.subTest(case_id=result.case.case_id):
+                self.assertTrue(result.state_matches, result.failure_report())
+
+        # 状态等价与 gate 判据
+        self.assertEqual(sum(1 for r in equivalent if r.state_matches), len(equivalent))
+        self.assertEqual(sum(1 for r in self.results if not r.matched), 0)
 
     def test_coverage_matrix_is_complete(self):
         declared = {cid for ids in REQUIRED_COVERAGE.values() for cid in ids}
