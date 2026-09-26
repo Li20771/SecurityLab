@@ -311,6 +311,50 @@ def install_core_spy(gateway):
     return collected
 
 
+def install_allow_observer(gateway):
+    """
+    **测试侧 ``_allow()`` observation seam**（不改动 production 任何行为）。
+
+    包装 ``gateway._allow``：**先调用原始实现**，再用其**返回值 + 输入参数**
+    记录本次实际决策 ``PolicyDecision(target, addressing_mode, sid, allowed)``，
+    最后**原样返回**原始结果。
+
+    为什么需要它 —— 两种证据必须分清：
+
+    ```
+    PolicyTrace          = ``route_with_trace()`` 的**显式 API**；
+                           runtime 走的是 ``route()``（collect_trace=False），
+                           **不会**产生也不会返回 PolicyTrace。
+    PolicyDecision 观察   = 测试侧对 ``_allow()`` 真实求值结果的观察，
+                           因此可以归属于 **runtime / build_runtime 的同一次调用**。
+    ```
+
+    没有这个 seam，"runtime 路径的四层证据"就只能靠另起一个新网关
+    ``route_with_trace()`` 事后复算 —— 那**不是**同一次调用的证据。
+
+    口径与 production trace 一致（C2-OD-8）：``sid is None``（空 payload）
+    不进入策略，故**不记录**。
+    """
+    observed: list[PolicyDecision] = []
+    original = gateway._allow
+
+    def wrapper(ecu, addressing_mode, sid, decisions, collect_trace):
+        allowed = original(ecu, addressing_mode, sid, decisions, collect_trace)
+        if sid is not None:
+            observed.append(
+                PolicyDecision(
+                    target=ecu.request_id,
+                    addressing_mode=addressing_mode,
+                    sid=sid,
+                    allowed=allowed,
+                )
+            )
+        return allowed
+
+    gateway._allow = wrapper
+    return observed
+
+
 def path(relative: str) -> Path:
     return Path(_ECU_DIR) / relative
 
@@ -701,34 +745,46 @@ class TestFakeTransportAndRuntime(unittest.TestCase):
         self.assertTrue(handled, "请求被处理（不是空闲轮）")
         self.assertEqual(transport.sent, [], "DENY ⇒ transport 上不得出现任何帧")
 
-    def test_c2_deny_four_layers_through_the_runtime(self):
-        """C2 —— 经 runtime 的 DENY 同样具备四层证据。"""
+    def test_c2_deny_four_layers_from_the_same_runtime_invocation(self):
+        """
+        C2 —— 经 runtime 的 DENY：四层证据全部来自**同一次实际请求**。
+
+        与 ``TestRouteCoreParityUnderDeny`` 的区别：那里第 1 层取自
+        ``route_with_trace()`` 的**显式** ``PolicyTrace``；这里的第 1 层取自
+        **runtime 实际调用链上的 ``_allow()`` 观察**（测试侧 seam），
+        因此 trace / process / state / wire 四层属于**同一次调用** ——
+        而不是另起一个新网关事后复算。
+
+        .. note::
+           runtime 走 ``route()``（``collect_trace=False``），**不会**产生也不会返回
+           ``PolicyTrace``。这里记录的是 ``PolicyDecision`` **观察**，不是 PolicyTrace。
+        """
         transport = RecordingTransport([(ECU_B_REQ, PAYLOAD_WRITE)])
         gw = deny_gateway([ECU_B_REQ])
+        observed = install_allow_observer(gw)
         spy = ProcessSpy(gw)
         before = state_projection(gw)
 
         runtime = make_runtime(gw, transport)
-        runtime.serve_once(timeout=0.0)
+        self.assertIs(runtime.gateway, gw, "runtime 用的正是被观察的那个网关")
+        self.assertTrue(runtime.serve_once(timeout=0.0), "本轮确实处理了一条请求")
 
-        self.assertEqual(transport.sent, [])
-        self.assertEqual(spy.total, 0)
-        self.assertEqual(state_projection(gw), before)
-
-        # trace：runtime 后单独复算一次同一请求（新网关，避免状态污染）
-        gw2 = deny_gateway([ECU_B_REQ])
-        _results, trace = gw2.route_with_trace(ECU_B_REQ, PAYLOAD_WRITE)
+        # Layer 1 —— 同一次调用上的**实际**策略决策
         self.assertEqual(
-            trace.decisions,
-            (
+            observed,
+            [
                 PolicyDecision(
                     target=ECU_B_REQ,
                     addressing_mode=ADDRESSING_PHYSICAL,
                     sid=SID_WRITE,
                     allowed=False,
-                ),
-            ),
+                )
+            ],
         )
+        # Layer 2 / 3 / 4 —— 同一次调用的其余三层
+        self.assertEqual(spy.total, 0)
+        self.assertEqual(state_projection(gw), before)
+        self.assertEqual(transport.sent, [])
 
     def test_c3_fake_transport_surface_is_transport_only(self):
         """C3 —— fake transport 的公开可调用面**只有** transport 的四个动作。"""
@@ -774,14 +830,27 @@ class TestFakeTransportAndRuntime(unittest.TestCase):
                 self.assertEqual(direct, via_runtime)
 
     def test_c5_allow_control_sends_the_response(self):
-        """C5 —— ALLOW 对照：runtime 正常把响应交给 transport。"""
+        """C5 —— ALLOW 对照：runtime 正常把响应交给 transport（同一次调用观察）。"""
         transport = RecordingTransport([(ECU_A_REQ, PAYLOAD_READ)])
         gw = deny_gateway([ECU_B_REQ])
+        observed = install_allow_observer(gw)
         spy = ProcessSpy(gw)
 
         runtime = make_runtime(gw, transport)
-        runtime.serve_once(timeout=0.0)
+        self.assertTrue(runtime.serve_once(timeout=0.0))
 
+        self.assertEqual(
+            observed,
+            [
+                PolicyDecision(
+                    target=ECU_A_REQ,
+                    addressing_mode=ADDRESSING_PHYSICAL,
+                    sid=SID_READ,
+                    allowed=True,
+                )
+            ],
+            "同一 seam 在放行路径上必须观察到 allowed=True",
+        )
         self.assertEqual(spy.count("ECU_A"), 1)
         self.assertEqual(len(transport.sent), 1)
         self.assertEqual(transport.sent[0][0], ECU_A_RESP)
@@ -844,21 +913,42 @@ class TestBuildRuntimePath(unittest.TestCase):
         self.assertEqual(len(recorded), 1, "route spy call_count == 1")
 
     def test_d2_build_runtime_deny_blocks_everything(self):
-        """D2 —— 经 ``build_runtime()`` 的 DENY：allowed=False / process=0 / [] / 不发帧。"""
+        """
+        D2 —— 经 ``build_runtime()`` 的 DENY：四层证据来自**同一次实际请求**。
+
+        ``build_runtime()`` 使用被注入的网关对象（patch ``build_default_gateway``），
+        因此在调用前把观察 seam 装到**那个对象**上，观察就必然来自
+        build_runtime 路径的**同一次调用**。
+
+        同 C2：这里记录的是 ``_allow()`` 的 ``PolicyDecision`` **观察**，
+        不是 ``PolicyTrace``（runtime 路径不产生 trace）。
+        """
         gw = deny_gateway([ECU_B_REQ])
+        observed = install_allow_observer(gw)
         spy = ProcessSpy(gw)
         transport = RecordingTransport([(ECU_B_REQ, PAYLOAD_WRITE)])
         before = state_projection(gw)
 
         runtime = self._patched_build_runtime(gw, transport)
-        runtime.serve_once(timeout=0.0)
+        self.assertIs(runtime.gateway, gw, "build_runtime 用的正是被观察的那个网关")
+        self.assertTrue(runtime.serve_once(timeout=0.0), "本轮确实处理了一条请求")
 
-        self.assertEqual(transport.sent, [])
+        # Layer 1 —— 同一次调用上的**实际**策略决策
+        self.assertEqual(
+            observed,
+            [
+                PolicyDecision(
+                    target=ECU_B_REQ,
+                    addressing_mode=ADDRESSING_PHYSICAL,
+                    sid=SID_WRITE,
+                    allowed=False,
+                )
+            ],
+        )
+        # Layer 2 / 3 / 4
         self.assertEqual(spy.total, 0)
         self.assertEqual(state_projection(gw), before)
-
-        _results, trace = deny_gateway([ECU_B_REQ]).route_with_trace(ECU_B_REQ, PAYLOAD_WRITE)
-        self.assertFalse(trace.decisions[0].allowed)
+        self.assertEqual(transport.sent, [])
 
     def test_d2b_build_runtime_bypasses_open_entirely(self):
         """本测试**不**调用 ``open()``：因此不绑定任何接口（fake transport 无 socket）。"""
@@ -1158,6 +1248,82 @@ class TestNegativeControls(unittest.TestCase):
 
         gw.route(ECU_A_REQ, PAYLOAD_WRITE)
         self.assertEqual(spy.count("ECU_A"), 1, "该 SID 被拒 ⇒ 不再执行")
+
+
+# ======================================================================
+# `_allow()` observation seam 自身（证据链的忠实性）
+# ======================================================================
+
+
+class TestAllowObservationSeam(unittest.TestCase):
+    """
+    C2 / D2 的第 1 层证据依赖这个测试侧 seam，因此**必须先证明 seam 本身忠实**：
+
+    * 返回原始 ``_allow()`` 的结果（不篡改放行/拒绝结论）；
+    * 不改变路由结果与状态副作用；
+    * 记录口径与 production trace 一致（空 payload 不记录，C2-OD-8）。
+
+    否则"观察到 allowed=False"本身就不足为信。
+    """
+
+    def test_seam_returns_the_original_result(self):
+        gw = deny_gateway([ECU_B_REQ])
+        observed = install_allow_observer(gw)
+        deny = gw.ecu_by_name("ECU_B")
+        allow = gw.ecu_by_name("ECU_A")
+
+        self.assertFalse(gw._allow(deny, ADDRESSING_PHYSICAL, SID_READ, [], False))
+        self.assertTrue(gw._allow(allow, ADDRESSING_PHYSICAL, SID_READ, [], False))
+        self.assertEqual(
+            observed,
+            [
+                PolicyDecision(ECU_B_REQ, ADDRESSING_PHYSICAL, SID_READ, False),
+                PolicyDecision(ECU_A_REQ, ADDRESSING_PHYSICAL, SID_READ, True),
+            ],
+        )
+
+    def test_seam_does_not_change_routing_outcomes(self):
+        """同一输入下，装/不装 seam 必须得到完全相同的 wire 与 state。"""
+        cases = (
+            (ECU_A_REQ, PAYLOAD_READ),
+            (ECU_B_REQ, PAYLOAD_WRITE),
+            (FUNCTIONAL_ADDRESS, PAYLOAD_SESSION),
+        )
+        for request_id, payload in cases:
+            with self.subTest(request_id=hex(request_id), payload=payload.hex(" ")):
+                plain = deny_gateway([ECU_B_REQ])
+                watched = deny_gateway([ECU_B_REQ])
+                install_allow_observer(watched)
+
+                self.assertEqual(
+                    plain.route(request_id, payload), watched.route(request_id, payload)
+                )
+                self.assertEqual(state_projection(plain), state_projection(watched))
+
+    def test_seam_records_per_target_in_traversal_order(self):
+        """physical ⇒ 1 条；functional ⇒ 逐 ECU N 条且顺序 == ``self.ecus``。"""
+        gw = deny_gateway([ECU_B_REQ])
+        observed = install_allow_observer(gw)
+
+        gw.route(ECU_A_REQ, PAYLOAD_READ)
+        self.assertEqual([d.target for d in observed], [ECU_A_REQ])
+
+        observed.clear()
+        gw.route(FUNCTIONAL_ADDRESS, PAYLOAD_SESSION)
+        self.assertEqual(
+            [d.target for d in observed], [ECU_A_REQ, ECU_B_REQ, ECU_C_REQ]
+        )
+        self.assertEqual([d.allowed for d in observed], [True, False, True])
+
+    def test_seam_records_nothing_for_requests_that_skip_policy(self):
+        """C2-OD-8 口径：空 payload 与未知物理 target 不进入策略 ⇒ 不记录。"""
+        gw = deny_gateway([ECU_B_REQ])
+        observed = install_allow_observer(gw)
+
+        gw.route(ECU_A_REQ, b"")
+        gw.route(0x7E5, PAYLOAD_READ)
+
+        self.assertEqual(observed, [])
 
 
 # ======================================================================

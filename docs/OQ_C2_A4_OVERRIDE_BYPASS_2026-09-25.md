@@ -45,6 +45,26 @@ policy deny │ unknown physical target │ functional broadcast │ suppressed 
 其中 ``process`` 一层**刻意 spy 在 ``target.process`` 本身，而不是 handler** ——
 证明"请求根本没有到达目标 ECU"，而非"到达了但 handler 恰好没做事"（§9.2.11 明文要求）。
 
+### 1.1 第 1 层证据的两种来源（**必须分清**）
+
+```
+PolicyTrace          = route_with_trace() 的**显式 API**。
+                       调用方主动要求记录时才产生（collect_trace=True）。
+
+PolicyDecision 观察   = 测试侧对 _allow() 真实求值结果的观察。
+                       可在 **route() / runtime / build_runtime** 路径上取得。
+```
+
+**runtime 与 build_runtime 走的是 ``route()``（``collect_trace=False``），
+不会产生也不会返回 ``PolicyTrace``。** 因此若要满足"四层证据来自**同一次**
+DENY 请求"，这两条路径的第 1 层只能靠测试侧的 ``_allow()`` observation seam
+（``install_allow_observer``）：它先调用原始 ``_allow()``，再用**返回值 + 输入参数**
+记录 ``PolicyDecision``，并**原样返回**原始结果 —— **不改变 production 任何行为**。
+
+本文档**不声称** runtime 自身返回 ``PolicyTrace``。seam 的忠实性由
+``TestAllowObservationSeam`` 单独锁定（返回原始结论、不改变路由与状态、
+记录口径与 production trace 一致）。
+
 ---
 
 ## 2. Baseline
@@ -128,7 +148,7 @@ deny_target_sid(request_id, sid)               # 只拒 (target, SID) 组合
 
 ```
 命令：python3 labs/vehicle/uds-basic/tests/test_c2_a4_override_bypass.py
-结果：Ran 54 tests … OK        （skipped = 0）
+结果：Ran 58 tests … OK        （skipped = 0）
 ```
 
 | 测试类 | 用例数 | 覆盖 |
@@ -141,6 +161,7 @@ deny_target_sid(request_id, sid)               # 只拒 (target, SID) 组合
 | `TestRouteCoreParityUnderDeny` | 5 | E1–E3（§9 一致性） |
 | `TestStructuralInvariants` | 6 | F1–F3（源码级不变量） |
 | `TestNegativeControls` | 4 | DENY=0 / ALLOW=1 反向对照 |
+| `TestAllowObservationSeam` | 4 | §1.1 的 observation seam **自身忠实性** |
 | `TestScopeBoundary` | 2 | 边界显式记录（§8） |
 
 ### A. handler injection（seam 1）
@@ -175,12 +196,12 @@ deny_target_sid(request_id, sid)               # 只拒 (target, SID) 组合
 | 用例 | 断言 |
 |---|---|
 | C1 | `receive → handle_request → gateway.route → DENY` ⇒ `transport.sent == []`，且 `serve_once()` 返回 True（确实处理了请求，不是空闲轮） |
-| C2 | 同场景四层：`sent == []` / process 0 / state 不变 / trace `allowed=False` |
+| C2 | **同一次 runtime 调用**的四层证据：`_allow()` 观察 `[PolicyDecision(0x7E1,"physical",0x2E,False)]` / process 0 / state 不变 / `sent == []`；并断言 `runtime.gateway is gw`（观察对象就是 runtime 使用的网关） |
 | C3 | fake transport 的公开可调用面**恰好** `{open, close, receive, send}` |
 | C3b | fake transport **不持有** ECU / Gateway 实例，且无 `policy` / `ecus` / `gateway` / `targets` 属性 |
 | C4 | `runtime.handle_request()` 必须调用 `gateway.route()`（route spy 记录 == 请求本身） |
 | C4b | 同一输入下 `runtime.handle_request()` 与直接 `route()` 结果一致（3 组输入） |
-| C5 | **ALLOW 对照** ⇒ process 1 次、`transport.sent` 出现 1 帧且 response_id 正确 |
+| C5 | **ALLOW 对照**（同一次调用观察）⇒ `_allow()` 观察 `allowed=True`、process 1 次、`transport.sent` 出现 1 帧且 response_id 正确 |
 | C5b | 同一 runtime 上：先被拒的 target 无帧，换成放行的 target 后正常回帧 |
 
 ### D. `build_runtime()`（seam 4）
@@ -188,12 +209,49 @@ deny_target_sid(request_id, sid)               # 只拒 (target, SID) 组合
 | 用例 | 断言 |
 |---|---|
 | D1 | patch 网关工厂 + `IsotpTransport` 后，`build_runtime()` 返回的 runtime 仍经 `gateway.route()`（route spy `call_count == 1`） |
-| D2 | DENY ⇒ `sent == []` / process 0 / state 不变 / trace `allowed=False` |
+| D2 | **同一次 build_runtime 调用**的四层证据：`_allow()` 观察 `allowed=False` / process 0 / state 不变 / `sent == []`；并断言 `runtime.gateway is gw`（seam 装在 `build_runtime` 实际使用的那个对象上） |
 | D2b | 全程**不调用 `open()`** ⇒ 不绑定任何接口；并被注入的网关对象就是 runtime 实际使用的那个 |
 | D3 | **接口取值与 policy 正交**：`interface ∈ {"vcan0","can0","vcan1",""}` 四种取值下策略均生效、均不发帧、均未 open |
 | D3b | `build_runtime()` 签名中**没有** `policy` 参数 ⇒ 策略只能来自被注入的网关对象 |
 
 > D3 全程使用 **fake transport + patch**，**未绑定、未触碰任何真实或非 vcan0 接口**。
+
+### 5.1 C2 / D2：四层证据来自**同一次**实际调用
+
+```
+C2 actual runtime:
+    PolicyDecision = False      ← _allow() observation（同一次调用，非事后复算）
+    process        = 0
+    state          = unchanged
+    wire           = []
+
+D2 actual build_runtime:
+    PolicyDecision = False      ← _allow() observation（同一次调用，非事后复算）
+    process        = 0
+    state          = unchanged
+    wire           = []
+```
+
+实测观察值（`serve_once(timeout=0.0)` 返回 `True`，两例 `runtime.gateway is <被观察网关>` 均为 `True`）：
+
+```
+PolicyDecision(target=0x7E1, addressing_mode='physical', sid=0x2E, allowed=False)
+process call_count = 0      state unchanged = True      transport.sent = []
+
+ALLOW 对照（同一次调用）：
+PolicyDecision(target=0x7E0, addressing_mode='physical', sid=0x22, allowed=True)
+process call_count = 1      transport.sent = [(0x7E8, 62 f1 90 …)]
+
+runtime 的 handle_request() 返回类型 = list
+    ⇒ runtime 走 route()（collect_trace=False），**不产生也不返回 PolicyTrace**
+```
+
+两例均由 `runtime.serve_once(timeout=0.0)` 返回 `True` 确认"本轮确实处理了一条请求"，
+并断言 `runtime.gateway is <被观察的 gateway 对象>`，从而保证观察对象就是
+该次调用实际使用的网关。
+
+**已移除的做法**：不再使用 `deny_gateway(...).route_with_trace(...)`
+（另起一个新网关复算）作为 C2 / D2 的 trace 证据。
 
 ### E. `route()` / `route_with_trace()` 一致性（§9）
 
@@ -321,18 +379,16 @@ git diff --check                                                     # 空
 
 | Gate | 结果 | 计数 |
 |---|---|---|
-| A4 专项 | **PASS** | **54 / 54**（skipped 0） |
-| UDS unit（`run_tests.sh unit`） | **PASS 22 / WARN 0 / FAIL 0** | 1071 cases |
-| UDS all（unit + e2e） | **PASS 34 / WARN 0 / FAIL 0** | **1305 cases**，SKIP 0 |
+| A4 专项 | **PASS** | **58 / 58**（skipped 0） |
+| UDS unit（`run_tests.sh unit`） | **PASS 22 / WARN 0 / FAIL 0** | 1075 cases |
+| UDS all（unit + e2e） | **PASS 34 / WARN 0 / FAIL 0** | **1309 cases**，SKIP 0 |
 | CAN all（offline + vcan） | **PASS 7 / WARN 0 / FAIL 0** | **358 cases**，SKIP 0 |
 | `qa_fast.sh` | **PASS**（exit 0） | ruff OK / mypy OK / uds unit 22-0 / can-tools offline 4-0 |
-| `qa_extended.sh` | **PASS**（exit 0） | 4/4 步骤；**1663 cases**；FAIL 0；真实 skip 0 |
-| `healthcheck.sh` | **PASS 75 / WARN 2 / FAIL 0**（exit 0） | 77 项 |
-| `healthcheck.sh --extended` | **PASS 78 / WARN 2 / FAIL 0**（exit 0） | 80 项 |
+| `qa_extended.sh` | **PASS**（exit 0） | 4/4 步骤；**1667 cases**；FAIL 0；真实 skip 0 |
 | A0 / A1 / A2 回归 | **28/28 · 42/42 · 46/46** | 未受影响 |
 
-口径对照：A3 时 UDS unit = 1017；A4 新增 54 ⇒ **1071**；UDS all 合计
-1251 → **1305**（+54）✓；qa_extended 内层 1609 → **1663**（+54）✓。
+口径对照：A3 时 UDS unit = 1017；A4 新增 58 ⇒ **1075**；UDS all 合计
+1251 → **1309**（+58）✓；qa_extended 内层 1609 → **1667**（+58）✓。
 
 ### 9.1 qa_extended
 
@@ -342,6 +398,7 @@ git diff --check                                                     # 空
 [3/4] capture → save → replay 闭环       → [ OK ] capture lab
 [4/4] YARA 真阳性 / 真阴性演练            → [ OK ] yara
 QA EXTENDED RESULT: PASS        exit 0
+内层合计 cases = 1667（1309 UDS + 358 CAN）；真实 skip = 0
 ```
 
 ### 9.2 healthcheck 的 2 个 WARN（历史/环境级，非 A4 新增）
@@ -384,7 +441,10 @@ A4 新增物：
 | 2 | seam 2 自定义拓扑不能绕过策略（含 functional mixed 逐 ECU） | ✓ |
 | 3 | "允许 A" 不自动授权 B / C | ✓ |
 | 4 | seam 3 fake transport / runtime 不能绕过策略；runtime 无第二套裁决 | ✓ |
+| 4b | C2 的四层证据来自**同一次 runtime 调用**（`_allow()` observation） | ✓ |
 | 5 | seam 4 `build_runtime()` 路径仍经 `gateway.route()` | ✓ |
+| 5b | D2 的四层证据来自**同一次 build_runtime 调用**（`_allow()` observation） | ✓ |
+| 5c | observation seam 自身忠实（返回原始结论、不改变路由与状态） | ✓ |
 | 6 | 接口边界与授权策略正交（且未触碰真实接口） | ✓ |
 | 7 | `route()` 与 `route_with_trace()` 共用同一 core，deny 行为一致 | ✓ |
 | 8 | 结构性不变量：`process()` 仅 2 处且均受 `_allow` 守卫 | ✓ |
