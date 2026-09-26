@@ -231,6 +231,14 @@ run_unit() {
 
     echo
 
+    if "$PYTHON_BIN" "$TESTS_DIR/test_c3_a2_direct_gateway_differential.py"; then
+        ok "C3 A2 direct ECU / gateway differential passed"
+    else
+        fail "C3 A2 direct / gateway differential failed"
+    fi
+
+    echo
+
     if "$PYTHON_BIN" "$TESTS_DIR/test_dtc_unit.py"; then
         ok "0x19 ReadDTCInformation unit tests passed"
     else
