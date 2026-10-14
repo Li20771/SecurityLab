@@ -91,26 +91,42 @@ jobs:
             -o -e "/lib/modules/${KREL}/kernel/drivers/net/can/vcan.ko.zst"
           echo "vcan module present for ${KREL}"
 
-      # 2026-10-14 实测（run 38536799332）发现的**第三个**前置条件：
-      # 装上 modules-extra、vcan0 建起来之后，e2e 仍以
-      #     OSError: [Errno 93] Protocol not supported
-      # 失败 —— 因为 ISO-TP 走 socket(AF_CAN, SOCK_DGRAM, CAN_ISOTP)，
-      # 需要 can / can_raw / can_isotp 协议模块也被加载。
-      # 只 modprobe vcan 不足以让 ISO-TP socket 可用。
+      # 2026-10-14 实测发现的两个独立前置条件（均由真实运行暴露）：
+      #
+      #  (1) run 38529912319：vcan.ko 缺失（镜像未装 modules-extra）
+      #  (2) run 38536799332：装上后 vcan0 已 UP，但 e2e 仍报
+      #          OSError: [Errno 93] Protocol not supported
+      #      —— ISO-TP 走 socket(AF_CAN, SOCK_DGRAM, CAN_ISOTP)，
+      #      vcan 只是虚拟*设备*驱动，不提供 CAN_ISOTP *协议*。
+      #
+      #  (3) run 38538604194：本步曾硬写 `modprobe can_isotp` 并 hard-fail，
+      #      结果 `Module can_isotp not found`。该模块名因内核版本而异，
+      #      也可能被**内建**（=y，根本没有 .ko 可加载）。
+      #      ⇒ 因此 modprobe 改为**尽力而为**，真正 fail-closed 的判据是
+      #      最后那个真实 socket 构造（协议是否可用，一试便知）。
       - name: Bring up vcan0
         run: |
           set -euo pipefail
           sudo modprobe vcan
-          # CAN 核心 + 原始套接字 + ISO-TP（缺一即 EPROTONOSUPPORT=93）
-          sudo modprobe can
-          sudo modprobe can_raw
-          sudo modprobe can_isotp
           sudo ip link add dev vcan0 type vcan
           sudo ip link set vcan0 up
-          # 逐项取证：相关模块均已加载 + 设备存在且 UP
-          lsmod | grep -E '^(vcan|can|can_raw|can_isotp)\b'
           ip -details link show vcan0
-          # fail-closed：证明 CAN_ISOTP 协议确实可用，而不是假设已就绪
+
+          # CAN 协议模块：名称/是否内建随内核而异，故逐个尝试、允许失败。
+          # 常见候选：can(核心) / can_raw(RAW socket) / isotp(CAN_ISOTP 协议)
+          for m in can can_raw can_bcm can_gw isotp can-isotp can_isotp; do
+            if sudo modprobe "$m" 2>/dev/null; then
+              echo "modprobe $m: loaded"
+            else
+              echo "modprobe $m: not loaded (built-in or absent) - continuing"
+            fi
+          done
+
+          echo "--- loaded can-related modules ---"
+          lsmod | grep -E '^(vcan|can|can_raw|can_bcm|can_gw|isotp|can_isotp)\b' || true
+
+          # fail-closed：以**真实 socket** 判定 CAN_ISOTP 是否可用。
+          # 这是权威判据；上面的 modprobe 只是尽力而为的准备动作。
           python3 -c "import socket; s=socket.socket(socket.AF_CAN, socket.SOCK_DGRAM, socket.CAN_ISOTP); s.close(); print('CAN_ISOTP socket OK')"
 
       - name: Install CAN / capture / YARA tooling
