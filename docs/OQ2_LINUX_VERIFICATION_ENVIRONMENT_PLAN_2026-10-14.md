@@ -98,6 +98,21 @@ runner 内核**并非没有 vcan**，而是 **runner 镜像未安装 `linux-modu
 > 若上述链接因包更新而内容变化，应以**当时实际返回**为准重新核验；
 > 本记录不保证链接永久不变。
 
+### 2.1 为什么容器**不能**解决这个问题
+
+| 方案 | 能否引入 vcan / ISO-TP | 原因 |
+|---|---|---|
+| Docker/Podman 容器 | **不能** | 容器共享宿主内核，**无法加载宿主内核未构建的模块**。容器只能使用宿主**已有**的模块（并需 `--cap-add=NET_ADMIN` 或 `--privileged` 才能 `modprobe`/建 vcan） |
+| WSL2 | **不能** | 实测其内核配置 `CONFIG_CAN_VCAN is not set` —— **根本没编译进去**，`linux-modules-extra` 也无济于事 |
+| GitHub 托管 runner | **vcan 可以（已实跑 PASS）；ISO-TP 不可以（已确证）** | vcan：补装 `linux-modules-extra` 后实测成功（§2 F-B/F-C）。ISO-TP：该内核 `# CONFIG_CAN_ISOTP is not set`（§2.2.1），需**重编内核**，托管 runner 不支持 |
+
+**关键区分**：
+- "宿主内核**有**该模块但未安装" → 容器/补装**可能**可行（vcan 即此类）
+- "宿主内核**没编译**该模块"（WSL2 的 vcan；托管 runner 的 ISO-TP） → 容器**绝无可能**可行，
+  只能**重编内核**或更换带该配置的内核
+
+---
+
 ### 2.2 F-D 失败的**确切原因**：该内核未构建 ISO-TP（硬阻塞）
 
 `vcan0` 建成之后，e2e 仍然失败，根因经三次实跑逐步定位并最终确证：
@@ -125,9 +140,62 @@ run 38539974828  逐个尝试协议模块：
 ⇒ **该 Azure 内核未构建 `CAN_ISOTP`**。这不是脚本错误、不是模块名写错、
 也不是"再 modprobe 一次就好"，而是**内核能力缺失**。
 
+### 2.2.1 可行性探测的**决定性证据**（内核配置层面）
+
+为判定"在托管 runner 上是否**可能**启用 ISO-TP"，2026-10-14 执行了一次
+**隔离的可行性探测**（诊断作业，**不属于门禁**）：
+run [`38546434121`](https://github.com/Li20771/SecurityLab/actions/runs/38546434121)
+
+**实际输出（P8 汇总，原文）**：
+
+```
+================ FEASIBILITY SUMMARY ================
+kernel              : 6.17.0-1022-azure
+CONFIG_MODULES=y
+# CONFIG_MODULE_SIG_FORCE is not set
+CONFIG_CAN=m
+# CONFIG_CAN_ISOTP is not set          ← 内核**未编译** ISO-TP
+headers installed   : /usr/src/linux-headers-6.17.0-1022-azure
+isotp modules found : 0
+socket capability   : CAN_ISOTP UNAVAILABLE
+```
+
+补充事实（同一次探测，逐项实测）：
+
+| 探测项 | 结果 |
+|---|---|
+| `/boot/config-$(uname -r)` 中 `CONFIG_CAN_ISOTP` | **`# CONFIG_CAN_ISOTP is not set`**（第 2081 行） |
+| `CONFIG_MODULES` | `=y`（模块机制本身可用） |
+| `CONFIG_MODULE_SIG_FORCE` | **`not set`** ⇒ 签名强制**不是**阻碍 |
+| `modinfo isotp` / `can-isotp` / `can_isotp` | 三者均 `Module not found` |
+| `/lib/modules/$(uname -r)` 下匹配 `*isotp*` 的文件 | **0 个** |
+| `kernel/net/can/` 目录 | **该目录在 `linux-modules` 中，但无 isotp** |
+| 内核头文件 | **已安装**（`linux-headers-6.17.0-1022-azure`） |
+| `/usr/src` 下 `isotp.c` | **不存在**（头文件包不含 `net/can/` 源码） |
+| 项目接口 `socket(AF_CAN, SOCK_DGRAM, CAN_ISOTP)` | **UNAVAILABLE** |
+
+**结论（可行性判定已闭合）**：
+
+```
+托管 runner 上**无法**启用 ISO-TP。
+原因不是"模块没装"、不是"签名被拒"、不是"名字写错"，
+而是内核配置 `CONFIG_CAN_ISOTP is not set` —— 协议**从未被编译**。
+
+⇒ 即便：
+   - 已安装匹配的内核头文件；
+   - 模块签名强制关闭；
+   - 模块机制可用（CONFIG_MODULES=y）；
+   也**无法**加载一个不存在的协议实现。
+
+⇒ "自己构建 can-isotp 模块"这条路径在**托管 runner 上不可行**：
+   头文件包不提供 `net/can/isotp.c`，而 `CONFIG_CAN_ISOTP is not set`
+   意味着该协议未纳入构建配置；需**重新配置并重编内核**，托管 runner 不支持。
+```
+
 **含义（对方案的影响）**：
 
-- 托管 runner **即使 vcan 可用，也无法运行依赖 ISO-TP 的那部分 extended 门禁**；
+- 托管 runner **即使 vcan 可用，也无法运行依赖 ISO-TP 的那部分 extended 门禁**
+  —— 这已由内核配置层面确证，不再是推测；
 - 依赖 ISO-TP 的测试需要**自托管 VM**（内核带 `CAN_ISOTP`）或**自建 runner 镜像**；
 - 模块安装步骤对 vcan 仍然**正确且必要**（F-B/F-C 已 PASS），不受此影响；
 - `capture_lab` / YARA 等**不依赖 ISO-TP** 的部分**仍可运行**（见 §2.3）。
@@ -167,20 +235,6 @@ run `38536799332` 的逐项输出（`extended` 门禁内 4 步）：
 同样地，**模块安装成功 ≠ 完整 extended 通过**；
 **extended 通过 ≠ fuzz / repro / 硬件相关测试通过**。
 
-### 2.1 为什么容器**不能**解决这个问题
-
-| 方案 | 能否引入 vcan | 原因 |
-|---|---|---|
-| Docker/Podman 容器 | **不能** | 容器共享宿主内核，**无法加载宿主内核未构建的模块**。容器只能使用宿主**已有**的模块（并需 `--cap-add=NET_ADMIN` 或 `--privileged` 才能 `modprobe`/建 vcan） |
-| WSL2 | **不能** | 实测其内核配置 `CONFIG_CAN_VCAN is not set` —— **根本没编译进去**，`linux-modules-extra` 也无济于事 |
-| GitHub 托管 runner | **可能可以**（若补装 modules-extra，见 §3.1） | runner 是 Azure VM，有真实内核 + passwordless sudo |
-
-**关键区分**：
-- "宿主内核**有**该模块但未安装" → 容器/补装**可能**可行
-- "宿主内核**没编译**该模块"（WSL2） → 容器**绝无可能**可行
-
----
-
 ## 3. 方案比较
 
 ### 3.1 方案 A（**首选，成本最低**）：在托管 runner 上补装 modules-extra
@@ -209,21 +263,117 @@ run `38536799332` 的逐项输出（`extended` 门禁内 4 步）：
 | 隔离 | 与现状相同（ephemeral runner） |
 | 残留风险 | 见 §5 |
 
-### 3.2 方案 B：自托管 Runner（专用 Linux VM）
+> **⚠ 方案 A 的能力边界（2026-10-14 探测后修正）**
+>
+> 方案 A **只解决 vcan**，**不能解决 ISO-TP**。
+> run [`38546434121`](https://github.com/Li20771/SecurityLab/actions/runs/38546434121)
+> 已确证托管 runner 的内核 `# CONFIG_CAN_ISOTP is not set`，
+> 且头文件包不含 `net/can/isotp.c` ⇒ **"自建模块"路径在托管 runner 上不可行**。
+>
+> ⇒ 方案 A 的结论是：**vcan 可用（已 PASS），但依赖 ISO-TP 的测试在此环境永远无法通过**。
+> 因此**方案 B 不再是"仅在 A 失败时"的备选，而是 ISO-TP 测试的必经路径**。
+
+### 3.2 方案 B：自托管 Runner（专用 Linux VM）—— **ISO-TP 的唯一可行路径**
+
+#### 3.2.1 内核配置硬性要求（**必须逐项确认，不得假设**）
+
+```
+必须满足（任一不满足则该环境不可用）：
+  CONFIG_CAN=m 或 =y
+  CONFIG_CAN_ISOTP=m 或 =y     ← 决定性项；托管 runner 为 "is not set"
+  CONFIG_CAN_VCAN=m 或 =y      ← vcan 设备
+  CONFIG_CAN_RAW=m 或 =y       ← 若测试用到 RAW socket
+  CONFIG_MODULES=y             （若 CAN_ISOTP=m）
+  CONFIG_MODULE_SIG_FORCE 应 not set，或自建模块已正确签名
+```
+
+Ubuntu 的 `linux-generic`（非 azure/cloud 裁剪版）通常 **启用** `CONFIG_CAN_ISOTP`。
+**但必须在部署前用 `zgrep CONFIG_CAN_ISOTP /boot/config-$(uname -r)` 实测确认**，
+不得依据发行版名声推断。
+
+#### 3.2.2 备选内核来源
+
+| 选项 | 说明 | 是否需实测确认 |
+|---|---|---|
+| Ubuntu **generic** 内核 VM | 最可能自带 `CONFIG_CAN_ISOTP` | **是** |
+| Ubuntu **cloud/azure** 内核 | **已知不满足**（托管 runner 即此类） | 已确证不可用 |
+| 自定义内核 | `CONFIG_CAN_ISOTP=m` 后重编 | 是（成本高，仅在无现成内核时） |
+| 容器 | **不可行** | 容器共享宿主内核，无法引入宿主未编译的模块 |
+
+#### 3.2.3 隔离与安全设计
+
+```
+1. 仅可信分支 + 手动 workflow_dispatch
+   —— 绝不对来自 fork 的 PR 自动运行。
+      自托管 Runner 上运行 fork PR 等于在自有基础设施执行任意代码。
+      必要时用 GitHub Environments + required reviewers 二次把关。
+2. 最小权限
+   —— permissions: contents: read；不使用 secrets；不持久化凭据。
+3. 隔离
+   —— 专用 VM；快照/回滚；每次运行后重置；限制出网。
+4. 不写回仓库
+   —— 只读仓库；不 push、不建 release、不上传含敏感信息的 artifact。
+5. vcan0 生命周期
+   —— qa_extended.sh 只创建不删除（无 `ip link del`）；
+      自托管 VM 上应在作业末尾显式清理。
+6. 网络
+   —— 仅允许 apt/PyPI 出网（若需）；不做入站暴露。
+```
+
+#### 3.2.4 部署前验收测试（**只有真跑过才算 PASS**）
+
+```
+步骤 1  内核配置取证
+        zgrep -E 'CONFIG_CAN_ISOTP|CONFIG_CAN_VCAN' /boot/config-$(uname -r)
+        期望：两者均为 =m 或 =y
+
+步骤 2  模块加载
+        sudo modprobe vcan && sudo modprobe can && sudo modprobe can_raw
+        lsmod | grep -E 'vcan|can_raw'
+
+步骤 3  设备创建
+        sudo ip link add dev vcan0 type vcan && sudo ip link set vcan0 up
+        ip -details link show vcan0        ← 须显示 UP
+
+步骤 4  项目接口验证（**决定性**）
+        python3 -c "import socket; socket.socket(socket.AF_CAN,
+                    socket.SOCK_DGRAM, socket.CAN_ISOTP).close()"
+        ← 必须**成功**。这是唯一权威判据。
+
+步骤 5  真实运行 extended 门禁
+        bash scripts/qa_extended.sh
+        ← 记录 Run URL / 提交 SHA / 逐 Job·Step 结果
+
+步骤 6  证据归档
+        按 reports/ 纪律记录，明确区分 PASS / FAIL / SKIPPED
+```
+
+**明确不得**：
+
+```
+✗ 以"VM 建好了"代替步骤 4 成功
+✗ 以步骤 1–3 通过推断步骤 4/5 会通过
+✗ 以单次 extended 通过声称 fuzz / repro / 硬件测试通过
+✗ 把 skipped 或未执行项记为 PASS
+```
+
+#### 3.2.5 成本与维护
 
 | 维度 | 评估 |
 |---|---|
-| 是否保证 vcan | **最高**：VM 自带内核，可装 `linux-modules-extra` 后确认 `modprobe vcan` 成功 |
-| 成本 | 需一台常驻/按需 VM + 维护 |
-| 维护 | 补丁、注册、凭据轮换、磁盘 |
-| 隔离 | **必须**专用 VM + 快照回滚 + 仅跑可信分支 |
-| 安全 | 见 §4（**绝不可**对 fork PR 开放） |
+| 成本 | 一台 VM（常驻或按需）；磁盘 + 补丁 + 注册维护 |
+| 维护 | Runner 版本、补丁、凭据轮换、快照管理 |
+| 残留风险 | 见 §5（R-1/R-3 仍属宿主假设） |
+
+> **本文件不启动部署。** 上述内容为**待批准方案**；
+> 部署需**单独授权**（见 §8）。本轮**未**设置任何持久化 Runner、**未**新增凭据。
 
 ### 3.3 方案 C：仅本地权威环境（无 CI）
 
 | 维度 | 评估 |
 |---|---|
 | 是否保证 vcan | 取决于本机虚拟化（当前：WSL 被拒、无 VM 工具、Docker 引擎不可达） |
+| 是否保证 ISO-TP | 同上；且 **WSL2 内核 `CONFIG_CAN_VCAN is not set`** ⇒ 本机 WSL 路径**不可行** |
 | 成本 | 零 CI 成本，但需先解决本机虚拟化 |
 | 证据 | 只能产出本地证据（按 `reports/` 纪律记录），**无 Run URL** |
 | 适用 | 过渡期；不能替代可复核的远程执行 |
@@ -261,7 +411,8 @@ run `38536799332` 的逐项输出（`extended` 门禁内 4 步）：
 | R-3 | 免密 `sudo` 假设变化 | **本次未发生**（残留） | 全部 `sudo` 步骤成功；仍属托管环境假设 |
 | R-4 | `tshark` 在 vcan0 上抓包权限 | **仍为风险** | run `38540870651` 中 `PCAP=FAIL`（`capture_lab.sh` 已预设失败可降级）；**具体是权限还是其它原因尚未单独定位** |
 | R-5 | `capture_lab.sh` 硬编码 `$HOME/.venvs/network/bin/python` ⇒ BLF 段失败却被上报为 `[ OK ]` | **已修复并实跑验证** | 解释器改为 `$PYTHON`→venv→PATH 顺序；退出码改为 `CAPTURE_LAB=CHECK` ⇒ `exit 1`。run `38540870651` 实测 `BLF=PASS` 且 `[FAIL] capture lab` 如实上报 |
-| **R-6（新）** | **该内核未构建 `CAN_ISOTP`** ⇒ 依赖 ISO-TP 的测试在托管 runner 上**无法通过** | **已确证（硬阻塞）** | 见 §2.2；需自托管 VM 或自建镜像（内核含 `CAN_ISOTP`） |
+| **R-6（新）** | **该内核 `CONFIG_CAN_ISOTP is not set`** ⇒ 依赖 ISO-TP 的测试在托管 runner 上**无法通过** | **已确证（硬阻塞）** | 见 §2.2 / §2.2.1（run `38546434121` 内核配置取证）；唯一路径为方案 B 自托管 VM |
+| **R-7（新）** | 自托管 Runner 若内核同样裁剪掉 `CAN_ISOTP`（如误用 cloud/azure 内核） | **需在部署前实测** | 按 §3.2.4 步骤 1 与步骤 4 确认；**不得**凭发行版名推断 |
 
 ---
 
@@ -294,11 +445,18 @@ run `38536799332` 的逐项输出（`extended` 门禁内 4 步）：
 ## 6. 建议的 OQ 拆分（各自独立、互不混杂）
 
 ```
-OQ-2a  修正 ci.yml 中错误的 Runner 能力假设          ← 纯文本，零风险，可立即做
-OQ-2b  在托管 runner 上补装 modules-extra 并实跑      ← 方案 A
-OQ-2c  （仅在 2b 失败时）评估自托管 Runner             ← 方案 B
-OQ-2d  修正 capture_lab.sh 的 $HOME 硬编码缺口        ← 独立小项
+OQ-2a  修正 ci.yml 中错误的 Runner 能力假设          ← 已完成（PR #64）
+OQ-2b  在托管 runner 上补装 modules-extra 并实跑      ← 方案 A：**已完成并实测**
+                                                       vcan PASS；ISO-TP 确证不可行
+OQ-2c  CAN_ISOTP 可行性探测                           ← **已完成**（run 38546434121）
+                                                       结论：托管 runner 不可行
+OQ-2d  修正 capture_lab.sh 的 $HOME 硬编码 + 退出码   ← 已完成（PR #64）
+OQ-2e  自托管 Linux VM（内核含 CONFIG_CAN_ISOTP）     ← **待批准**（方案 B）
 ```
+
+> **拆分状态更新（2026-10-14）**：2a / 2b / 2d 已在 PR #64 完成；
+> 2c 探测已完成并**排除了托管 runner 路径**；
+> **2e 是 ISO-TP 测试的唯一剩余路径，等待批准**。
 
 ### 6.1 OQ-2a：修正 `ci.yml` 的错误假设（**建议优先，且可独立先做**）
 
