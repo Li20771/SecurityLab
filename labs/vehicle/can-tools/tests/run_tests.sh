@@ -7,13 +7,16 @@
 #   1. test_parsers.py             纯解析逻辑（不需要 python-isotp / vcan0）
 #   2. test_isotp_send_options.py  ISO-TP 参数解析与下发（需要 python-isotp，
 #                                  但不打开 CAN socket，不需要 vcan0）
-#   3. test_isotp_malformed_vcan.py 畸形 ISO-TP 分帧实验（需要 vcan0，
+#   3. test_uds_fuzz_offline.py    UDS 请求层 fuzz harness（纯离线）
+#   4. test_capture_lab_exit_code.py  capture_lab.sh 退出码传播静态断言（纯离线）
+#      —— OQ-2d 回归防线：防止"子项失败仍以 0 退出"的 fail-open 复现
+#   5. test_isotp_malformed_vcan.py 畸形 ISO-TP 分帧实验（需要 vcan0，
 #                                  会自动启动 / 结束虚拟 ECU 子进程）
 #
 # 用法：
 #
 #   bash tests/run_tests.sh            # 全部
-#   bash tests/run_tests.sh offline    # 只跑前两组（不需要 vcan0）
+#   bash tests/run_tests.sh offline    # 只跑前四组（不需要 vcan0）
 #   bash tests/run_tests.sh malformed  # 只跑畸形分帧实验（需要 vcan0）
 #
 # 环境变量：
@@ -103,6 +106,18 @@ run_offline() {
             ok "UDS fuzz offline tests passed"
         else
             fail "UDS fuzz offline tests failed"
+        fi
+
+        echo
+    fi
+
+    # capture_lab.sh 退出码传播（OQ-2d）：纯静态断言，不需要 vcan0。
+    # 回归防线 —— 防止"子项失败仍以 0 退出"的 fail-open 再次出现。
+    if [ -f "$TESTS_DIR/test_capture_lab_exit_code.py" ]; then
+        if "$PYTHON_BIN" "$TESTS_DIR/test_capture_lab_exit_code.py"; then
+            ok "capture_lab exit-code propagation tests passed"
+        else
+            fail "capture_lab exit-code propagation tests failed"
         fi
 
         echo

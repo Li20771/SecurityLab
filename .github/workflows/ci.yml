@@ -5,9 +5,23 @@ name: SecurityLab CI
 #   对应本地脚本 scripts/qa_fast.sh。
 #
 # 扩展安全测试（extended）：需要 vcan0 与 can-utils/tshark/yara，
-#   对应 scripts/qa_extended.sh。GitHub runner 内核通常带 vcan 模块，
-#   但可用性取决于托管环境，故仅在手动 workflow_dispatch 时运行
-#   （日常本地 WSL Ubuntu 是权威的扩展测试环境）。
+#   对应 scripts/qa_extended.sh。仅在手动 workflow_dispatch 时运行。
+#
+#   【Runner 能力事实 —— 2026-10-14 实测修正，勿再按旧假设理解】
+#   GitHub 托管 runner **默认没有可用的 vcan**：
+#       modprobe: FATAL: Module vcan not found in /lib/modules/<ver>
+#   原因是托管镜像不安装 linux-modules-extra-<running-kernel>；该内核
+#   本身是支持 vcan 的（Ubuntu 官方包库中存在与本内核版本精确匹配的
+#   linux-modules-extra 包，且其文件清单含 vcan.ko）。
+#   因此本作业在 Bring up vcan0 之前**显式安装** linux-modules-extra。
+#
+#   【本地环境事实】本地 WSL2 **不是**权威的扩展测试环境：其内核配置
+#   为 CONFIG_CAN_VCAN is not set（未编译进内核），无法通过安装
+#   linux-modules-extra 补救。权威 vcan 环境待 OQ-2 建立。
+#
+#   注意：安装成功不等 Extended quality gate 通过；extended 通过也不等于
+#   fuzz / repro / 硬件相关测试通过 —— extended 不含 --fuzz，也不含
+#   scripts/repro/*。
 #
 # 长时间 CAN fuzz（30/100/500/1000）不放进 CI：
 #   本地用 scripts/qa_extended.sh --fuzz 或 fuzz/isotp_fuzz.py 单独执行。
@@ -59,11 +73,32 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      # 托管 runner 镜像不安装与本内核匹配的 linux-modules-extra，
+      # 因此 vcan.ko 不在 /lib/modules/$(uname -r) 下，直接 modprobe 会失败。
+      # 步骤顺序有硬依赖：必须先装包，Bring up vcan0 才可能成功。
+      - name: Install kernel extra modules (provides vcan)
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euo pipefail
+          KREL="$(uname -r)"
+          echo "running kernel: ${KREL}"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            "linux-modules-extra-${KREL}"
+          # 证明模块文件确实就位（安装失败/包缺席时在此 fail-closed）
+          test -e "/lib/modules/${KREL}/kernel/drivers/net/can/vcan.ko" \
+            -o -e "/lib/modules/${KREL}/kernel/drivers/net/can/vcan.ko.zst"
+          echo "vcan module present for ${KREL}"
+
       - name: Bring up vcan0
         run: |
+          set -euo pipefail
           sudo modprobe vcan
           sudo ip link add dev vcan0 type vcan
           sudo ip link set vcan0 up
+          # 逐项取证：模块已加载 + 设备存在且 UP
+          lsmod | grep -E '^vcan\b'
           ip -details link show vcan0
 
       - name: Install CAN / capture / YARA tooling

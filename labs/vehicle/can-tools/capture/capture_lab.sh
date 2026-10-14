@@ -10,9 +10,44 @@ set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-PY="$HOME/.venvs/network/bin/python"
 WORK=/tmp/capture-lab
 IFACE=vcan0
+
+# ----------------------------------------------------------------------
+# Python 解释器选择
+# ----------------------------------------------------------------------
+# 历史缺陷：这里曾**硬编码** `$HOME/.venvs/network/bin/python`。
+# 该路径只在本地 WSL 开发机上存在；在任何其它环境（含 CI runner）上
+# 都不存在，导致段 B（BLF）必然失败。
+#
+# 更严重的是：段 B 失败时脚本仍以 0 退出、并打印 CAPTURE_LAB=CHECK，
+# 使调用方（scripts/qa_extended.sh，它按退出码判定）把一次**失败的**
+# capture 环节当成通过。这正是 OQ-2d 要修的"失败不上报"缺陷。
+#
+# 现在的选择顺序：$PYTHON 覆盖 > venv > PATH 中的 python3 > python。
+# 解析不到解释器时**直接失败**（exit 2），而不是继续跑出假结果。
+pick_python() {
+  if [ -n "${PYTHON:-}" ] && [ -x "${PYTHON}" ]; then
+    printf '%s\n' "$PYTHON"; return 0
+  fi
+  if [ -x "$HOME/.venvs/network/bin/python" ]; then
+    printf '%s\n' "$HOME/.venvs/network/bin/python"; return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    command -v python3; return 0
+  fi
+  if command -v python >/dev/null 2>&1; then
+    command -v python; return 0
+  fi
+  return 1
+}
+
+if ! PY="$(pick_python)"; then
+  echo "[FAIL] 找不到 Python 解释器（试过 \$PYTHON / venv / python3 / python）" >&2
+  exit 2
+fi
+echo "python: $PY"
+
 mkdir -p "$WORK"
 rm -f "$WORK"/*.log "$WORK"/*.frames "$WORK"/*.blf "$WORK"/*.pcap 2>/dev/null
 
@@ -120,8 +155,31 @@ echo "############ 汇总 ############"
 echo "CAN_LOG : $PASS_A"
 echo "BLF     : $PASS_B"
 echo "PCAP    : $PASS_C"
+
+# ----------------------------------------------------------------------
+# 退出码传播（OQ-2d 核心修复）
+# ----------------------------------------------------------------------
+# 历史缺陷：无论三个段结果如何，脚本最终都执行 `echo`，因此**恒以 0 退出**。
+# 调用方 scripts/qa_extended.sh:95 是按**退出码**判定的：
+#
+#     if bash .../capture_lab.sh; then echo "[ OK ] capture lab"
+#     else echo "[FAIL] capture lab"; FAIL=1; fi
+#
+# 于是"BLF 段失败 + CAPTURE_LAB=CHECK"会被上报成 `[ OK ] capture lab`，
+# 一次真实失败被汇总成通过。这是 fail-open，必须消除。
+#
+# 修复后的语义：
+#   PASS   —— 三段全过                     → 退出 0
+#   FAIL   —— 任一段未过                   → 退出 1（调用方将记 FAIL）
+#   ERR    —— 环境无法运行（无解释器等）    → 退出 2（上面已 exit 2）
+#
+# 注意：仍**保留** CAPTURE_LAB=PASS/CHECK 这行人类可读汇总，便于日志检索；
+# 但它不再与退出码脱钩。
 if [ "$PASS_A" = PASS ] && [ "$PASS_B" = PASS ] && [ "$PASS_C" = PASS ]; then
   echo "CAPTURE_LAB=PASS"
-else
-  echo "CAPTURE_LAB=CHECK"
+  exit 0
 fi
+
+echo "CAPTURE_LAB=CHECK"
+echo "[FAIL] capture lab 存在未通过段（CAN_LOG=$PASS_A BLF=$PASS_B PCAP=$PASS_C）" >&2
+exit 1
