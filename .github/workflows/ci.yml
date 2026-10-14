@@ -5,9 +5,23 @@ name: SecurityLab CI
 #   对应本地脚本 scripts/qa_fast.sh。
 #
 # 扩展安全测试（extended）：需要 vcan0 与 can-utils/tshark/yara，
-#   对应 scripts/qa_extended.sh。GitHub runner 内核通常带 vcan 模块，
-#   但可用性取决于托管环境，故仅在手动 workflow_dispatch 时运行
-#   （日常本地 WSL Ubuntu 是权威的扩展测试环境）。
+#   对应 scripts/qa_extended.sh。仅在手动 workflow_dispatch 时运行。
+#
+#   【Runner 能力事实 —— 2026-10-14 实测修正，勿再按旧假设理解】
+#   GitHub 托管 runner **默认没有可用的 vcan**：
+#       modprobe: FATAL: Module vcan not found in /lib/modules/<ver>
+#   原因是托管镜像不安装 linux-modules-extra-<running-kernel>；该内核
+#   本身是支持 vcan 的（Ubuntu 官方包库中存在与本内核版本精确匹配的
+#   linux-modules-extra 包，且其文件清单含 vcan.ko）。
+#   因此本作业在 Bring up vcan0 之前**显式安装** linux-modules-extra。
+#
+#   【本地环境事实】本地 WSL2 **不是**权威的扩展测试环境：其内核配置
+#   为 CONFIG_CAN_VCAN is not set（未编译进内核），无法通过安装
+#   linux-modules-extra 补救。权威 vcan 环境待 OQ-2 建立。
+#
+#   注意：安装成功不等 Extended quality gate 通过；extended 通过也不等于
+#   fuzz / repro / 硬件相关测试通过 —— extended 不含 --fuzz，也不含
+#   scripts/repro/*。
 #
 # 长时间 CAN fuzz（30/100/500/1000）不放进 CI：
 #   本地用 scripts/qa_extended.sh --fuzz 或 fuzz/isotp_fuzz.py 单独执行。
@@ -59,12 +73,76 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      # 托管 runner 镜像不安装与本内核匹配的 linux-modules-extra，
+      # 因此 vcan.ko 不在 /lib/modules/$(uname -r) 下，直接 modprobe 会失败。
+      # 步骤顺序有硬依赖：必须先装包，Bring up vcan0 才可能成功。
+      - name: Install kernel extra modules (provides vcan)
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euo pipefail
+          KREL="$(uname -r)"
+          echo "running kernel: ${KREL}"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            "linux-modules-extra-${KREL}"
+          # 证明模块文件确实就位（安装失败/包缺席时在此 fail-closed）
+          test -e "/lib/modules/${KREL}/kernel/drivers/net/can/vcan.ko" \
+            -o -e "/lib/modules/${KREL}/kernel/drivers/net/can/vcan.ko.zst"
+          echo "vcan module present for ${KREL}"
+
+      # 2026-10-14 三次真实运行逐步暴露的前置条件（全部由实际运行得出）：
+      #
+      #  (1) run 38529912319：vcan.ko 缺失（镜像未装 modules-extra）
+      #      ⇒ 已由 "Install kernel extra modules" 步骤修复，实测生效。
+      #  (2) run 38536799332：装上后 vcan0 已 UP，但 e2e 报
+      #          OSError: [Errno 93] Protocol not supported
+      #      —— ISO-TP 走 socket(AF_CAN, SOCK_DGRAM, CAN_ISOTP)；
+      #      vcan 只是虚拟*设备*驱动，不提供 CAN_ISOTP *协议*。
+      #  (3) run 38539974828：逐个尝试 can/can_raw/can_bcm/can_gw 均加载成功，
+      #      但 isotp / can-isotp / can_isotp **全部找不到**，真实 socket
+      #      构造仍报 EPROTONOSUPPORT。
+      #      经查 Ubuntu 文件清单：linux-modules 包提供 can.ko / can-bcm.ko /
+      #      can-gw.ko / can-raw.ko / can-j1939.ko，**没有 iso-tp 模块**；
+      #      modules-extra 也不提供。⇒ 该 Azure 内核未构建 CAN_ISOTP，
+      #      属于**硬阻塞**，不是脚本错误。
+      #
+      # 因此本作业把"设备就绪"与"ISO-TP 协议可用"**分开表达**：
+      #   - vcan0 建立：**必须成功**（失败即 fail-closed）
+      #   - ISO-TP 可用性：明确的诊断项。不可用时**不中断**，而是
+      #     用 ::warning:: 显式标注，让 extended 门禁**照常全量运行**，
+      #      ＊如实＊报告哪些部分通过、哪些部分因缺协议而失败。
+      #   这样既不会把缺协议伪装成通过，也不会因提前 abort 而掩盖
+      #   其它可运行部分（如 capture_lab / yara）的真实结果。
       - name: Bring up vcan0
         run: |
+          set -euo pipefail
           sudo modprobe vcan
           sudo ip link add dev vcan0 type vcan
           sudo ip link set vcan0 up
           ip -details link show vcan0
+
+          # CAN 核心/协议模块：名称与是否内建随内核而异 ⇒ 尽力而为。
+          for m in can can_raw can_bcm can_gw isotp can-isotp can_isotp; do
+            if sudo modprobe "$m" 2>/dev/null; then
+              echo "modprobe $m: loaded"
+            else
+              echo "modprobe $m: not available (built-in or absent)"
+            fi
+          done
+
+          echo "--- loaded can-related modules ---"
+          lsmod | grep -E '^(vcan|can|can_raw|can_bcm|can_gw|isotp|can_isotp)\b' || true
+
+          # ISO-TP 可用性诊断：这是**权威判据**（真实 socket）。
+          # 不可用时告警但**不中断**，以便 extended 门禁全量运行并如实报告。
+          echo "--- ISO-TP protocol availability ---"
+          if python3 -c "import socket; s=socket.socket(socket.AF_CAN, socket.SOCK_DGRAM, socket.CAN_ISOTP); s.close()"; then
+            echo "CAN_ISOTP: AVAILABLE"
+          else
+            echo "CAN_ISOTP: UNAVAILABLE"
+            echo "::warning title=ISO-TP unavailable on this runner::This kernel ships no iso-tp module (can.ko/can-bcm.ko/can-gw.ko/can-raw.ko exist, iso-tp does not). The ISO-TP dependent tests CANNOT pass here; the extended gate will run and report them as failures honestly. vcan0 itself is up. See OQ-2."
+          fi
 
       - name: Install CAN / capture / YARA tooling
         env:
