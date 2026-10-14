@@ -99,14 +99,24 @@
 
 ```
 reports/
-  README.md                        ← 本文件
-  EVIDENCE_TEMPLATE.md             ← 通用模板（复制后填写）
-  <OQ-id>_<date>_evidence.md       ← 每次验证一份，纯文本
+  README.md                          ← 本文件
+  EVIDENCE_TEMPLATE.md               ← 通用模板（复制后填写）
+  <OQ-id>_<date>_evidence.md         ← 该 OQ 的首次验证
+  <OQ-id>_<date>_<round>_evidence.md ← 后续轮次（如修订后复验）
 ```
 
 - `<OQ-id>`：如 `OQ-1`、`OQ-2`、`C3-A3`
 - `<date>`：`YYYY-MM-DD`（本地时区需注明）
+- `<round>`：可选轮次标识，如 `f1`（针对审查发现 F-1 的修订轮）
 - 一份文件对应**一次验证活动**，而非一个阶段的所有活动
+
+**多轮验证的纪律**：
+
+- 后续轮次**必须新建文件**，**不得覆盖**前一轮记录；
+- 每份文件须在开头注明**适用范围**（对应哪个提交 SHA / 哪一轮），
+  并链接到相邻轮次，避免读者把旧轮次结果误当作新轮次结果；
+- 轮次之间若结论发生变化（例如某失败已修复），**在各自文件内如实记录**，
+  不改写历史文件。
 
 模板见 [`EVIDENCE_TEMPLATE.md`](EVIDENCE_TEMPLATE.md)。
 

@@ -2,6 +2,12 @@
 
 > 本文件是 `reports/` 的**首个真实证据记录**，同时充当格式示例。
 > 所有内容均为**实际执行**所得；未执行项在 §6.4 显式列为 `NOT_RUN`。
+>
+> **适用范围（重要）**：§3–§8 记录的是**第一轮**验证，对应提交
+> `d2d753e9…` / 本地等价 `faa0371…`（即 F-1 修订**之前**的 head）。
+> F-1 修订后的**新一轮**验证记录在
+> [`OQ-1_2026-10-14_f1_evidence.md`](OQ-1_2026-10-14_f1_evidence.md)，
+> **不覆盖本文件**。请勿把本文件的测试结果当作 F-1 新增断言之后的结果。
 
 ## 1. 身份
 
@@ -12,7 +18,7 @@
 | 基线提交 SHA | `efa836ff9225f6226ca8a76615f3f45c31110d58`（`main`） |
 | 验证提交 SHA | `d2d753e92b225015772c2c597987659f07ee1617`（远端 PR head）<br>`faa0371ed88b4b20dd8ba5f22cd63b6f3a2905d2`（本地等价提交） |
 | 被验证的分支 / PR | `fix/oq1-errno-ecomm-portability-20261014` / [PR #61](https://github.com/Li20771/SecurityLab/pull/61) |
-| 验证者 | SecurityLab 主执行负责人（自验）+ 独立审查者（见 `docs/` 审查报告） |
+| 验证者 | SecurityLab 主执行负责人（自验）+ 独立审查者（见 [PR #61 的 GitHub Review 记录](https://github.com/Li20771/SecurityLab/pull/61#pullrequestreview-5514890476)） |
 
 **提交内容一致性**：本地提交 tree `5fd6899b7c28cf5f3e134bd7bf13dee1b3ba13ce`
 与远端提交 tree **完全相同**（远端经 GitHub API 复核），`ecu.py` blob SHA
@@ -137,7 +143,7 @@ can-tools test_fuzz_offline.py     → FAIL (30 errors) —— 沙箱 tempfile �
 
 | 项 | 未执行的原因 |
 |---|---|
-| `qa_extended.sh` / `--fuzz` | 需 vcan0 + root + Linux；本机与 GitHub 托管 runner 均不具备（见 §9 与 OQ-2） |
+| `qa_extended.sh` / `--fuzz` | 需 vcan0 + root + Linux；本机不具备，且**该次运行的**托管 runner 未安装 vcan 模块（见 §9 与 OQ-2） |
 | 13 个 `*_vcan.py` 集成测试 | 无 `AF_CAN` / 无 vcan0 |
 | `scripts/healthcheck.sh` | 需 WSL/Linux |
 | `scripts/repro/*`（ARM / QEMU+GDB / Ghidra / fuzz smoke） | 需 WSL/Linux 与对应工具链 |
@@ -147,7 +153,7 @@ can-tools test_fuzz_offline.py     → FAIL (30 errors) —— 沙箱 tempfile �
 
 | 项 | 无法判定的原因 |
 |---|---|
-| `extended` 作业能否在现有托管 runner 上通过 | 已由 OQ-2 实测：**不能**（缺 `vcan` 内核模块）；但"改用专用 runner 后能否通过"尚未验证 |
+| `extended` 作业能否在**任一** runner 上通过 | 见 §9：**已实测失败**，但失败原因是该 runner 未安装对应内核模块包，**而非**明确证明该作业不可能通过。补装模块后能否成功，**尚未验证** |
 
 ## 7. 来源区分（不得折叠为一个总体 PASS）
 
@@ -175,10 +181,35 @@ can-tools test_fuzz_offline.py     → FAIL (30 errors) —— 沙箱 tempfile �
 
 ## 9. 未决问题 / 后续动作
 
-- `extended` 门禁在 GitHub 托管 runner 上**结构性不可用**
-  （`modprobe: FATAL: Module vcan not found`）—— 由 OQ-2 处理。
-- 本文件的 §6.4 各项在专用 Linux 环境就绪后**必须重新执行**并更新本文件
-  （或另建一份新证据文件，不覆盖本文件）。
+**关于 `extended` 作业的准确表述（修正先前的错误措辞）**
+
+先前版本写作"`extended` 门禁在 GitHub 托管 runner 上**结构性不可用**"。
+该措辞**不准确，已更正**。准确的事实是：
+
+```
+已实测（run 38529912319，提交 efa836ff）：
+    Bring up vcan0  →  modprobe: FATAL: Module vcan not found
+                        in directory /lib/modules/6.17.0-1022-azure
+
+⇒ 结论：**该次运行的 runner 上，vcan 模块未安装**。
+   GitHub 托管 runner 未安装 linux-modules-extra-$(uname -r)。
+```
+
+**这与"结构性不可用"是不同的判断**：
+
+- **不是**"内核不可能支持 vcan"。经查 Ubuntu 官方包库，
+  与内核版本精确匹配的 `linux-modules-extra-6.17.0-1022-azure`
+  **确实存在**，其 amd64 文件清单**含** `vcan.ko.zst`。
+- **但是**：包库中存在该包，**不等于**它能在实际 runner 上安装成功、
+  **不等于**模块能加载、**更不等于** `vcan0` 能建立或 `qa_extended.sh` 能通过。
+- 这些是**依次递进的不同验收事实**，必须逐项实测，不得由前一项推断后一项。
+  **在补装模块的实际运行成功之前，不得声称 `extended` 已可运行或已通过。**
+
+- 本文件的 §6.4 各项在权威 vcan 环境就绪后**必须重新执行**，并**另行记录**
+  新一轮证据（不覆盖本文件）。F-1 修订轮的复验记录见
+  [`OQ-1_2026-10-14_f1_evidence.md`](OQ-1_2026-10-14_f1_evidence.md)；
+  环境方案见 [PR #63](https://github.com/Li20771/SecurityLab/pull/63)
+  （该文档随 PR #63 单独提交，故此处给出 PR 链接而非相对路径）。
 
 ## 10. 合规声明
 
