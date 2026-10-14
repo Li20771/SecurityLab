@@ -38,6 +38,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _ECU_DIR = os.path.join(os.path.dirname(_HERE), "ecu")
 sys.path.insert(0, _ECU_DIR)
 
+import ecu as ecu_module  # noqa: E402
 import gateway_runtime  # noqa: E402
 import uds_types  # noqa: E402
 from gateway import (  # noqa: E402
@@ -651,7 +652,7 @@ class TestLifecycle(RuntimeTestCase):
 class TestReceiveErrorContainment(RuntimeTestCase):
     def test_recoverable_errors_are_contained_and_daemon_continues(self):
         """EILSEQ / ECOMM / EMSGSIZE：丢弃当前传输，随后仍能正常服务。"""
-        for errnum in (errno.EILSEQ, errno.ECOMM, errno.EMSGSIZE):
+        for errnum in sorted(ecu_module.RECOVERABLE_ISOTP_ERRNOS):
             with self.subTest(errnum=errnum):
                 self.transport.recv_error = isotp_oserror(errnum)
                 self.assertFalse(self.runtime.serve_once(timeout=0.0))
@@ -693,7 +694,7 @@ class TestReceiveErrorContainment(RuntimeTestCase):
 
 class TestSendErrorContainment(RuntimeTestCase):
     def test_recoverable_send_error_drops_response_but_keeps_running(self):
-        for errnum in (errno.EILSEQ, errno.ECOMM, errno.EMSGSIZE):
+        for errnum in sorted(ecu_module.RECOVERABLE_ISOTP_ERRNOS):
             with self.subTest(errnum=errnum):
                 self.transport.sent.clear()
                 self.transport.send_error = isotp_oserror(errnum)
@@ -754,6 +755,127 @@ class TestSendErrorContainment(RuntimeTestCase):
             transport.close()
 
         self.assertEqual(created[0].sent, [b"\x7E\x00"])
+
+
+class TestRecoverableErrnoPortability(unittest.TestCase):
+    """
+    ``_is_recoverable_isotp_error()`` 的跨平台契约。
+
+    背景：``errno.ECOMM`` 并非所有平台都定义（Windows 的 ``errno`` 模块
+    没有 ECOMM）。原实现直接引用 ``errno.ECOMM``，导致在 Windows 上
+    调用该函数即抛 ``AttributeError``，把"一次传输坏了"误判成进程级崩溃。
+
+    本组测试锁定三条不变量：
+
+    1. **平台未定义的错误码不得被硬引用** —— 在任何平台上调用都不抛异常。
+    2. **``None`` / 占位值不得误匹配** —— ``OSError.errno`` 合法地可以是
+       ``None``，它必须被判为"不可恢复"，绝不能与任何有效错误码相等。
+       同理 ``0`` 是合法 errno（成功），**绝不**允许被当作"平台缺失"的
+       占位值顶替进来 —— 否则一次成功的 syscall 会被误判成传输损坏。
+       这一条同时约束**集合内容**与**判定行为**（F-1）。
+    3. **既有可恢复语义不得改变** —— 平台定义了的 EILSEQ / EMSGSIZE
+       （以及 Linux 上的 ECOMM）仍是可恢复；ENODEV / EBADF / EPERM
+       仍不可恢复。
+
+    ------------------------------------------------------------------
+    已接受的风险（ACCEPTED RISK，**未修复** —— 不要当作已解决）
+    ------------------------------------------------------------------
+
+    **F-2**：判定由元组成员测试改为集合成员测试后，若 ``exc.errno`` 是
+    **不可哈希**对象（如 ``list``），新实现抛 ``TypeError``，而原元组实现
+    返回 ``False``。
+
+    - **为何接受**：``OSError.errno`` 由内核给出，恒为 ``int``；
+      ``can-isotp 2.0.7`` 不构造非 ``int`` ``errno`` 的 ``OSError``；
+      本仓库亦无任何代码路径手工赋值非 ``int`` ``errno``。因此该差异
+      **实际不可达**。
+    - **为何不改**：修复需要改动生产代码（``ecu.py``）中的判定函数，
+      而那会再次变更 ``ecu.py`` 的 blob SHA，进而触发 C2-A2 的冻结 pin
+      重新评估。为一个不可达的输入引入一次冻结契约变更，代价大于收益。
+    - **若将来触发**：一旦出现非 ``int`` ``errno`` 的真实来源，
+      应在成员测试前加 ``if not isinstance(exc.errno, int): return False``，
+      并按 C2-A2 的纪律重新评估 pin。
+
+    **本记录是风险接受，不是修复声明。**
+    """
+
+    def test_recoverable_set_is_a_set_of_int_codes(self):
+        """可恢复错误码集合必须是 int 集合，且不含 None / 占位值。"""
+        codes = ecu_module.RECOVERABLE_ISOTP_ERRNOS
+
+        self.assertNotIn(None, codes, "None 绝不能作为占位值进入错误码集合")
+        for code in codes:
+            self.assertIsInstance(code, int)
+
+    def test_zero_placeholder_is_not_in_the_set(self):
+        """
+        ``0`` 绝不能作为"平台缺失"的占位值进入集合。
+
+        若某个平台缺少 ECOMM 而实现用 ``0`` 顶替它，集合就会包含 ``0``；
+        由于 ``OSError.errno == 0`` 表示"成功"，这会让成功路径被误判为
+        可恢复的传输损坏。本断言直接钉住集合内容。
+        """
+        self.assertNotIn(
+            0, ecu_module.RECOVERABLE_ISOTP_ERRNOS,
+            "0 是合法 errno（成功），不得作为缺失项的占位值进入集合",
+        )
+
+    def test_zero_errno_is_not_recoverable(self):
+        """
+        ``OSError(0, ...)`` 必须判为不可恢复（F-1 的行为面）。
+
+        与上面的集合断言配对：即使集合内容被改动，这里也能独立捕获
+        "零值被当成可恢复"的回归。
+        """
+        self.assertFalse(
+            ecu_module._is_recoverable_isotp_error(OSError(0, "zero errno")),
+            "errno == 0 表示成功，绝不能被判定为可恢复的传输错误",
+        )
+
+    def test_platform_defined_codes_are_included(self):
+        """平台定义了的传输错误码必须全部纳入（EILSEQ / EMSGSIZE 必定存在）。"""
+        self.assertIn(errno.EILSEQ, ecu_module.RECOVERABLE_ISOTP_ERRNOS)
+        self.assertIn(errno.EMSGSIZE, ecu_module.RECOVERABLE_ISOTP_ERRNOS)
+
+    def test_ecomm_included_only_when_platform_defines_it(self):
+        """ECOMM 存在时必须纳入；不存在时必须被安全跳过（而非崩溃）。"""
+        has_ecomm = hasattr(errno, "ECOMM")
+        in_set = hasattr(errno, "ECOMM") and errno.ECOMM in ecu_module.RECOVERABLE_ISOTP_ERRNOS
+
+        if has_ecomm:
+            self.assertTrue(in_set, "平台定义了 ECOMM，它必须仍被判定为可恢复")
+        else:
+            self.assertFalse(
+                in_set, "平台未定义 ECOMM 时，不得有占位值顶替它进入集合"
+            )
+
+    def test_none_errno_is_not_recoverable(self):
+        """``OSError.errno is None`` 合法存在，必须判为不可恢复。"""
+        exc = OSError(None, "no errno information")
+
+        self.assertIsNone(exc.errno)
+        self.assertFalse(ecu_module._is_recoverable_isotp_error(exc))
+
+    def test_call_does_not_raise_on_any_platform(self):
+        """核心回归：平台缺少 ECOMM 时，调用不得抛 AttributeError。"""
+        exc = OSError(errno.EILSEQ, "sequence mismatch")
+
+        # 若实现硬引用 errno.ECOMM，Windows 上这里会抛 AttributeError
+        self.assertTrue(ecu_module._is_recoverable_isotp_error(exc))
+
+    def test_non_recoverable_errnos_remain_non_recoverable(self):
+        """接口删除 / socket 损坏等致命错误绝不能被误判为可恢复。"""
+        for errnum in (errno.ENODEV, errno.EBADF, errno.EPERM):
+            with self.subTest(errnum=errnum):
+                exc = OSError(errnum, os.strerror(errnum))
+                self.assertFalse(ecu_module._is_recoverable_isotp_error(exc))
+
+    def test_every_platform_defined_recoverable_code_round_trips(self):
+        """集合中的每个错误码都必须真的被判为可恢复（无死条目）。"""
+        for errnum in sorted(ecu_module.RECOVERABLE_ISOTP_ERRNOS):
+            with self.subTest(errnum=errnum):
+                exc = OSError(errnum, os.strerror(errnum))
+                self.assertTrue(ecu_module._is_recoverable_isotp_error(exc))
 
 
 class TestRuntimeLogging(RuntimeTestCase):

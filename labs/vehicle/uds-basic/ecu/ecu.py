@@ -404,6 +404,45 @@ def handle_uds_request(request: bytes) -> bytes:  # noqa: F811
 handle_uds_request_protocol = uds_server.handle_uds_request
 
 
+def _platform_errno(name: str) -> int | None:
+    """
+    取平台定义的 ``errno`` 值；该平台未定义时返回 ``None``。
+
+    存在的意义：``errno`` 模块的内容是**平台相关**的。``ECOMM`` 在 Linux
+    上存在（70），但 Windows 的 ``errno`` 模块**没有**这个属性。直接写
+    ``errno.ECOMM`` 会让整个函数在 Windows 上抛 ``AttributeError``，
+    把"一次传输坏了"升级成进程级崩溃。
+
+    返回 ``None`` 只用于**在构建集合时被过滤掉**，绝不允许它进入
+    错误码集合参与比较 —— 见 ``RECOVERABLE_ISOTP_ERRNOS``。
+    """
+    value = getattr(errno, name, None)
+    return value if isinstance(value, int) else None
+
+
+#: ISO-TP 传输层**可恢复**错误的错误码集合（按平台实际定义构建）。
+#:
+#: 三条已实测确认的语义（见 ``_is_recoverable_isotp_error`` 文档）::
+#:
+#:     EILSEQ   CF 序号不匹配        —— Linux / Windows 均定义
+#:     ECOMM    发送侧 FC 接收超时    —— **仅 Linux 定义**
+#:     EMSGSIZE 发送侧 FC 溢出        —— Linux / Windows 均定义
+#:
+#: 构建方式刻意采用"按名取用 + 过滤未定义"，而不是硬引用属性：
+#: 平台未定义 ``ECOMM`` 时它只是**不进入集合**，不会让调用方崩溃。
+#: 同时也刻意**不**用 ``None`` 或 ``0`` 之类的占位值顶替缺失项 ——
+#: ``OSError.errno`` 合法地可以是 ``None``，任何占位值都可能造成误匹配。
+RECOVERABLE_ISOTP_ERRNOS: frozenset[int] = frozenset(
+    code
+    for code in (
+        _platform_errno("EILSEQ"),
+        _platform_errno("ECOMM"),
+        _platform_errno("EMSGSIZE"),
+    )
+    if code is not None
+)
+
+
 def _is_recoverable_isotp_error(exc: OSError) -> bool:
     """
     判断一个 ``OSError`` 是否属于**当前 transaction 可丢弃**的
@@ -431,8 +470,16 @@ def _is_recoverable_isotp_error(exc: OSError) -> bool:
     属于 ISO-TP 传输错误类别，但本项目**尚未实际观测到**。在没有实测
     证据前扩大捕获范围，会掩盖真正的 socket / 接口故障。
     如果后续实验真的观察到，再按实测语义逐个加入（见 README）。
+
+    **跨平台说明**：判定依据是 ``RECOVERABLE_ISOTP_ERRNOS``（按平台实际
+    定义构建的集合），因此本函数在缺少 ``errno.ECOMM`` 的平台上同样可以
+    安全调用 —— 那种平台上只是不会有任何错误码等于 ECOMM，本函数不会
+    因此抛异常，也不会把 ``None`` 误判为可恢复。
+
+    该判定与平台无关的部分（EILSEQ / EMSGSIZE / ENODEV / EBADF / EPERM
+    以及 ``errno is None``）在所有平台上语义一致。
     """
-    return exc.errno in (errno.EILSEQ, errno.ECOMM, errno.EMSGSIZE)
+    return exc.errno in RECOVERABLE_ISOTP_ERRNOS
 
 
 def _isotp_error_detail(exc: OSError) -> str:
