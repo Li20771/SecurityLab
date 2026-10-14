@@ -40,12 +40,14 @@ modprobe: FATAL: Module vcan not found in directory /lib/modules/6.17.0-1022-azu
 
 经 Ubuntu 官方包库核验，**该 exact 内核版本的 vcan 模块是存在的**：
 
-| 核验项 | 结果 | 来源 |
+| 核验项 | 结果 | 官方来源（直接链接） |
 |---|---|---|
-| 包 `linux-modules-extra-6.17.0-1022-azure` 是否存在 | **存在**（noble-updates，版本 `6.17.0-1022.22`） | packages.ubuntu.com 包名检索 |
-| 该包 amd64 文件列表是否含 `vcan.ko` | **含** `/lib/modules/6.17.0-1022-azure/kernel/drivers/net/can/vcan.ko.zst` | packages.ubuntu.com 文件列表 |
-| 同包是否还含 `vxcan.ko` | 含 | 同上 |
-| 该包大小（amd64） | 约 49.8 MB（安装后约 49.4 MB） | 包详情页 |
+| 包 `linux-modules-extra-6.17.0-1022-azure` 是否存在 | **存在**，位于 `noble-updates`，版本 `6.17.0-1022.22` | [包详情页](https://packages.ubuntu.com/noble-updates/linux-modules-extra-6.17.0-1022-azure) |
+| 该包 amd64 文件清单是否含 `vcan.ko` | **含** `/lib/modules/6.17.0-1022-azure/kernel/drivers/net/can/vcan.ko.zst` | [amd64 文件清单](https://packages.ubuntu.com/noble-updates/amd64/linux-modules-extra-6.17.0-1022-azure/filelist) |
+| 同包是否还含 `vxcan.ko` | 含 `…/drivers/net/can/vxcan.ko.zst` | 同上文件清单 |
+| 该包大小（amd64） | 约 49,810.2 kB（安装后约 49,446.0 kB） | 包详情页 |
+| 包名跨 suite 检索 | `noble`（security）与 `noble-updates` 均命中，`amd64` / `arm64` | [包名检索](https://packages.ubuntu.com/search?keywords=linux-modules-extra-6.17.0-1022-azure&searchon=names&suite=all&section=all) |
+| 同族 vcan.ko 归属模式（参考：noble 初始内核） | `linux-modules-extra-*`（azure/gcp/oracle/generic） | [noble amd64 vcan.ko 内容检索](https://packages.ubuntu.com/search?searchon=contents&keywords=vcan.ko&mode=filename&suite=noble&arch=amd64) |
 
 **结论修正**：
 runner 内核**并非没有 vcan**，而是 **runner 镜像未安装 `linux-modules-extra-$(uname -r)`**。
@@ -53,6 +55,52 @@ runner 内核**并非没有 vcan**，而是 **runner 镜像未安装 `linux-modu
 
 > **注意**：以上均为**仓库外的官方包库查询**，属**未在本项目执行**的外部资料。
 > 该假设**尚未在 CI 中实跑验证**。在真正跑通之前，**不得**记为 PASS。
+
+### 2.0 四个**互相独立**的验收事实（**严禁混写、严禁递推**）
+
+下表四行是**依次递进但彼此独立**的事实。**前一项成立不能推出后一项成立**，
+每一项都必须**单独实测**并留下证据：
+
+| # | 验收事实 | 当前状态 | 证据 |
+|---|---|---|---|
+| **F-A** | 包库中存在与该内核版本匹配的 `linux-modules-extra` | **已核实（仓库外资料）** | 见上表官方链接 |
+
+**F-A 的检索记录（可复核）**：
+上表链接于 **2026-10-14** 实际抓取，观察到的关键内容为：
+
+```
+包详情页         ：版本 6.17.0-1022.22；Source: linux-azure-6.17
+                   amd64 包大小 49,810.2 kB；安装后 49,446.0 kB
+文件清单页       ：含 /lib/modules/6.17.0-1022-azure/kernel/drivers/net/can/vcan.ko.zst
+                   同页含 vxcan.ko.zst
+包名检索页       ："Found 1 matching packages"
+                   noble (24.04LTS) [security]: amd64
+                   noble-updates: amd64 arm64
+内容检索页       ：noble/amd64 下 vcan.ko 命中 9 条，涵盖
+                   linux-modules-extra-{azure,gcp,oracle,generic} 等
+```
+
+> 若上述链接因包更新而内容变化，应以**当时实际返回**为准重新核验；
+> 本记录不保证链接永久不变。
+| **F-B** | 该模块能在**实际 runner** 上**安装并加载**（`apt-get install` 成功 ∧ `modprobe vcan` 成功） | **UNKNOWN / 未验证** | **无** —— 必须实跑 |
+| **F-C** | `vcan0` 能**成功创建**（`ip link add dev vcan0 type vcan` ∧ `ip link set vcan0 up`） | **UNKNOWN / 未验证** | **无** —— 必须实跑 |
+| **F-D** | **完整** `scripts/qa_extended.sh` **真正通过** | **UNKNOWN / 未验证** | **无** —— 必须实跑 |
+
+**明确禁止的推理**：
+
+```
+✗ F-A 成立 ⇒ 断言 F-B 成立（"包装得上"不等于"模块加载得了"）
+✗ F-B 成立 ⇒ 断言 F-C 成立（"模块加载了"不等于"vcan0 建得起来"）
+✗ F-C 成立 ⇒ 断言 F-D 成立（"vcan0 有了"不等于"完整 extended 会通过"）
+✗ F-D 成立 ⇒ 断言 fuzz / repro / 硬件相关测试通过（extended 不含 --fuzz，
+   也不含 scripts/repro/*）
+```
+
+**F-A 是仓库外的官方资料查询，其本身也不是本项目执行的测试**；
+它只用于**选择方案**，不构成任何"已通过"的声明。
+
+同样地，**模块安装成功 ≠ 完整 extended 通过**；
+**extended 通过 ≠ fuzz / repro / 硬件相关测试通过**。
 
 ### 2.1 为什么容器**不能**解决这个问题
 
@@ -179,17 +227,39 @@ OQ-2d  修正 capture_lab.sh 的 $HOME 硬编码缺口        ← 独立小项
 
 ### 6.2 OQ-2b 的验收条件（**只有真跑过才算 PASS**）
 
+必须按 §2.0 的 **F-A → F-B → F-C → F-D** 顺序**逐项**取证，
+且**每一项都必须单独实测**，不得由前一项推断后一项：
+
 ```
-必须全部满足，缺一不可：
-  1. 目标环境实际创建 vcan0（`ip -details link show vcan0` 输出可见）
-  2. 真实运行 extended quality gate（scripts/qa_extended.sh）
-  3. 留下 Run URL + 提交 SHA + 逐 Job/Step 结果
-  4. 明确区分 PASS / FAIL / SKIPPED（严禁把 skipped 记为 PASS）
-  5. 证据按 reports/ 纪律归档（见 OQ-3 / PR #62）
+F-B  模块安装并加载成功
+     —— 证据：apt-get install 的实际输出 + `modprobe vcan` 退出码
+     —— 若失败：记录失败日志（package 不可得 / signature / lockdown）
+
+F-C  vcan0 创建成功
+     —— 证据：`ip -details link show vcan0` 的实际输出（须显示 UP）
+
+F-D  完整 extended quality gate 真实运行
+     —— 证据：scripts/qa_extended.sh 的实际输出与退出码
 ```
 
-**不得**因为单次 `extended` 通过就声称所有 fuzz / repro / 硬件相关测试通过 ——
-`extended` 不含 `--fuzz`，也不含 `scripts/repro/*`。
+并且必须留下：
+
+```
+1. Run URL + 提交 SHA + 逐 Job/Step 结果
+2. 明确区分 PASS / FAIL / SKIPPED（严禁把 skipped 记为 PASS）
+3. 所有未执行项的清单及原因
+4. 证据按 reports/ 纪律归档（见 OQ-3 / PR #62）
+```
+
+**明确不得**：
+
+```
+✗ 由 F-A（包存在）推断 F-B（能装能加载）
+✗ 由 F-B 推断 F-C，或由 F-C 推断 F-D
+✗ 因"模块安装成功"就声称 extended 可运行
+✗ 因单次 extended 通过就声称所有 fuzz / repro / 硬件相关测试通过
+  （extended 不含 --fuzz，也不含 scripts/repro/*）
+```
 
 ---
 
@@ -222,6 +292,8 @@ OQ-2d  修正 capture_lab.sh 的 $HOME 硬编码缺口        ← 独立小项
 ## 9. 状态声明
 
 ```
+【性质】本文件为 PROPOSAL / PLANNING（方案 / 规划）。
+
 本文件为方案，未执行任何变更
 未安装任何系统组件
 未设置任何 Runner
@@ -229,4 +301,10 @@ OQ-2d  修正 capture_lab.sh 的 $HOME 硬编码缺口        ← 独立小项
 未修改 ci.yml（仅引用其现有行号）
 未修改凭据或主机安全配置
 §2 的包库结论为仓库外官方资料，尚未在本项目实跑验证 → 不得记为 PASS
+F-B / F-C / F-D 三项均为 UNKNOWN，尚未验证
+
+【关键的授权边界】
+**合并本文件不自动授权执行它描述的变更。**
+接受本方案 ≠ 批准安装内核模块包 ≠ 批准修改 ci.yml ≠ 批准切换 extended 目标 Runner。
+§8 的每一项都需要**单独**的明确批准。
 ```
