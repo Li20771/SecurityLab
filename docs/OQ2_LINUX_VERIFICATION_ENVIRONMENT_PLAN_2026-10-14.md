@@ -53,8 +53,20 @@ modprobe: FATAL: Module vcan not found in directory /lib/modules/6.17.0-1022-azu
 runner 内核**并非没有 vcan**，而是 **runner 镜像未安装 `linux-modules-extra-$(uname -r)`**。
 这是**打包/安装缺口**，不是"内核不可能支持"。
 
-> **注意**：以上均为**仓库外的官方包库查询**，属**未在本项目执行**的外部资料。
-> 该假设**尚未在 CI 中实跑验证**。在真正跑通之前，**不得**记为 PASS。
+> **已于 2026-10-14 实跑验证**（不再是"尚未验证"）：
+> run [`38536799332`](https://github.com/Li20771/SecurityLab/actions/runs/38536799332)
+> 实际安装成功并加载了 vcan：
+>
+> ```
+> Get:3 ... linux-modules-extra-6.17.0-1022-azure amd64 6.17.0-1022.22 [51.0 MB]
+> Setting up linux-modules-extra-6.17.0-1022.azure (6.17.0-1022.22) ...
+> vcan module present for 6.17.0-1022.azure
+> vcan                   12288  0
+> 5: vcan0: <NOARP,UP,LOWER_UP> mtu 72 ...
+> ```
+>
+> ⇒ **包库查询的结论被实跑证实**。但请注意：这只证明 **vcan 部分**可行，
+> **不**代表 extended 门禁通过 —— 后者因缺 ISO-TP 而**真实失败**（见 §2.2）。
 
 ### 2.0 四个**互相独立**的验收事实（**严禁混写、严禁递推**）
 
@@ -191,7 +203,7 @@ run `38536799332` 的逐项输出（`extended` 门禁内 4 步）：
 
 | 维度 | 评估 |
 |---|---|
-| 是否保证 vcan | **高（但未实测）**：包存在且含 `vcan.ko`；仍受 §5 两个残留风险影响 |
+| 是否保证 vcan | **已实跑证实**（run `38536799332`）：包存在、安装成功、`vcan0` UP。残留风险仅剩 §5 的 R-1（镜像滚动） |
 | 成本 | 极低（每次约 +50 MB 下载 + 安装时间） |
 | 维护 | 几乎为零；但**`$(uname -r)` 随 runner 镜像滚动**，包若某日缺席会失败 |
 | 隔离 | 与现状相同（ephemeral runner） |
@@ -237,15 +249,45 @@ run `38536799332` 的逐项输出（`extended` 门禁内 4 步）：
 
 ---
 
-## 5. 残留风险（**必须在实跑中证伪，不得假设**）
+## 5. 残留风险（**已在实跑中部分证伪；剩余项仍不得假设**）
 
-| ID | 风险 | 如何证伪 |
-|---|---|---|
-| R-1 | 某日 `linux-modules-extra-$(uname -r)` 在镜像滚动后**尚未发布** | 实跑；若失败则需 pin runner 镜像或改方案 B |
-| R-2 | runner 内核可能启用 **module signature enforcement / lockdown / secure boot**，导致 `modprobe` 被拒 | 实跑；失败日志会显示 `Operation not permitted` 或签名错误 |
-| R-3 | `sudo` 无密码假设变化 | 实跑 |
-| R-4 | `tshark` 在 vcan0 上抓包权限 | 实跑（`capture_lab.sh` 已预设失败可降级） |
-| R-5 | `capture_lab.sh:13` 硬编码 `$HOME/.venvs/network/bin/python`，runner 上不存在 ⇒ BLF 段可能失败，但脚本不 abort，`qa_extended.sh` 仍报 `[ OK ]` | **正确性缺口**（非安全问题），应单独记录 |
+下表已按 **2026-10-14 的实际运行结果**更新。**已证伪的项不再列为风险**，
+但**未证伪的项仍不得假设**：
+
+| ID | 风险 | 状态 | 证据 / 剩余动作 |
+|---|---|---|---|
+| R-1 | `linux-modules-extra-$(uname -r)` 在镜像滚动后尚未发布 | **本次未发生**（残留） | run `38536799332` 安装成功；**镜像滚动后仍可能发生** ⇒ 需持续观察；若出现则 pin runner 镜像或改方案 B |
+| R-2 | module signature / lockdown 拒绝 `modprobe` | **已证伪** | run `38536799332`：`vcan 12288 0` + `vcan0 UP` ⇒ 模块加载与设备创建均成功，未受签名/lockdown 阻断 |
+| R-3 | 免密 `sudo` 假设变化 | **本次未发生**（残留） | 全部 `sudo` 步骤成功；仍属托管环境假设 |
+| R-4 | `tshark` 在 vcan0 上抓包权限 | **仍为风险** | run `38540870651` 中 `PCAP=FAIL`（`capture_lab.sh` 已预设失败可降级）；**具体是权限还是其它原因尚未单独定位** |
+| R-5 | `capture_lab.sh` 硬编码 `$HOME/.venvs/network/bin/python` ⇒ BLF 段失败却被上报为 `[ OK ]` | **已修复并实跑验证** | 解释器改为 `$PYTHON`→venv→PATH 顺序；退出码改为 `CAPTURE_LAB=CHECK` ⇒ `exit 1`。run `38540870651` 实测 `BLF=PASS` 且 `[FAIL] capture lab` 如实上报 |
+| **R-6（新）** | **该内核未构建 `CAN_ISOTP`** ⇒ 依赖 ISO-TP 的测试在托管 runner 上**无法通过** | **已确证（硬阻塞）** | 见 §2.2；需自托管 VM 或自建镜像（内核含 `CAN_ISOTP`） |
+
+---
+
+## 5.1 最新实测结论（2026-10-14，五次 workflow_dispatch 实跑）
+
+| # | Run | 结果 | 关键进展 |
+|---|---|---|---|
+| 1 | [38529912319](https://github.com/Li20771/SecurityLab/actions/runs/38529912319) | failure | `modprobe: Module vcan not found`（历史首次运行） |
+| 2 | [38536799332](https://github.com/Li20771/SecurityLab/actions/runs/38536799332) | failure | **模块装上、vcan0 UP**；e2e 报 `EPROTONOSUPPORT` |
+| 3 | [38538604194](https://github.com/Li20771/SecurityLab/actions/runs/38538604194) | failure | 曾把 `can_isotp` 硬失败 ⇒ 自我修正 |
+| 4 | [38539974828](https://github.com/Li20771/SecurityLab/actions/runs/38539974828) | failure | 确证 `isotp` 无法加载 + socket 失败 |
+| 5 | [38540870651](https://github.com/Li20771/SecurityLab/actions/runs/38540870651) | failure | **首次跑完全流程**，逐项如实报告 |
+
+**run 5 的逐项结果（不得折叠为单一结论）**：
+
+| 子项 | 结果 |
+|---|---|
+| UDS 离线单元测试 | **PASS**（27 项 `[ OK ]`） |
+| vcan 端到端（依赖 ISO-TP） | **FAIL 11 项**（全部缺协议，非逻辑缺陷） |
+| can-tools 离线（含 capture_lab 退出码测试） | **PASS** |
+| capture lab | **FAIL 但如实上报**（`CAN_LOG=PASS BLF=PASS PCAP=FAIL`） |
+| YARA | **PASS** |
+| 汇总 | `QA EXTENDED RESULT: FAIL` |
+
+> **明确**：**模块安装成功 ≠ extended 通过**（已实测：模块装上、vcan0 UP，门禁仍 FAIL）。
+> extended 也**不含** `--fuzz` 与 `scripts/repro/*`，故其通过**不**代表 fuzz / repro / 硬件测试通过。
 
 ---
 
@@ -350,14 +392,20 @@ F-D  完整 extended quality gate 真实运行
 本文件为方案，未执行任何变更
 未安装任何系统组件
 未设置任何 Runner
-未切换任何工作流
+未切换任何工作流（本文件提交时）
 未修改 ci.yml（仅引用其现有行号）
 未修改凭据或主机安全配置
-§2 的包库结论为仓库外官方资料，尚未在本项目实跑验证 → 不得记为 PASS
-F-B / F-C / F-D 三项均为 UNKNOWN，尚未验证
+
+【本文件提交时的实测状态（2026-10-14）】
+F-A = 已核实（仓库外官方资料）
+F-B = **PASS**（run 38536799332：模块安装并加载成功）
+F-C = **PASS**（run 38536799332：vcan0 实际创建并 UP）
+F-D = **FAIL（硬阻塞）**（该内核未构建 CAN_ISOTP；详见 §2.2）
+包库结论已被实跑证实（vcan 部分），但 **extended 门禁真实失败，不得记为 PASS**
 
 【关键的授权边界】
 **合并本文件不自动授权执行它描述的变更。**
-接受本方案 ≠ 批准安装内核模块包 ≠ 批准修改 ci.yml ≠ 批准切换 extended 目标 Runner。
+接受本方案 ≠ 批准安装内核模块包 ≠ 批准修改 ci.yml ≠ 批准切换 extended 目标 Runner
+≠ 批准部署自托管 Runner。
 §8 的每一项都需要**单独**的明确批准。
 ```
