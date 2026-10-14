@@ -770,6 +770,9 @@ class TestRecoverableErrnoPortability(unittest.TestCase):
     1. **平台未定义的错误码不得被硬引用** —— 在任何平台上调用都不抛异常。
     2. **``None`` / 占位值不得误匹配** —— ``OSError.errno`` 合法地可以是
        ``None``，它必须被判为"不可恢复"，绝不能与任何有效错误码相等。
+       同理 ``0`` 是合法 errno（成功），**绝不**允许被当作"平台缺失"的
+       占位值顶替进来 —— 否则一次成功的 syscall 会被误判成传输损坏。
+       这一条同时约束**集合内容**与**判定行为**（F-1）。
     3. **既有可恢复语义不得改变** —— 平台定义了的 EILSEQ / EMSGSIZE
        （以及 Linux 上的 ECOMM）仍是可恢复；ENODEV / EBADF / EPERM
        仍不可恢复。
@@ -782,6 +785,31 @@ class TestRecoverableErrnoPortability(unittest.TestCase):
         self.assertNotIn(None, codes, "None 绝不能作为占位值进入错误码集合")
         for code in codes:
             self.assertIsInstance(code, int)
+
+    def test_zero_placeholder_is_not_in_the_set(self):
+        """
+        ``0`` 绝不能作为"平台缺失"的占位值进入集合。
+
+        若某个平台缺少 ECOMM 而实现用 ``0`` 顶替它，集合就会包含 ``0``；
+        由于 ``OSError.errno == 0`` 表示"成功"，这会让成功路径被误判为
+        可恢复的传输损坏。本断言直接钉住集合内容。
+        """
+        self.assertNotIn(
+            0, ecu_module.RECOVERABLE_ISOTP_ERRNOS,
+            "0 是合法 errno（成功），不得作为缺失项的占位值进入集合",
+        )
+
+    def test_zero_errno_is_not_recoverable(self):
+        """
+        ``OSError(0, ...)`` 必须判为不可恢复（F-1 的行为面）。
+
+        与上面的集合断言配对：即使集合内容被改动，这里也能独立捕获
+        "零值被当成可恢复"的回归。
+        """
+        self.assertFalse(
+            ecu_module._is_recoverable_isotp_error(OSError(0, "zero errno")),
+            "errno == 0 表示成功，绝不能被判定为可恢复的传输错误",
+        )
 
     def test_platform_defined_codes_are_included(self):
         """平台定义了的传输错误码必须全部纳入（EILSEQ / EMSGSIZE 必定存在）。"""
