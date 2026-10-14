@@ -63,10 +63,13 @@ runner 内核**并非没有 vcan**，而是 **runner 镜像未安装 `linux-modu
 
 | # | 验收事实 | 当前状态 | 证据 |
 |---|---|---|---|
-| **F-A** | 包库中存在与该内核版本匹配的 `linux-modules-extra` | **已核实（仓库外资料）** | 见上表官方链接 |
+| **F-A** | 包库中存在与该内核版本匹配的 `linux-modules-extra` | **已核实（仓库外资料）** | 见 §2 上表官方链接 |
+| **F-B** | 该模块能在**实际 runner** 上**安装并加载**（`apt-get install` 成功 ∧ `modprobe vcan` 成功） | **PASS（已实跑）** | run `38536799332`：`Setting up linux-modules-extra-6.17.0-1022-azure (6.17.0-1022.22)` → `vcan module present` → `vcan 12288 0` |
+| **F-C** | `vcan0` 能**成功创建** | **PASS（已实跑）** | run `38536799332`：`5: vcan0: <NOARP,UP,LOWER_UP> ...` |
+| **F-D** | **完整** `scripts/qa_extended.sh` **真正通过** | **FAIL（已实跑，硬阻塞）** | run `38536799332` / `38539974828`：见 §2.2 |
 
 **F-A 的检索记录（可复核）**：
-上表链接于 **2026-10-14** 实际抓取，观察到的关键内容为：
+§2 上表链接于 **2026-10-14** 实际抓取，观察到的关键内容为：
 
 ```
 包详情页         ：版本 6.17.0-1022.22；Source: linux-azure-6.17
@@ -82,9 +85,59 @@ runner 内核**并非没有 vcan**，而是 **runner 镜像未安装 `linux-modu
 
 > 若上述链接因包更新而内容变化，应以**当时实际返回**为准重新核验；
 > 本记录不保证链接永久不变。
-| **F-B** | 该模块能在**实际 runner** 上**安装并加载**（`apt-get install` 成功 ∧ `modprobe vcan` 成功） | **UNKNOWN / 未验证** | **无** —— 必须实跑 |
-| **F-C** | `vcan0` 能**成功创建**（`ip link add dev vcan0 type vcan` ∧ `ip link set vcan0 up`） | **UNKNOWN / 未验证** | **无** —— 必须实跑 |
-| **F-D** | **完整** `scripts/qa_extended.sh` **真正通过** | **UNKNOWN / 未验证** | **无** —— 必须实跑 |
+
+### 2.2 F-D 失败的**确切原因**：该内核未构建 ISO-TP（硬阻塞）
+
+`vcan0` 建成之后，e2e 仍然失败，根因经三次实跑逐步定位并最终确证：
+
+```
+run 38536799332  e2e 报 OSError: [Errno 93] Protocol not supported
+run 38539974828  逐个尝试协议模块：
+                   modprobe can      : loaded
+                   modprobe can_raw  : loaded
+                   modprobe can_bcm  : loaded
+                   modprobe can_gw   : loaded
+                   modprobe isotp    : not available
+                   modprobe can-isotp: not available
+                   modprobe can_isotp: not available
+                 真实 socket 构造仍报 OSError: [Errno 93] Protocol not supported
+```
+
+**包级确证**（Ubuntu 文件清单，2026-10-14 抓取）：
+
+| 包 | `kernel/net/can/` 下提供 | 有 iso-tp 模块吗 |
+|---|---|---|
+| `linux-modules-6.17.0-1022-azure` | `can.ko` `can-bcm.ko` `can-gw.ko` `can-raw.ko` `can-j1939.ko` | **没有** |
+| `linux-modules-extra-6.17.0-1022-azure` | 各厂商设备驱动（`vcan.ko` `vxcan.ko` 等） | **没有** |
+
+⇒ **该 Azure 内核未构建 `CAN_ISOTP`**。这不是脚本错误、不是模块名写错、
+也不是"再 modprobe 一次就好"，而是**内核能力缺失**。
+
+**含义（对方案的影响）**：
+
+- 托管 runner **即使 vcan 可用，也无法运行依赖 ISO-TP 的那部分 extended 门禁**；
+- 依赖 ISO-TP 的测试需要**自托管 VM**（内核带 `CAN_ISOTP`）或**自建 runner 镜像**；
+- 模块安装步骤对 vcan 仍然**正确且必要**（F-B/F-C 已 PASS），不受此影响；
+- `capture_lab` / YARA 等**不依赖 ISO-TP** 的部分**仍可运行**（见 §2.3）。
+
+### 2.3 各子项的独立状态（**不得折叠为一个总体结论**）
+
+run `38536799332` 的逐项输出（`extended` 门禁内 4 步）：
+
+| 子项 | 结果 | 说明 |
+|---|---|---|
+| `[1/4]` UDS 单元测试（离线部分） | **PASS**（27 项中多数） | `[ OK ]` 多项 |
+| `[1/4]` vcan 端到端（依赖 ISO-TP） | **FAIL**（11 项） | 全部因 `EPROTONOSUPPORT`，**非逻辑缺陷** |
+| `[2/4]` can-tools 离线 | **部分 PASS** | 含新增的 capture_lab 退出码测试 |
+| `[3/4]` capture lab | **FAIL**（但**如实上报**） | `CAN_LOG=PASS BLF=PASS PCAP=FAIL` → `CAPTURE_LAB=CHECK` → `[FAIL]` |
+| `[4/4]` YARA | 未能取到独立结论 | 见运行日志 |
+
+> **关键进步**：`[3/4] capture lab` 现已**如实报 FAIL**。
+> 修复前它会打印 `CAPTURE_LAB=CHECK` 却**以 0 退出**，被调用方上报成 `[ OK ]`。
+> 这正是 OQ-2d 要修的 fail-open，已由实跑证明修复生效。
+> 同时 `BLF=PASS` 证明**解释器硬编码修复**也生效（此前该段在非 WSL 环境必然失败）。
+
+
 
 **明确禁止的推理**：
 
