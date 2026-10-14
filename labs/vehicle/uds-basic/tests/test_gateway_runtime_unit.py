@@ -776,6 +776,27 @@ class TestRecoverableErrnoPortability(unittest.TestCase):
     3. **既有可恢复语义不得改变** —— 平台定义了的 EILSEQ / EMSGSIZE
        （以及 Linux 上的 ECOMM）仍是可恢复；ENODEV / EBADF / EPERM
        仍不可恢复。
+
+    ------------------------------------------------------------------
+    已接受的风险（ACCEPTED RISK，**未修复** —— 不要当作已解决）
+    ------------------------------------------------------------------
+
+    **F-2**：判定由元组成员测试改为集合成员测试后，若 ``exc.errno`` 是
+    **不可哈希**对象（如 ``list``），新实现抛 ``TypeError``，而原元组实现
+    返回 ``False``。
+
+    - **为何接受**：``OSError.errno`` 由内核给出，恒为 ``int``；
+      ``can-isotp 2.0.7`` 不构造非 ``int`` ``errno`` 的 ``OSError``；
+      本仓库亦无任何代码路径手工赋值非 ``int`` ``errno``。因此该差异
+      **实际不可达**。
+    - **为何不改**：修复需要改动生产代码（``ecu.py``）中的判定函数，
+      而那会再次变更 ``ecu.py`` 的 blob SHA，进而触发 C2-A2 的冻结 pin
+      重新评估。为一个不可达的输入引入一次冻结契约变更，代价大于收益。
+    - **若将来触发**：一旦出现非 ``int`` ``errno`` 的真实来源，
+      应在成员测试前加 ``if not isinstance(exc.errno, int): return False``，
+      并按 C2-A2 的纪律重新评估 pin。
+
+    **本记录是风险接受，不是修复声明。**
     """
 
     def test_recoverable_set_is_a_set_of_int_codes(self):
