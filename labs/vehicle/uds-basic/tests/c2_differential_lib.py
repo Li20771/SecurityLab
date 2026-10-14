@@ -153,12 +153,43 @@ CURRENT_POLICY_REQUIRED_SYMBOLS = (
 #:    * ``gateway_runtime.py``  入口层纯增量；C2-A2 的 20 条差分执行**不经过**它
 #:
 #:    其余 9 个条目仍指向 ``4059cf5`` 时代的 blob，**未变**。
+#:
+#: .. important::
+#:    **OQ-1 errno.ECOMM Portability Rebaseline（2026-10-14）**
+#:
+#:    本表 **1 个条目**按 OQ-1 的修复做过一次受控 rebaseline：
+#:
+#:         ecu.py             0817e17b… → e5450646…
+#:
+#:    原因：``_is_recoverable_isotp_error()`` 原先硬引用 ``errno.ECOMM``，
+#:    而 Windows 的 ``errno`` 模块**没有**该属性 ⇒ 在 Windows 上调用即抛
+#:    ``AttributeError``，把"一次传输坏了"升级成进程级崩溃。修复方式为
+#:    改为按平台实际定义构建的 ``RECOVERABLE_ISOTP_ERRNOS`` 集合
+#:    （缺失的平台只是不纳入该项，**不**用 ``None``/``0`` 占位）。
+#:
+#:    fail-closed **正确触发**后，按本表文档的处置纪律完成重新评估与记录
+#:    （"不得静默更新 pin"）。
+#:
+#:    **这不是放宽检查**：本表语义（逐模块字节同一性、任何漂移即失败）
+#:    **未变**，fail-closed 机制**未删除**。
+#:
+#:    影响评估（已实测，非推断）：
+#:
+#:    * 被改动的符号 ``_is_recoverable_isotp_error`` / ``RECOVERABLE_ISOTP_ERRNOS``
+#:      在 A2 的差分主体 ``gateway.py`` 中**完全不出现**（源码检索确认）
+#:      ⇒ 20 条 case 的 Legacy↔Current 执行路径**不经过**本次改动。
+#:    * A2 差分结论**未变**：``mismatches = 0``，两侧锚点仍 20/20。
+#:    * 该改动只影响**传输错误分类**（可恢复 vs 致命），不触碰任何
+#:      UDS 请求/响应字节、ECU 状态或路由决策。
+#:    * 与平台无关的判定语义（EILSEQ / EMSGSIZE / ENODEV / EBADF / EPERM）
+#:      **逐项保持原值**。
 CONTROLLED_SHARED_DEPENDENCIES = {
     "did_database.py": "84150295c82134f54b62a09b2f694f1f61f65644",
     "dtc_database.py": "4d80ef2418b007a7fded022d183d4b69c1ecd914",
     "dtc_runtime.py": "cbc63e7e3daf71409cc91e66c18e96b193f17145",
     # C3-A1 rebaseline（原 710d6515e1e50204c398f82e3368559d87b4c806）
-    "ecu.py": "0817e17be858ce7eec132733418b72199de10e50",
+    # OQ-1 rebaseline（原 0817e17be858ce7eec132733418b72199de10e50）
+    "ecu.py": "e545064625c38d0fc73248bd6589fa8a406db8a2",
     "file_database.py": "b0df31992180b4764bbc0d2d1af8c2576679a75d",
     # C3-A1 rebaseline（原 85604271db0640c732bb32cffd3f36047ebbcece）
     "gateway_runtime.py": "0c12cb7bc06771daa72732d5422c94c05cb3fe79",
