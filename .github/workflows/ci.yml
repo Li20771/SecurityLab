@@ -91,15 +91,27 @@ jobs:
             -o -e "/lib/modules/${KREL}/kernel/drivers/net/can/vcan.ko.zst"
           echo "vcan module present for ${KREL}"
 
+      # 2026-10-14 实测（run 38536799332）发现的**第三个**前置条件：
+      # 装上 modules-extra、vcan0 建起来之后，e2e 仍以
+      #     OSError: [Errno 93] Protocol not supported
+      # 失败 —— 因为 ISO-TP 走 socket(AF_CAN, SOCK_DGRAM, CAN_ISOTP)，
+      # 需要 can / can_raw / can_isotp 协议模块也被加载。
+      # 只 modprobe vcan 不足以让 ISO-TP socket 可用。
       - name: Bring up vcan0
         run: |
           set -euo pipefail
           sudo modprobe vcan
+          # CAN 核心 + 原始套接字 + ISO-TP（缺一即 EPROTONOSUPPORT=93）
+          sudo modprobe can
+          sudo modprobe can_raw
+          sudo modprobe can_isotp
           sudo ip link add dev vcan0 type vcan
           sudo ip link set vcan0 up
-          # 逐项取证：模块已加载 + 设备存在且 UP
-          lsmod | grep -E '^vcan\b'
+          # 逐项取证：相关模块均已加载 + 设备存在且 UP
+          lsmod | grep -E '^(vcan|can|can_raw|can_isotp)\b'
           ip -details link show vcan0
+          # fail-closed：证明 CAN_ISOTP 协议确实可用，而不是假设已就绪
+          python3 -c "import socket; s=socket.socket(socket.AF_CAN, socket.SOCK_DGRAM, socket.CAN_ISOTP); s.close(); print('CAN_ISOTP socket OK')"
 
       - name: Install CAN / capture / YARA tooling
         env:
