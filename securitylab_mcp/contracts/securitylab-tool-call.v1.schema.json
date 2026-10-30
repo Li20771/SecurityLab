@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:securitylab:contract:tool-call:1.0.0",
+  "title": "SecurityLab MCP tool call v1",
+  "description": "Tool arguments are model-influenced; context is server/session binding and must never be supplied by the model.",
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/$defs/labCatalog" },
+    { "$ref": "#/$defs/labStatus" },
+    { "$ref": "#/$defs/labReadFile" },
+    { "$ref": "#/$defs/labGetReport" },
+    { "$ref": "#/$defs/labGetRunResult" },
+    { "$ref": "#/$defs/securitylabVcan" }
+  ],
+  "$defs": {
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "role", "workspace_id", "tool_profile"],
+      "properties": {
+        "run_id": { "type": "string", "pattern": "^run_[A-Za-z0-9_-]{8,96}$" },
+        "role": { "enum": ["orchestrator", "researcher", "vehicle_analyst", "challenger", "evidence_verifier", "lab_runner"] },
+        "workspace_id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{1,63}$" },
+        "episode_id": { "type": ["string", "null"], "pattern": "^[a-z][a-z0-9_-]{1,63}$" },
+        "tool_profile": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "emptyArgs": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "labCatalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "server", "tool", "arguments", "context"],
+      "properties": {
+        "contract_version": { "const": "1.0.0" },
+        "server": { "const": "securitylab_ro" },
+        "tool": { "const": "lab_catalog" },
+        "arguments": { "$ref": "#/$defs/emptyArgs" },
+        "context": { "$ref": "#/$defs/context" }
+      }
+    },
+    "labStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "server", "tool", "arguments", "context"],
+      "properties": {
+        "contract_version": { "const": "1.0.0" },
+        "server": { "const": "securitylab_ro" },
+        "tool": { "const": "lab_status" },
+        "arguments": { "$ref": "#/$defs/emptyArgs" },
+        "context": { "$ref": "#/$defs/context" }
+      }
+    },
+    "labReadFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "server", "tool", "arguments", "context"],
+      "properties": {
+        "contract_version": { "const": "1.0.0" },
+        "server": { "const": "securitylab_ro" },
+        "tool": { "const": "lab_read_file" },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path"],
+          "properties": {
+            "path": { "type": "string", "minLength": 1, "maxLength": 512 },
+            "root_id": { "enum": ["workspace", "reports", "artifacts"] }
+          }
+        },
+        "context": { "$ref": "#/$defs/context" }
+      }
+    },
+    "labGetReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "server", "tool", "arguments", "context"],
+      "properties": {
+        "contract_version": { "const": "1.0.0" },
+        "server": { "const": "securitylab_ro" },
+        "tool": { "const": "lab_get_report" },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["report_id"],
+          "properties": {
+            "report_id": { "type": "string", "pattern": "^rep_[A-Za-z0-9_-]{4,64}$" }
+          }
+        },
+        "context": { "$ref": "#/$defs/context" }
+      }
+    },
+    "labGetRunResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "server", "tool", "arguments", "context"],
+      "properties": {
+        "contract_version": { "const": "1.0.0" },
+        "server": { "const": "securitylab_ro" },
+        "tool": { "const": "lab_get_run_result" },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["result_id"],
+          "properties": {
+            "result_id": { "type": "string", "pattern": "^res_[A-Za-z0-9_-]{4,64}$" }
+          }
+        },
+        "context": { "$ref": "#/$defs/context" }
+      }
+    },
+    "securitylabVcan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "server", "tool", "arguments", "context"],
+      "properties": {
+        "contract_version": { "const": "1.0.0" },
+        "server": { "const": "securitylab_vcan" },
+        "tool": { "const": "securitylab_vcan" },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["suite"],
+          "properties": {
+            "suite": { "enum": ["unit_smoke", "virtual_smoke"] }
+          }
+        },
+        "context": { "$ref": "#/$defs/context" }
+      }
+    }
+  }
+}

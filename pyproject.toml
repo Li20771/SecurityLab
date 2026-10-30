@@ -47,5 +47,10 @@ disallow_untyped_defs = false
 markers = [
     "vcan: 需要 vcan0 虚拟 CAN 总线（SocketCAN/ISO-TP）的端到端测试",
 ]
-testpaths = ["labs/vehicle/uds-basic/tests", "labs/vehicle/can-tools/tests"]
+testpaths = [
+    "labs/vehicle/uds-basic/tests",
+    "labs/vehicle/can-tools/tests",
+    "securitylab_mcp/tests",
+]
+pythonpath = ["."]
 addopts = "-ra"

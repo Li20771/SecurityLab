@@ -27,6 +27,7 @@ SecurityLab/
 ├── configs/
 │   ├── binfmt/                  # binfmt additive 注册器 + selfheal v2.3（fail-closed）
 │   ├── environment/             # Python requirements（钉版本）
+│   ├── mcp/                     # SecurityLab MCP 只读 server 配置示例
 │   ├── network/                 # 代理探测 / ssh-proxy
 │   └── systemd/                 # vcan0 / binfmt-selfheal / dsh-web 单元
 ├── labs/
@@ -38,6 +39,7 @@ SecurityLab/
 │       ├── can-basic/           # CAN 基础练习
 │       ├── can-tools/           # 收发 / 捕获 / fuzz / replay
 │       └── uds-basic/           # UDS 虚拟 ECU / 客户端 / 网关 + 测试
+├── securitylab_mcp/             # SecurityLab-owned MCP 只读 server（v1）
 ├── scripts/
 │   ├── healthcheck.sh           # 统一环境健康检查（[--extended]）
 │   ├── qa_fast.sh / qa_extended.sh   # 工程级质量门禁
@@ -48,6 +50,29 @@ SecurityLab/
 ├── pyproject.toml / conftest.py # ruff / mypy / pytest 配置
 └── .github/workflows/ci.yml     # fast 自动 / extended 手动
 （历史/用户目录：ctf data notes pcaps projects reports reverse tools artifacts —— 非本任务创建，保持原样）
+
+## SecurityLab MCP 只读接口（v1.0.0）
+
+`securitylab_mcp/` 是本仓库拥有的 MCP **只读** server，实现
+`brief/contracts/SECURITYLAB_MCP_V1.md` v1.0.0：
+
+- 工具：`lab_catalog`、`lab_status`、受限 `lab_read_file`、
+  `lab_get_report`、`lab_get_run_result`；
+- 身份/run/workspace 只来自受信 server/session binding，不接受模型参数自报；
+- 服务端强制 root containment（含 symlink 复核）、参数校验、输出上限与脱敏；
+- `securitylab_vcan` 只保留 disabled schema，任何调用返回 `tool-disabled`，
+  不启动/连接/运行 vcan、CAN/ECU、车辆或设备实验；
+- 不提供任意 shell/Python、命令、sudo、写操作、仓库外访问或 Git 远程写。
+
+```powershell
+python -m pytest securitylab_mcp/tests -q
+python -m mypy securitylab_mcp
+python -m securitylab_mcp.server --config configs/mcp/securitylab_mcp.example.json --binding configs/mcp/binding.example.json
+```
+
+配置与启动说明见 `configs/mcp/README.md`；实现状态与测试矩阵见
+`docs/MCP_READONLY_INTERFACE_2026-10-30.md`。真实 DSH/Fleet 连接、
+`securitylab_vcan` 与任何真实实验均为 `NOT_RUN`。
 
 ## labs/reverse
 
