@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:securitylab:contract:tool-result:1.0.0",
+  "title": "SecurityLab MCP tool result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "server", "tool", "ok", "data", "error", "meta"],
+  "properties": {
+    "contract_version": { "const": "1.0.0" },
+    "server": { "enum": ["securitylab_ro", "securitylab_vcan"] },
+    "tool": { "enum": ["lab_catalog", "lab_status", "lab_read_file", "lab_get_report", "lab_get_run_result", "securitylab_vcan"] },
+    "ok": { "type": "boolean" },
+    "data": {
+      "type": ["object", "null"],
+      "maxProperties": 16,
+      "additionalProperties": true
+    },
+    "error": {
+      "oneOf": [
+        { "$ref": "#/$defs/error" },
+        { "type": "null" }
+      ]
+    },
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity_source", "executed", "side_effects", "redacted", "output_limit", "bytes"],
+      "properties": {
+        "identity_source": { "const": "server-binding" },
+        "executed": { "type": "boolean" },
+        "side_effects": { "const": 0 },
+        "redacted": { "type": "boolean" },
+        "output_limit": { "type": "integer", "minimum": 1, "maximum": 1048576 },
+        "bytes": { "type": "integer", "minimum": 0, "maximum": 1048576 }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "ok": { "const": true } }, "required": ["ok"] },
+      "then": {
+        "required": ["data"],
+        "properties": {
+          "data": { "type": "object" },
+          "error": { "type": "null" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "ok": { "const": false } }, "required": ["ok"] },
+      "then": {
+        "required": ["error"],
+        "properties": {
+          "data": { "type": "null" },
+          "error": { "$ref": "#/$defs/error" }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": {
+          "enum": [
+            "tool-not-allowed",
+            "tool-disabled",
+            "identity-in-args",
+            "invalid-args",
+            "path-out-of-root",
+            "symlink-escape",
+            "cross-workspace-denied",
+            "not-found",
+            "output-limit",
+            "redaction-failed",
+            "internal-error"
+          ]
+        },
+        "message": { "type": "string", "minLength": 1, "maxLength": 512 }
+      }
+    }
+  }
+}

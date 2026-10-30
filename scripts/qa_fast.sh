@@ -31,6 +31,14 @@ else
     MYPY="$(command -v mypy || true)"
 fi
 
+if [ -x "$VENV_BIN/python" ]; then
+    PYTHON_BIN="$VENV_BIN/python"
+elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python3)"
+else
+    PYTHON_BIN="$(command -v python || true)"
+fi
+
 FAIL=0
 
 step() {
@@ -40,29 +48,29 @@ step() {
     echo "================================================================"
 }
 
-if [ -z "$RUFF" ] || [ -z "$MYPY" ]; then
-    echo "[FAIL] 未找到 ruff / mypy。请先安装到 venv："
+if [ -z "$RUFF" ] || [ -z "$MYPY" ] || [ -z "$PYTHON_BIN" ]; then
+    echo "[FAIL] 未找到 ruff / mypy / python。请先安装到 venv："
     echo "       ~/.venvs/network/bin/pip install ruff mypy pytest"
     exit 2
 fi
 
-step "[1/4] ruff lint —— labs/vehicle/uds-basic"
-if "$RUFF" check "$ROOT/labs/vehicle/uds-basic"; then
+step "[1/5] ruff lint —— labs/vehicle/uds-basic + securitylab_mcp"
+if "$RUFF" check "$ROOT/labs/vehicle/uds-basic" "$ROOT/securitylab_mcp"; then
     echo "[ OK ] ruff"
 else
     echo "[FAIL] ruff"
     FAIL=1
 fi
 
-step "[2/4] mypy 类型检查 —— uds-basic/ecu"
-if "$MYPY" "$ROOT/labs/vehicle/uds-basic/ecu"; then
+step "[2/5] mypy 类型检查 —— uds-basic/ecu + securitylab_mcp"
+if "$MYPY" "$ROOT/labs/vehicle/uds-basic/ecu" "$ROOT/securitylab_mcp"; then
     echo "[ OK ] mypy"
 else
     echo "[FAIL] mypy"
     FAIL=1
 fi
 
-step "[3/4] UDS 离线单元测试（协议层，无需 vcan）"
+step "[3/5] UDS 离线单元测试（协议层，无需 vcan）"
 if bash "$ROOT/labs/vehicle/uds-basic/tests/run_tests.sh" unit; then
     echo "[ OK ] uds unit"
 else
@@ -70,11 +78,19 @@ else
     FAIL=1
 fi
 
-step "[4/4] CAN tools 离线测试（解析 / fuzz harness，无需 ECU）"
+step "[4/5] CAN tools 离线测试（解析 / fuzz harness，无需 ECU）"
 if bash "$ROOT/labs/vehicle/can-tools/tests/run_tests.sh" offline; then
     echo "[ OK ] can-tools offline"
 else
     echo "[FAIL] can-tools offline"
+    FAIL=1
+fi
+
+step "[5/5] SecurityLab MCP 只读 server 离线测试（synthetic fixtures）"
+if "$PYTHON_BIN" -m pytest -q -m "not vcan" "$ROOT/securitylab_mcp/tests"; then
+    echo "[ OK ] mcp offline"
+else
+    echo "[FAIL] mcp offline"
     FAIL=1
 fi
 

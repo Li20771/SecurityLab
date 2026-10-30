@@ -1,0 +1,8 @@
+{
+  "contract_version": "1.0.0",
+  "run_id": "run_00000000000000000000000000000000",
+  "role": "researcher",
+  "workspace_id": "ws_securitylab",
+  "episode_id": "ep_example",
+  "tool_profile": "researcher_ro_v1"
+}

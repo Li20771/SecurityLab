@@ -1,0 +1,22 @@
+{
+  "contract_version": "1.0.0",
+  "server": "securitylab_ro",
+  "workspaces": {
+    "ws_securitylab": {
+      "workspace_root": "../..",
+      "reports_root": "reports",
+      "artifacts_root": "artifacts",
+      "reports": {
+        "rep_oq1_20261014": {
+          "title": "OQ-1 evidence (2026-10-14)",
+          "path": "OQ-1_2026-10-14_evidence.md"
+        },
+        "rep_oq1_f1_20261014": {
+          "title": "OQ-1 F1 evidence (2026-10-14)",
+          "path": "OQ-1_2026-10-14_f1_evidence.md"
+        }
+      },
+      "run_results": {}
+    }
+  }
+}
