@@ -61,6 +61,92 @@ def test_valid_config_loads_and_defaults_are_inside_workspace(tmp_path: Path) ->
     assert result.status == "completed"
 
 
+def test_read_allowlist_defaults_to_no_extra_restriction(tmp_path: Path) -> None:
+    raw = _base_config(tmp_path)
+    workspace = server_config_from_mapping(raw, tmp_path).workspaces["ws_a"]
+    assert workspace.read_allowlist == ()
+    assert workspace.read_allowed("notes.txt") is True
+    assert workspace.read_allowed("sub/inside.txt") is True
+
+
+def test_read_allowlist_is_normalized_and_directory_slash_is_stripped(
+    tmp_path: Path,
+) -> None:
+    raw = _base_config(tmp_path)
+    raw["workspaces"]["ws_a"]["read_allowlist"] = ["notes.txt", "sub/", "reports/"]
+    workspace = server_config_from_mapping(raw, tmp_path).workspaces["ws_a"]
+    assert workspace.read_allowlist == ("notes.txt", "sub", "reports")
+    assert workspace.read_allowed("notes.txt") is True
+    assert workspace.read_allowed("sub/inside.txt") is True
+    assert workspace.read_allowed("reports/report-1.md") is True
+    assert workspace.read_allowed("notes.txt.bak") is False
+    assert workspace.read_allowed("submarine.txt") is False
+    assert workspace.read_allowed("other/notes.txt") is False
+
+
+def test_empty_read_allowlist_means_no_extra_restriction(tmp_path: Path) -> None:
+    raw = _base_config(tmp_path)
+    raw["workspaces"]["ws_a"]["read_allowlist"] = []
+    workspace = server_config_from_mapping(raw, tmp_path).workspaces["ws_a"]
+    assert workspace.read_allowlist == ()
+    assert workspace.read_allowed("anything.txt") is True
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "/etc/passwd",
+        "../outside.txt",
+        "sub/../outside.txt",
+        "C:\\Windows\\win.ini",
+        "\\\\server\\share\\file",
+        "a//b",
+        ".env",
+        ".git/config",
+        ".ssh/id_rsa",
+        ".aws/credentials",
+        "secrets/",
+        "credentials/foo",
+        "foo.pem",
+        "foo.key",
+        "",
+        123,
+        None,
+    ],
+)
+def test_invalid_read_allowlist_entries_are_rejected(
+    tmp_path: Path, entry: object
+) -> None:
+    raw = _base_config(tmp_path)
+    raw["workspaces"]["ws_a"]["read_allowlist"] = [entry]
+    with pytest.raises(ConfigError):
+        server_config_from_mapping(raw, tmp_path)
+
+
+@pytest.mark.parametrize("value", ["notes.txt", {"notes.txt": True}, 5, None])
+def test_read_allowlist_must_be_a_list(tmp_path: Path, value: object) -> None:
+    raw = _base_config(tmp_path)
+    raw["workspaces"]["ws_a"]["read_allowlist"] = value
+    with pytest.raises(ConfigError):
+        server_config_from_mapping(raw, tmp_path)
+
+
+def test_read_allowlist_is_capped_at_200_entries(tmp_path: Path) -> None:
+    raw = _base_config(tmp_path)
+    raw["workspaces"]["ws_a"]["read_allowlist"] = [
+        f"path-{index}" for index in range(200)
+    ]
+    workspace = server_config_from_mapping(raw, tmp_path).workspaces["ws_a"]
+    assert len(workspace.read_allowlist) == 200
+
+    raw = _base_config(tmp_path)
+    raw["workspaces"]["ws_a"]["read_allowlist"] = [
+        f"path-{index}" for index in range(201)
+    ]
+    with pytest.raises(ConfigError):
+        server_config_from_mapping(raw, tmp_path)
+
+
 def test_relative_workspace_root_resolves_against_config_directory(tmp_path: Path) -> None:
     config_dir = tmp_path / "cfg"
     config_dir.mkdir()

@@ -40,8 +40,10 @@ from .paths import (
     PathPolicyError,
     ResourceUnavailableError,
     SymlinkEscapeError,
+    canonical_relative_path,
     canonicalize,
     read_text_bounded,
+    sanitize_relative_path,
     truncate_utf8,
 )
 from .redaction import redact_text
@@ -285,20 +287,25 @@ class ReadOnlySecurityLabService:
     def _catalog(self) -> dict[str, Any]:
         resources: list[dict[str, str]] = []
         redacted = False
-        for entry in self.workspace.reports.values():
-            title, changed = redact_text(entry.title)
-            redacted = redacted or changed
-            resources.append(
-                {"id": entry.resource_id, "kind": "report", "title": title}
-            )
-        for entry in self.workspace.run_results.values():
-            title = entry.title
-            if entry.status is not None:
-                title = f"Run result ({entry.status})"
-            title, changed = redact_text(title)
-            redacted = redacted or changed
-            resources.append(
-                {"id": entry.resource_id, "kind": "run_result", "title": title}
+        try:
+            for entry in self.workspace.reports.values():
+                title, changed = _redact(entry.title)
+                redacted = redacted or changed
+                resources.append(
+                    {"id": entry.resource_id, "kind": "report", "title": title}
+                )
+            for entry in self.workspace.run_results.values():
+                title = entry.title
+                if entry.status is not None:
+                    title = f"Run result ({entry.status})"
+                title, changed = _redact(title)
+                redacted = redacted or changed
+                resources.append(
+                    {"id": entry.resource_id, "kind": "run_result", "title": title}
+                )
+        except _RedactionFailure:
+            return failure_result(
+                TOOL_LAB_CATALOG, "redaction-failed", "output redaction failed"
             )
         resources.extend(
             [
@@ -330,8 +337,20 @@ class ReadOnlySecurityLabService:
         root_id = arguments.get("root_id", "workspace")
         try:
             root = self.workspace.root_for(str(root_id))
+            relative = sanitize_relative_path(str(path))
+            if not self.workspace.read_allowed(relative):
+                # 不区分“存在但未授权”与“不存在”，也不回显 allowlist。
+                return failure_result(
+                    TOOL_LAB_READ_FILE, "not-found", "file is not available"
+                )
+            # Re-check the canonical target: an in-root symlink under an allowed
+            # prefix must not redirect the read onto a non-allowed file.
+            if not self.workspace.read_allowed(canonical_relative_path(root, relative)):
+                return failure_result(
+                    TOOL_LAB_READ_FILE, "not-found", "file is not available"
+                )
             content, byte_count, truncated, redacted = _read_present(
-                root, str(path), self.protected_paths
+                root, relative, self.protected_paths
             )
         except PathPolicyError:
             return failure_result(
@@ -347,7 +366,7 @@ class ReadOnlySecurityLabService:
             )
         except ResourceUnavailableError:
             return failure_result(TOOL_LAB_READ_FILE, "not-found", "file is not available")
-        except (TypeError, UnicodeError):
+        except (_RedactionFailure, TypeError, UnicodeError):
             return failure_result(
                 TOOL_LAB_READ_FILE,
                 "redaction-failed",
@@ -413,11 +432,18 @@ class ReadOnlySecurityLabService:
             )
         except ResourceUnavailableError:
             return failure_result(tool, "not-found", "resource is not available")
-        except (TypeError, UnicodeError):
+        except (_RedactionFailure, TypeError, UnicodeError):
             return failure_result(tool, "redaction-failed", "output redaction failed")
         except OSError:
             return failure_result(tool, "internal-error", "internal error")
-        title, title_redacted = redact_text(entry.title)
+        status: str | None = None
+        status_redacted = False
+        try:
+            title, title_redacted = _redact(entry.title)
+            if include_status and entry.status is not None:
+                status, status_redacted = _redact(entry.status)
+        except _RedactionFailure:
+            return failure_result(tool, "redaction-failed", "output redaction failed")
         data: dict[str, Any] = {
             id_key: entry.resource_id,
             "title": title,
@@ -425,9 +451,7 @@ class ReadOnlySecurityLabService:
             "bytes": byte_count,
             "truncated": truncated,
         }
-        status_redacted = False
-        if include_status and entry.status is not None:
-            status, status_redacted = redact_text(entry.status)
+        if status is not None:
             data["status"] = status
         return success_result(
             tool,
@@ -445,6 +469,19 @@ def _find_identity_key(arguments: Mapping[Any, Any]) -> str | None:
     return None
 
 
+class _RedactionFailure(Exception):
+    """内部脱敏异常；对外统一映射为 ``redaction-failed``。"""
+
+
+def _redact(content: str) -> tuple[str, bool]:
+    """调用 ``redact_text``，把任何异常转为 fail-closed 的脱敏失败。"""
+
+    try:
+        return redact_text(content)
+    except Exception as exc:
+        raise _RedactionFailure("output redaction failed") from exc
+
+
 def _read_present(
     root: Path,
     relative_path: str,
@@ -453,6 +490,6 @@ def _read_present(
     bounded = read_text_bounded(
         root, relative_path, OUTPUT_LIMIT, protected_paths=protected_paths
     )
-    redacted_text, redacted = redact_text(bounded.content)
+    redacted_text, redacted = _redact(bounded.content)
     content, byte_count, capped = truncate_utf8(redacted_text, OUTPUT_LIMIT)
     return content, byte_count, bounded.truncated or capped, redacted

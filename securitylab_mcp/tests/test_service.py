@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from securitylab_mcp.config import server_config_from_mapping
+from securitylab_mcp.config import ServerConfig, server_config_from_mapping
 from securitylab_mcp.errors import READ_ONLY_TOOLS
 from securitylab_mcp.service import ReadOnlySecurityLabService
 from securitylab_mcp.tests.conftest import LabFixture
@@ -116,6 +116,122 @@ def test_symlink_escape_is_rejected(lab: LabFixture) -> None:
 @pytest.mark.parametrize("path", [".env", ".git/config", "id_rsa"])
 def test_sensitive_paths_are_not_available(lab: LabFixture, path: str) -> None:
     _assert_denied(lab.service().call_tool("lab_read_file", {"path": path}), "not-found")
+
+
+def _allowlist_config(
+    tmp_path: Path, lab: LabFixture, allowlist: list[str]
+) -> ServerConfig:
+    raw: dict[str, Any] = {
+        "contract_version": "1.0.0",
+        "server": "securitylab_ro",
+        "workspaces": {
+            "ws_a": {
+                "workspace_root": str(lab.ws_a),
+                "read_allowlist": allowlist,
+                "reports": {
+                    "rep_a_0001": {
+                        "title": "Synthetic report A",
+                        "path": "report-1.md",
+                    }
+                },
+                "run_results": {
+                    "res_a_0001": {
+                        "title": "Synthetic run result A",
+                        "path": "run-1/out.txt",
+                        "status": "completed",
+                    }
+                },
+            }
+        },
+    }
+    return server_config_from_mapping(raw, tmp_path)
+
+
+def test_read_allowlist_allows_exact_and_directory_prefix(
+    tmp_path: Path, lab: LabFixture
+) -> None:
+    config = _allowlist_config(tmp_path, lab, ["notes.txt", "sub/"])
+    service = ReadOnlySecurityLabService(config, lab.binding())
+    exact = service.call_tool("lab_read_file", {"path": "notes.txt"})
+    assert exact["ok"] is True
+    assert exact["data"]["content"] == "WS_A_WORKSPACE_CANARY"
+
+    nested = service.call_tool("lab_read_file", {"path": "sub/inside.txt"})
+    assert nested["ok"] is True
+    assert nested["data"]["content"] == "subdir content"
+
+    normalized = service.call_tool("lab_read_file", {"path": "sub\\inside.txt"})
+    assert normalized["ok"] is True
+    assert normalized["data"]["content"] == "subdir content"
+
+
+def test_read_allowlist_denies_existing_file_outside_prefix(
+    tmp_path: Path, lab: LabFixture
+) -> None:
+    config = _allowlist_config(tmp_path, lab, ["notes.txt"])
+    service = ReadOnlySecurityLabService(config, lab.binding())
+    result = service.call_tool("lab_read_file", {"path": "secret.txt"})
+    _assert_denied(result, "not-found")
+    serialized = json.dumps(result)
+    assert "notes.txt" not in serialized
+    assert "secret.txt" not in serialized
+    assert "allowlist" not in serialized
+
+
+def test_read_allowlist_does_not_block_indexed_reports_or_results(
+    tmp_path: Path, lab: LabFixture
+) -> None:
+    config = _allowlist_config(tmp_path, lab, ["notes.txt"])
+    service = ReadOnlySecurityLabService(config, lab.binding())
+
+    report = service.call_tool("lab_get_report", {"report_id": "rep_a_0001"})
+    assert report["ok"] is True
+    assert report["data"]["content"].startswith("Report A")
+
+    run_result = service.call_tool(
+        "lab_get_run_result", {"result_id": "res_a_0001"}
+    )
+    assert run_result["ok"] is True
+    assert run_result["data"]["content"] == "artifact-a"
+
+    denied = service.call_tool(
+        "lab_read_file", {"path": "report-1.md", "root_id": "reports"}
+    )
+    _assert_denied(denied, "not-found")
+
+
+def test_read_allowlist_rechecks_canonical_target(
+    tmp_path: Path, lab: LabFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _allowlist_config(tmp_path, lab, ["notes.txt"])
+    service = ReadOnlySecurityLabService(config, lab.binding())
+    monkeypatch.setattr(
+        "securitylab_mcp.service.canonical_relative_path",
+        lambda _root, _relative: "secret.txt",
+    )
+    _assert_denied(
+        service.call_tool("lab_read_file", {"path": "notes.txt"}), "not-found"
+    )
+
+
+def test_read_allowlist_denies_symlink_to_non_allowed_target(
+    tmp_path: Path, lab: LabFixture
+) -> None:
+    if not lab.symlink_supported:
+        pytest.skip("symlink creation is not permitted in this environment")
+    docs = lab.ws_a / "docs"
+    docs.mkdir(exist_ok=True)
+    (docs / "note.txt").write_text("allowed content", encoding="utf-8")
+    os.symlink(lab.ws_a / "notes.txt", docs / "alias.txt")
+    config = _allowlist_config(tmp_path, lab, ["docs"])
+    service = ReadOnlySecurityLabService(config, lab.binding())
+
+    allowed = service.call_tool("lab_read_file", {"path": "docs/note.txt"})
+    assert allowed["ok"] is True
+    assert allowed["data"]["content"] == "allowed content"
+    _assert_denied(
+        service.call_tool("lab_read_file", {"path": "docs/alias.txt"}), "not-found"
+    )
 
 
 @pytest.mark.parametrize(
@@ -311,14 +427,26 @@ def test_catalog_is_capped_at_100_items(tmp_path: Path, lab: LabFixture) -> None
     assert len(result["data"]["resources"]) == 100
 
 
+@pytest.mark.parametrize("error_type", [TypeError, ValueError, RuntimeError])
 def test_redaction_failure_is_fail_closed(
-    lab: LabFixture, monkeypatch: pytest.MonkeyPatch
+    lab: LabFixture, monkeypatch: pytest.MonkeyPatch, error_type: type[Exception]
 ) -> None:
     def boom(_content: str) -> tuple[str, bool]:
-        raise TypeError("synthetic redaction failure")
+        raise error_type("synthetic redaction failure")
 
     monkeypatch.setattr("securitylab_mcp.service.redact_text", boom)
     result = lab.service().call_tool("lab_read_file", {"path": "notes.txt"})
+    _assert_denied(result, "redaction-failed")
+
+
+def test_catalog_redaction_failure_is_fail_closed(
+    lab: LabFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(_content: str) -> tuple[str, bool]:
+        raise RuntimeError("synthetic redaction failure")
+
+    monkeypatch.setattr("securitylab_mcp.service.redact_text", boom)
+    result = lab.service().call_tool("lab_catalog", {})
     _assert_denied(result, "redaction-failed")
 
 

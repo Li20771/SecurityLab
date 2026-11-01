@@ -33,7 +33,20 @@ WINDOWS_RESERVED: Final = re.compile(
 
 MAX_RELATIVE_PATH_LENGTH: Final = 512
 
-_SENSITIVE_DIRS: Final = frozenset({".git", ".ssh", ".dsh", "credentials", "secrets"})
+_SENSITIVE_DIRS: Final = frozenset(
+    {
+        ".git",
+        ".ssh",
+        ".dsh",
+        "credentials",
+        "secrets",
+        ".aws",
+        ".kube",
+        ".docker",
+        ".gnupg",
+        ".azure",
+    }
+)
 _SENSITIVE_NAMES: Final = frozenset(
     {
         ".env",
@@ -45,9 +58,26 @@ _SENSITIVE_NAMES: Final = frozenset(
         "id_ed25519",
         "credentials",
         "secrets",
+        ".netrc",
+        ".git-credentials",
+        ".npmrc",
+        ".pypirc",
+        ".htpasswd",
+        ".pgpass",
+        "kubeconfig",
     }
 )
-_SENSITIVE_SUFFIXES: Final = (".key", ".pem", ".p12", ".pfx")
+_SENSITIVE_SUFFIXES: Final = (
+    ".key",
+    ".pem",
+    ".p12",
+    ".pfx",
+    ".kdbx",
+    ".jks",
+    ".keystore",
+    ".ovpn",
+    ".p8",
+)
 
 
 class PathPolicyError(ValueError):
@@ -149,6 +179,24 @@ def resolve_contained(root: Path, relative_path: str) -> Path:
     if not is_within(real_root, real_candidate):
         raise SymlinkEscapeError("resolved path escapes the bound root")
     return real_candidate
+
+
+def canonical_relative_path(root: Path, relative_path: str) -> str:
+    """返回 realpath 复核后的 root 相对 POSIX 路径。
+
+    读授权 allowlist 必须在 canonical 目标上再次检查，否则
+    ``allowed-prefix/link -> other-prefix/file`` 的 symlink 会绕过词法前缀。
+    该函数只做路径计算，不读取目标内容。
+    """
+
+    target = resolve_contained(root, relative_path)
+    real_root = canonicalize(root)
+    relative = os.path.relpath(target, real_root)
+    if relative == os.pardir or relative.startswith(os.pardir + os.sep):
+        # resolve_contained already checks this; keep the fail-closed guard if
+        # relpath semantics change on a platform.
+        raise SymlinkEscapeError("resolved path escapes the bound root")
+    return relative.replace(os.sep, "/")
 
 
 @dataclass(frozen=True)
