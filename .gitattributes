@@ -1,0 +1,9 @@
+# Contract mirrors must stay byte-identical to their frozen originals.
+# Git is checked out with core.autocrlf=true on Windows; without these rules the
+# working tree turns LF into CRLF and the sha256 mirror tests fail locally while
+# still passing on Linux CI. Pin the contract files to LF so both agree.
+securitylab_mcp/contracts/*.json text eol=lf
+docs/contracts/*.json text eol=lf
+
+# Test fixtures may embed exact bytes; never rewrite them.
+*.bin binary
