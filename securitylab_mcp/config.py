@@ -3,10 +3,12 @@
 配置是 **server 启动参数**，不是模型输入。它定义：
 
 - 允许接入的 workspace（每个 workspace 固定 workspace/reports/artifacts root）；
-- report / run-result ID 到 root 相对路径的显式索引。
+- report / run-result ID 到 root 相对路径的显式索引；
+- 可选的 ``read_allowlist``：``lab_read_file`` 的最小读授权前缀列表。
 
 所有 root 在加载期做 ``realpath`` + containment 校验；workspace root 之间
-不得互相包含；资源索引路径必须通过统一的相对路径校验且不得指向凭据路径。
+不得互相包含；资源索引路径与 allowlist 条目必须通过统一的相对路径校验且
+不得指向凭据路径。
 任何非法/未知字段/版本不符都 fail closed（``ConfigError``），server 不启动。
 """
 
@@ -39,9 +41,17 @@ MAX_TITLE_LENGTH: Final = 200
 MAX_STATUS_LENGTH: Final = 64
 MAX_RESOURCES_PER_KIND: Final = 1000
 MAX_ROOT_STRING_LENGTH: Final = 4096
+MAX_READ_ALLOWLIST_ENTRIES: Final = 200
 
 _WORKSPACE_KEYS: Final = frozenset(
-    {"workspace_root", "reports_root", "artifacts_root", "reports", "run_results"}
+    {
+        "workspace_root",
+        "reports_root",
+        "artifacts_root",
+        "reports",
+        "run_results",
+        "read_allowlist",
+    }
 )
 _CONFIG_KEYS: Final = frozenset({"contract_version", "server", "workspaces"})
 _RESOURCE_KEYS: Final = frozenset({"title", "path", "status"})
@@ -67,6 +77,7 @@ class WorkspaceConfig:
     artifacts_root: Path
     reports: Mapping[str, ResourceEntry]
     run_results: Mapping[str, ResourceEntry]
+    read_allowlist: tuple[str, ...] = ()
 
     def root_for(self, root_id: str) -> Path:
         if root_id == "workspace":
@@ -76,6 +87,21 @@ class WorkspaceConfig:
         if root_id == "artifacts":
             return self.artifacts_root
         raise KeyError(root_id)
+
+    def read_allowed(self, relative_path: str) -> bool:
+        """``lab_read_file`` 的额外最小授权检查。
+
+        空 allowlist 表示不增加限制（保持既有行为）；非空时只允许精确等于
+        某项，或位于 ``entry + "/"`` 之下。report/result 的显式索引读取
+        不经过此检查。
+        """
+
+        if not self.read_allowlist:
+            return True
+        return any(
+            relative_path == entry or relative_path.startswith(entry + "/")
+            for entry in self.read_allowlist
+        )
 
 
 @dataclass(frozen=True)
@@ -170,6 +196,33 @@ def _parse_resource_map(
     return MappingProxyType(parsed)
 
 
+def _parse_read_allowlist(value: Any, *, label: str) -> tuple[str, ...]:
+    """校验 workspace 的最小读授权前缀列表。
+
+    每个条目必须是 root 相对路径前缀；目录条目允许一个尾随 ``/``（先去掉
+    再走统一的相对路径校验）。条目不得指向敏感/凭据路径。字段省略或空
+    列表表示不增加额外限制；显式 ``null`` 等非列表值 fail closed。
+    """
+
+    if not isinstance(value, list):
+        raise ConfigError(f"{label} must be a list")
+    if len(value) > MAX_READ_ALLOWLIST_ENTRIES:
+        raise ConfigError(f"{label} has too many entries")
+    parsed: list[str] = []
+    for raw_entry in value:
+        if not isinstance(raw_entry, str) or not raw_entry:
+            raise ConfigError(f"{label} entry must be a non-empty string")
+        candidate = raw_entry[:-1] if raw_entry.endswith("/") else raw_entry
+        try:
+            relative = sanitize_relative_path(candidate)
+        except PathPolicyError as exc:
+            raise ConfigError(f"{label} entry is invalid") from exc
+        if is_sensitive_path(relative):
+            raise ConfigError(f"{label} entry points to a protected location")
+        parsed.append(relative)
+    return tuple(parsed)
+
+
 def _parse_workspace(workspace_id: Any, raw: Any, base_dir: Path) -> WorkspaceConfig:
     if not isinstance(workspace_id, str) or not WORKSPACE_ID_PATTERN.fullmatch(workspace_id):
         raise ConfigError("workspace id is invalid")
@@ -212,6 +265,13 @@ def _parse_workspace(workspace_id: Any, raw: Any, base_dir: Path) -> WorkspaceCo
         id_pattern=RESULT_ID_PATTERN,
         label=f"workspace '{workspace_id}' run result",
     )
+    if "read_allowlist" in entry:
+        read_allowlist = _parse_read_allowlist(
+            entry["read_allowlist"],
+            label=f"workspace '{workspace_id}' read_allowlist",
+        )
+    else:
+        read_allowlist = ()
     return WorkspaceConfig(
         workspace_id=workspace_id,
         workspace_root=workspace_root,
@@ -219,6 +279,7 @@ def _parse_workspace(workspace_id: Any, raw: Any, base_dir: Path) -> WorkspaceCo
         artifacts_root=artifacts_root,
         reports=reports,
         run_results=run_results,
+        read_allowlist=read_allowlist,
     )
 
 

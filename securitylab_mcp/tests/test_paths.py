@@ -99,6 +99,50 @@ def test_sensitive_path_policy() -> None:
         assert is_sensitive_path(path) is False, path
 
 
+def test_extended_sensitive_path_policy() -> None:
+    sensitive = [
+        ".netrc",
+        "home/.netrc",
+        ".git-credentials",
+        "sub/.git-credentials",
+        ".npmrc",
+        ".pypirc",
+        "deploy/.htpasswd",
+        ".pgpass",
+        "kubeconfig",
+        ".aws/credentials",
+        ".kube/config",
+        ".docker/config.json",
+        ".gnupg/secring.gpg",
+        ".azure/accessTokens.json",
+        "backup.kdbx",
+        "app.jks",
+        "app.keystore",
+        "client.ovpn",
+        "AuthKey.p8",
+        "foo.key",
+        "foo.pem",
+        "foo.p12",
+        "foo.pfx",
+    ]
+    for path in sensitive:
+        assert is_sensitive_path(path) is True, path
+
+    normal = [
+        "secret.txt",
+        "reports/report-1.md",
+        "artifacts/run-1/out.txt",
+        "labs/firmware/sample.bin",
+        "reports/credential-review.md",
+        "docker-report.json",
+        "keystore-report.md",
+        "labs/aws/notes.md",
+        "notes.p8.txt",
+    ]
+    for path in normal:
+        assert is_sensitive_path(path) is False, path
+
+
 def test_containment_helper_is_component_wise(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()

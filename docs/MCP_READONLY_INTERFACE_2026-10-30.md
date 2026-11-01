@@ -39,9 +39,9 @@ server 是 `server: securitylab_ro`。
 ```text
 securitylab_mcp/
   binding.py     # role/profile/allowlist + 可信 binding 校验
-  config.py      # workspace roots + report/result 索引；realpath/containment
-  paths.py       # 相对路径校验、containment、symlink 复核、有界读取
-  redaction.py   # token/password/secret/authorization/cookie/Bearer/PEM 脱敏
+  config.py      # workspace roots + report/result 索引 + read_allowlist
+  paths.py       # 相对路径校验、containment、symlink 复核、有界读取、denylist
+  redaction.py   # 结构化 JSON/YAML/INI/ENV + Bearer/Basic + PEM 脱敏
   service.py     # 五个只读工具 + disabled vcan；每次调用独立授权检查
   server.py      # MCP stdio JSON-RPC（initialize/tools/list/tools/call）
   contracts/     # brief/contracts v1.0.0 两个 schema 的只读镜像
@@ -74,15 +74,19 @@ securitylab_mcp/
 5. **Containment**：词法 containment + `realpath` 复核；symlink/junction
    逃逸 → `symlink-escape`。
 6. **敏感路径**：`.git`、`.ssh`、`.dsh`、`credentials/`、`secrets/`、`.env*`、
-   私钥后缀/常见私钥文件名 → `not-found`（不泄露存在性）；server config /
-   binding 文件本身也不通过 `lab_read_file` 暴露。
+   私钥后缀/常见私钥文件名，以及 `.aws`/`.kube`/`.docker`/`.gnupg`/`.azure`
+   目录、`.netrc`/`.git-credentials`/`.npmrc`/`.pypirc`/`.htpasswd`/`.pgpass`/
+   `kubeconfig` 等凭据文件 → `not-found`（不泄露存在性）；server config /
+   binding 文件本身也不通过 `lab_read_file` 暴露。denylist 是 defense-in-depth，
+   不是完整 ACL。
 7. **跨 workspace**：绑定 workspace 之外的 report/result/file 表现为
    `not-found` / `path-out-of-root`；catalog 只列绑定 workspace 资源，不含绝对 root。
 8. **输出上限**：内容最多 65536 UTF-8 字节；超限截断并
    `data.truncated=true`、`data.bytes=65536`；catalog ≤ 100 项。
-9. **脱敏**：token/api_key/apikey/password/secret/authorization/cookie 键值、
+9. **脱敏**：token/api_key/apikey/password/secret/authorization/cookie 等
+   键值（含 JSON 引号键、YAML/INI/ENV、嵌套对象与含空格/转义值）、
    `Bearer`/`Basic` 凭据、PEM 私钥块 → `[REDACTED]`；catalog/report/result
-   的 title/status 同样脱敏；`meta.redacted=true`。
+   的 title/status 同样脱敏；`meta.redacted=true`。见 §9。
 10. **不泄露内部**：错误消息固定、无绝对路径/栈/环境值；MCP JSON-RPC 内部错误
     只返回通用消息。
 
@@ -138,3 +142,80 @@ JSON-RPC 协议错误。
 - 未读取/复制 credential/token/key 文件或环境变量值。
 - 未 push/merge，未修改工作区外的原始仓库或冻结 brief。
 - 真实 runtime/实验验收保持 `NOT_RUN`；fake 测试通过不等于真实集成通过。
+
+## 9. Round-2 secret-safety hardening（2026-11-01）
+
+### 9.1 结构化脱敏范围
+
+`redact_text` 在文本层面覆盖以下形式，替换为 `[REDACTED]` 并保留原引号风格：
+
+- JSON 风格的带引号键/值：`{"token":"..."}`、嵌套对象/数组、
+  含空格的值 `{"password": "my secret"}`、转义引号 `{"secret":"a\"b"}`，
+  以及 pretty-print 中值换到下一行的形式 `"token":\n  "..."`；
+- YAML / INI / ENV：`password: "..."`、`token = '...'`、`TOKEN=...`，
+  以及无引号形式（无引号值允许空格，止于行尾/右括号）；
+- 键名（大小写不敏感，带词边界）：`token`、`access_token`、
+  `refresh_token`、`api_key`、`apikey`、`api-key`、`password`、`passwd`、
+  `pwd`、`secret`、`client_secret`、`authorization`、`proxy-authorization`、
+  `cookie`、`set-cookie`、`private_key`；
+- `Bearer` / `Basic` 凭据与 PEM 私钥块。
+
+`tokenizer`、`tokens`、`token_count` 等普通词不会因包含 `token` 而误判。
+脱敏是 fail-closed 的：内部异常向上传播，service 返回 `redaction-failed`，
+不会回退为未脱敏内容。输出仍是文本级脱敏 + 敏感 denylist 的 defense-in-depth，
+**不是**“绝无秘密”的完整保证；真正的边界仍是最小授权 root 与 allowlist。
+
+### 9.2 `read_allowlist` 配置语义
+
+每个 workspace 可选一个 `read_allowlist`：
+
+```json
+"read_allowlist": ["notes/", "reports/2026/", "README.md"]
+```
+
+- 最多 200 个 root 相对 POSIX 路径前缀；目录条目允许一个尾随 `/`，
+  解析时先去掉再走统一的相对路径策略。
+- 绝对路径、盘符、UNC、`..`/`.`、控制字符、ADS、Windows 保留名以及
+  敏感路径（如 `.env`、`.ssh/...`、`*.pem`）一律 `ConfigError`，server 不启动。
+- 字段省略或为空数组表示**不增加**额外限制（与既有配置向后兼容）；
+  显式 `null` 等非数组值 fail closed。未改变 contract version。
+- 非空时，`lab_read_file` 只允许路径精确等于某项，或位于 `entry + "/"`
+  之下；其余一律 `not-found`，且不回显 allowlist 内容。
+- 词法检查之后，服务端还会对 realpath 后的 canonical root-relative 路径
+  再检查一次 allowlist；`allowed-prefix/link -> other-prefix/file` 的
+  symlink 不能借允许前缀读取非允许文件。
+- `lab_get_report` / `lab_get_run_result` 按显式注册的 ID 读取，不受
+  allowlist 影响。
+- 读取时仍执行 canonical + realpath root containment，symlink/junction
+  不能逃逸绑定 root。
+
+### 9.3 Sensitive-path denylist
+
+`paths.py` 在既有 `.git`/`.ssh`/`.dsh`/`credentials`/`secrets`/`.env*`/
+私钥后缀之外，增加 `.aws`、`.kube`、`.docker`、`.gnupg`、`.azure` 目录，
+`.netrc`、`.git-credentials`、`.npmrc`、`.pypirc`、`.htpasswd`、`.pgpass`、
+`kubeconfig` 文件，以及 `.kdbx`、`.jks`、`.keystore`、`.ovpn`、`.p8`
+后缀。该 denylist 是 **defense-in-depth，不是完整 ACL**；普通 report/
+artifact 文件不受影响，生产 profile 仍需最小 root + allowlist。
+
+### 9.4 vcan
+
+`securitylab_vcan` 保持 **disabled**：只保留 schema，任何调用返回
+`tool-disabled`，`executed=false`、`side_effects=0`；本轮未启动、未连接、
+未探测任何 vcan/CAN/ECU/车辆/设备。
+
+### 9.5 Round-2 验证（离线 synthetic）
+
+| 检查 | 命令 | 结果 |
+|---|---|---|
+| MCP 离线测试 | `python -m pytest securitylab_mcp/tests -q` | `PASS`：238 passed, 5 skipped |
+| lint（指定入口） | `python -m ruff check securitylab_mcp` | `BLOCKED`：本机 Python 未安装 ruff |
+| lint（fallback） | `uvx --from ruff==0.16.8 ruff check securitylab_mcp` | `PASS`：All checks passed |
+| 类型检查 | `python -m mypy securitylab_mcp` | `PASS`：18 source files |
+| whitespace | `git diff --check` | `PASS` |
+| 真实 DSH/MCP/vcan/设备 | — | `NOT_RUN` |
+
+5 个 skip 仍是 Windows 主机不允许创建 symlink 的真实 symlink 用例（含
+allowlist canonical 复核用例）；canonical 复核逻辑另由 monkeypatch 单元测试
+覆盖。所有新增测试只用 `tmp_path` synthetic fixture 与 `SENTINEL` 值，未读取
+真实凭据，未连接任何 lab/vcan/设备。
