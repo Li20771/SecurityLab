@@ -523,3 +523,56 @@ def test_indexed_report_symlink_escape_is_rechecked_at_read_time(lab: LabFixture
     result = lab.service().call_tool("lab_get_report", {"report_id": "rep_a_0001"})
     _assert_denied(result, "symlink-escape")
     assert "WS_B_CANARY" not in json.dumps(result)
+
+
+#: Every role's exact tool surface, matching the frozen role/preset registry.
+ROLE_TOOL_MATRIX: dict[str, tuple[str, ...]] = {
+    "orchestrator": (),
+    "researcher": READ_ONLY_TOOLS,
+    "vehicle_analyst": READ_ONLY_TOOLS,
+    "challenger": (
+        "lab_catalog",
+        "lab_status",
+        "lab_read_file",
+        "lab_get_report",
+    ),
+    "evidence_verifier": READ_ONLY_TOOLS,
+    "lab_runner": ("securitylab_vcan",),
+}
+
+
+@pytest.mark.parametrize("role", sorted(ROLE_TOOL_MATRIX))
+def test_role_tool_surface_and_denials(lab: LabFixture, role: str) -> None:
+    """Each role exposes exactly its registered tools and refuses the rest."""
+
+    service = lab.service(role=role)
+    expected = ROLE_TOOL_MATRIX[role]
+    assert tuple(tool.name for tool in service.list_tools()) == expected
+
+    for tool in ("lab_catalog", "lab_status", "lab_read_file", "lab_get_report", "lab_get_run_result"):
+        if tool in expected:
+            continue
+        denied = service.call_tool(
+            tool,
+            {"path": "notes.txt", "report_id": "rep_a_0001", "result_id": "res_a_0001"},
+        )
+        _assert_denied(denied, "tool-not-allowed")
+
+    if role in ("orchestrator", "lab_runner"):
+        # Neither role has lab_read_file, so a traversal argument is refused
+        # before any path policy runs.
+        denied = service.call_tool("lab_read_file", {"path": "../../etc/passwd"})
+        _assert_denied(denied, "tool-not-allowed")
+    else:
+        denied = service.call_tool("lab_read_file", {"path": "../../etc/passwd"})
+        _assert_denied(denied, "path-out-of-root")
+        identity = service.call_tool("lab_read_file", {"path": "notes.txt", "role": role})
+        _assert_denied(identity, "identity-in-args")
+
+    if role == "challenger":
+        denied = service.call_tool("lab_get_run_result", {"result_id": "res_a_0001"})
+        _assert_denied(denied, "tool-not-allowed")
+    if role == "lab_runner":
+        disabled = service.call_tool("securitylab_vcan", {"suite": "unit_smoke"})
+        _assert_denied(disabled, "tool-disabled")
+        assert disabled["meta"]["side_effects"] == 0

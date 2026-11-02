@@ -220,3 +220,19 @@ artifact 文件不受影响，生产 profile 仍需最小 root + allowlist。
 allowlist canonical 复核用例）；canonical 复核逻辑另由 monkeypatch 单元测试
 覆盖。所有新增测试只用 `tmp_path` synthetic fixture 与 `SENTINEL` 值，未读取
 真实凭据，未连接任何 lab/vcan/设备。
+
+### 9.6 角色工具面矩阵（2026-11-02）
+
+`test_service.py::test_role_tool_surface_and_denials` 对六个角色逐一校验：
+
+| role | 允许工具 | 额外断言 |
+|---|---|---|
+| `orchestrator` | 无 | `lab_catalog` 等一律 `tool-not-allowed` |
+| `researcher` | 5 个只读工具 | traversal → `path-out-of-root`；identity → `identity-in-args` |
+| `vehicle_analyst` | 5 个只读工具 | 同上 |
+| `challenger` | catalog/status/read_file/get_report | 无 `lab_get_run_result` |
+| `evidence_verifier` | 5 个只读工具 | traversal/identity 拒绝 |
+| `lab_runner` | 仅 `securitylab_vcan` | `tool-disabled`，`side_effects=0` |
+
+本轮实际结果（Windows，离线）：`244 passed, 5 skipped`；mypy `18 source files`
+无错误。5 个 skip 仍是 symlink 权限限制；Linux CI 会执行这些用例。
