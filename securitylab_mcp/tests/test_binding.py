@@ -35,10 +35,11 @@ def test_valid_binding_from_mapping() -> None:
     assert "lab_get_run_result" in binding.allowed_tools
 
 
-def test_contract_version_is_optional_but_must_match() -> None:
+def test_contract_version_is_required_and_must_match() -> None:
     raw = _raw()
     del raw["contract_version"]
-    assert binding_from_mapping(raw).role == "researcher"
+    with pytest.raises(BindingError):
+        binding_from_mapping(raw)
     with pytest.raises(BindingError):
         binding_from_mapping(_raw(contract_version="2.0.0"))
 

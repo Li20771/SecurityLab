@@ -50,9 +50,10 @@ securitylab_mcp/
 
 ## 4. 可信身份与配置
 
-- `role`、`workspace_id`、`run_id`、`episode_id`、`tool_profile` 只来自
-  server 启动参数 `--binding <trusted-file>`；不从 `tools/call` 参数、prompt
-  或环境变量读取。
+- `contract_version`、`role`、`workspace_id`、`run_id`、`episode_id`、`tool_profile`
+  只来自 server 启动参数 `--binding <trusted-file>`；不从 `tools/call` 参数、prompt
+  或环境变量读取。`contract_version` 必须显式存在且等于 `1.0.0`；缺失或不匹配
+  fail closed。
 - server 配置 `--config <trusted-file>` 固定 workspace root、reports/artifacts
   root 与 report/result 索引；相对路径按配置文件目录解析。
 - 模型在工具参数中放 `role`/`workspace_id`/`run_id`/`session_id`/

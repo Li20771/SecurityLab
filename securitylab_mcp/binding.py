@@ -114,10 +114,10 @@ def binding_from_mapping(raw: Any) -> Binding:
     keys = set(raw.keys())
     if not keys.issubset(_BINDING_KEYS):
         raise BindingError("binding contains unknown fields")
-    missing = {"run_id", "role", "workspace_id", "tool_profile"} - keys
+    missing = {"contract_version", "run_id", "role", "workspace_id", "tool_profile"} - keys
     if missing:
         raise BindingError("binding is missing required fields")
-    contract_version = raw.get("contract_version", CONTRACT_VERSION)
+    contract_version = raw.get("contract_version")
     if contract_version != CONTRACT_VERSION:
         raise BindingError("binding contract_version is not supported")
     run_id = raw.get("run_id")
