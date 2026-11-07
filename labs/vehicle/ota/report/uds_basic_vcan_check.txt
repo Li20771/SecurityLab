@@ -1,0 +1,26 @@
+test_34_bad_alfid (__main__.TestTransferE2E.test_34_bad_alfid) ... ok
+test_34_bad_dfi (__main__.TestTransferE2E.test_34_bad_dfi) ... ok
+test_34_bad_length (__main__.TestTransferE2E.test_34_bad_length) ... ok
+test_34_success (__main__.TestTransferE2E.test_34_success) ... ok
+test_34_zero_size (__main__.TestTransferE2E.test_34_zero_size) ... ok
+test_36_before_34 (__main__.TestTransferE2E.test_36_before_34) ... ok
+test_36_duplicate_after_buffer_full (__main__.TestTransferE2E.test_36_duplicate_after_buffer_full)
+Blocker 回归（PR #5 review）：buffer 已满时重发上一条完整请求 ... ok
+test_36_duplicate_block_idempotent (__main__.TestTransferE2E.test_36_duplicate_block_idempotent) ... ok
+test_36_large_block_over_isotp_multiframe (__main__.TestTransferE2E.test_36_large_block_over_isotp_multiframe)
+UDS 126 字节数据块经 ISO-TP 自动分帧（FF/CF/FC）传输， ... ok
+test_36_multiple_blocks (__main__.TestTransferE2E.test_36_multiple_blocks) ... ok
+test_36_single_block (__main__.TestTransferE2E.test_36_single_block) ... ok
+test_36_wrong_bsc (__main__.TestTransferE2E.test_36_wrong_bsc) ... ok
+test_37_before_34 (__main__.TestTransferE2E.test_37_before_34) ... ok
+test_37_complete_then_transfer_is_idle (__main__.TestTransferE2E.test_37_complete_then_transfer_is_idle) ... ok
+test_37_incomplete_then_complete (__main__.TestTransferE2E.test_37_incomplete_then_complete) ... ok
+test_hard_reset_aborts_download (__main__.TestTransferE2E.test_hard_reset_aborts_download) ... ok
+test_key_off_on_and_soft_reset_also_abort_download (__main__.TestTransferE2E.test_key_off_on_and_soft_reset_also_abort_download)
+0x11 02 / 0x11 03 与 0x11 01 一样必须中止进行中的 download。 ... ok
+test_session_switch_mid_transfer (__main__.TestTransferE2E.test_session_switch_mid_transfer) ... ok
+
+----------------------------------------------------------------------
+Ran 18 tests in 5.475s
+
+OK

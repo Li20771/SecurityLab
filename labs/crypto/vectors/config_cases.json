@@ -1,0 +1,77 @@
+{
+  "file": "config_cases.json",
+  "source": "本仓构造（配置维度骨架）",
+  "extracted": "2026-11-07",
+  "dimension": "配置",
+  "schema_note": "op 取值：sm4_ecb_encrypt / sm4_cbc_encrypt / sm2_verify；expect 取值：ok / raises",
+  "cases": [
+    {
+      "id": "CFG-01",
+      "desc": "SM4-ECB 合法 16B 密钥、32B 明文",
+      "op": "sm4_ecb_encrypt",
+      "key_len": 16,
+      "pt_len": 32,
+      "expect": "ok",
+      "dimension": "配置"
+    },
+    {
+      "id": "CFG-02",
+      "desc": "SM4 密钥 15B → 必须显式拒绝（ValueError）",
+      "op": "sm4_ecb_encrypt",
+      "key_len": 15,
+      "pt_len": 16,
+      "expect": "raises",
+      "dimension": "配置"
+    },
+    {
+      "id": "CFG-03",
+      "desc": "SM4 密钥 17B → 必须显式拒绝（ValueError）",
+      "op": "sm4_ecb_encrypt",
+      "key_len": 17,
+      "pt_len": 16,
+      "expect": "raises",
+      "dimension": "配置"
+    },
+    {
+      "id": "CFG-04",
+      "desc": "SM4-CBC 合法 16B 密钥 + 16B IV",
+      "op": "sm4_cbc_encrypt",
+      "key_len": 16,
+      "iv_len": 16,
+      "pt_len": 32,
+      "expect": "ok",
+      "dimension": "配置"
+    },
+    {
+      "id": "CFG-05",
+      "desc": "SM4-CBC IV 长度 15B → 必须显式拒绝",
+      "op": "sm4_cbc_encrypt",
+      "key_len": 16,
+      "iv_len": 15,
+      "pt_len": 16,
+      "expect": "raises",
+      "dimension": "配置"
+    },
+    {
+      "id": "CFG-06",
+      "desc": "ECB 相同明文块 → 相同密文块（ECB 结构性弱点，配置/模式选型证据）",
+      "op": "sm4_ecb_encrypt",
+      "key_len": 16,
+      "pt_len": 32,
+      "pt_repeat_block": true,
+      "expect": "ok_and_blocks_equal",
+      "dimension": "配置"
+    },
+    {
+      "id": "CFG-07",
+      "desc": "CBC 相同明文块（同一 IV）→ 密文块不同（链式扩散）",
+      "op": "sm4_cbc_encrypt",
+      "key_len": 16,
+      "iv_len": 16,
+      "pt_len": 32,
+      "pt_repeat_block": true,
+      "expect": "ok_and_blocks_differ",
+      "dimension": "配置"
+    }
+  ]
+}

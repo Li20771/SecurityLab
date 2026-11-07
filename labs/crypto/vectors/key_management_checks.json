@@ -1,0 +1,22 @@
+{
+  "file": "key_management_checks.json",
+  "source": "对齐知识库 05-cryptography/07-密码模块测试方法 §2.6 的 13 项检查（本仓按 labs/crypto 范围裁剪）",
+  "extracted": "2026-11-07",
+  "dimension": "密钥管理",
+  "schema_note": "automated 为 true 的项由 tests/test_vectors.py 自动执行；false 的项是人工检查表条目（骨架，后续补证据）",
+  "checks": [
+    {"id": "K01", "item": "硬编码密钥扫描", "method": "grep gmcrypto/ 中 16/32 字节常量", "judgement": "库代码 0 处（测试结的密钥属于 fixture，不属于库）", "automated": false},
+    {"id": "K02", "item": "明文存储", "method": "检查密钥是否落盘明文（本实验仅内存）", "judgement": "不落盘；报告注明软件库形态局限", "automated": false},
+    {"id": "K03", "item": "密钥用途分离", "method": "检查同一密钥是否跨用途（加密/MAC/签名）", "judgement": "sm2/sm4/sm3 各自独立，无跨用途复用", "automated": false},
+    {"id": "K04", "item": "熵源质量", "method": "grep gmcrypto/ 中 random./srand/固定种子", "judgement": "必须 os.urandom / secrets", "automated": true},
+    {"id": "K05", "item": "IV/nonce 策略", "method": "统计多次加密的 IV 复用", "judgement": "同密钥下 IV 唯一（IV 由调用方提供，库不生成 IV）", "automated": false},
+    {"id": "K06", "item": "k 值质量", "method": "连续签名，比较 r 是否重复", "judgement": "r 重复 = k 重用 = 私钥可解", "automated": true},
+    {"id": "K07", "item": "密钥轮换", "method": "检查是否存在轮换机制", "judgement": "本实验无长期密钥，不适用；记录局限", "automated": false},
+    {"id": "K08", "item": "密钥销毁", "method": "检查是否覆写/仅删引用", "judgement": "Python 无法可靠覆写；报告注明软件形态局限", "automated": false},
+    {"id": "K09", "item": "私钥导出保护", "method": "检查 API 是否可读回私钥", "judgement": "软件库形态下私钥本就是 bytes，属设计如此；报告注明", "automated": false},
+    {"id": "K10", "item": "口令派生", "method": "检查是否使用 PBKDF2/SM3-KDF", "judgement": "本实验未实现口令派生，不适用；记录缺失", "automated": false},
+    {"id": "K11", "item": "访问控制", "method": "检查调用者是否需认证", "judgement": "软件库无访问控制，属形态局限；报告注明", "automated": false},
+    {"id": "K12", "item": "日志泄露", "method": "检查日志中是否出现密钥/明文", "judgement": "demo 脚本打印测试密钥（fixture），生产代码不得打印", "automated": true},
+    {"id": "K13", "item": "备份与恢复", "method": "检查备份加密/恢复演练", "judgement": "本实验无持久化密钥，不适用；记录局限", "automated": false}
+  ]
+}

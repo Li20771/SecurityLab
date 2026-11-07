@@ -1,0 +1,36 @@
+{
+  "file": "sm2_sign_kat.json",
+  "source": "GM/T 0003.5-2012 附录 A 示例（私钥/公钥对；r/s 由本机用 d、k、ID、M 独立复算）",
+  "extracted": "2026-11-07",
+  "generator": "gmcrypto.sm2 (gmssl 3.2.2 曲线参数 + 本机标量乘法，d·G 与标准公钥逐字节一致)",
+  "dimension": "算法调用",
+  "cases": [
+    {
+      "id": "SM2-SIGN-001",
+      "private_key_hex": "3945208f7b2144b13f36e38ac6d39f95889393692860b51a42fb81ef4df7c5b8",
+      "public_key_x_hex": "09f9df311e5421a150dd7d161e4bc5c672179fad1833fc076bb08ff356f35020",
+      "public_key_y_hex": "ccea490ce26775a52dc6ea718cc1aa600aed05fbf35e084a6632f6072da9ad13",
+      "user_id_ascii": "1234567812345678",
+      "message_ascii": "message digest",
+      "expect_verify": true,
+      "note": "d·G 与标准公钥逐字节一致（本机已验证）；r/s 因 k 每次随机而不同，验签 True 为判定标准"
+    }
+  ],
+  "negative_cases": [
+    {
+      "id": "SM2-SIGN-N01",
+      "desc": "篡改消息 1 字节 → 验签必须 False",
+      "expect_verify": false
+    },
+    {
+      "id": "SM2-SIGN-N02",
+      "desc": "用另一把公钥验签 → 必须 False",
+      "expect_verify": false
+    },
+    {
+      "id": "SM2-SIGN-N03",
+      "desc": "翻转签名 1 bit → 必须 False",
+      "expect_verify": false
+    }
+  ]
+}

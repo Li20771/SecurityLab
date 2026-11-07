@@ -1,0 +1,18 @@
+===== labs/crypto demo @ 2026-11-07T13:05:34 =====
+[SM2] private_key (32B): 10535848bf442733ff84333d4a7c63778e0beb5afc47abf4d95da9488b4d239c
+[SM2] public_key  (64B): 3a2b30e38fcd99019508d93e2fd1d245979e01ebc01141f5a4473ebf2fdab19090ff892eb9d86b749921d63448eab13a9898b7011fde548043b8ec4e7f5985c3
+[SM2] message           : SecurityLab|labs/crypto|demo|message-001
+[SM2] signature  (64B)  : 2d4a2c9d2d8ab2c6be800bb996df4e02e929abfa4ab9097872024709957eb135953d84f38308ea7dec1e5a162680156cadc6f29db1f2be84235195947930cb6d
+[SM2] verify(original)  : True
+[SM2] verify(tampered)  : False  (必须 False)
+[SM3] digest(bytes)     : 782f9221e817c4eaa03d5a7cabd6830242ade7b4bc33d984506cd478b7145110
+[SM3] digest(file)      : f5237694638b260a8b9780af48ebe2481107539d1ed179461e339cb88672119b  (sm3_kat.json)
+[SM3] mac(key‖data)     : 17a10898970e0102269c847cd7843ba37969c697c6036b831607f07a06fc371a
+[SM4] key               : 000102030405060708090a0b0c0d0e0f
+[SM4] iv                : 101112131415161718191a1b1c1d1e1f
+[SM4] plaintext         : SecurityLab SM4 ECB/CBC demo block 001
+[SM4] ECB ciphertext    : b60648df46d4523c80f15ae323bdabf8506a47c3de71a8e88975c5a2ec065e7d47931f19668b3e7c6e2d933094fbd405
+[SM4] CBC ciphertext    : ba3fd34dffee65dfcdfbd3d3c2f380aa66b11b66674029713028e62d7a5e1cfa232c810a9d4598414138e322bb799b5e
+[SM4] ECB roundtrip ok  : True
+[SM4] CBC roundtrip ok  : True
+===== result: PASS =====

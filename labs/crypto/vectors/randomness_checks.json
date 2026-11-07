@@ -1,0 +1,15 @@
+{
+  "file": "randomness_checks.json",
+  "source": "对齐知识库 05-cryptography/07-密码模块测试方法 §2.7（R1–R11 裁剪为可自动执行项）",
+  "extracted": "2026-11-07",
+  "dimension": "随机数",
+  "schema_note": "automated 为 true 的项由 tests/test_vectors.py 执行；仅做检测与报告，不做利用",
+  "checks": [
+    {"id": "R1", "item": "熵源来源审计", "method": "grep gmcrypto/ 中 random./srand（须 os.urandom/secrets）", "judgement": "无弱随机源", "automated": true},
+    {"id": "R3", "item": "重启后重复性", "method": "连续冷启动采集首批随机数", "judgement": "不得重复", "automated": false, "note": "进程内无法冷启动；记为 NOT_RUN 并说明"},
+    {"id": "R5", "item": "IV/nonce 重复检测", "method": "N 次加密采集 IV 去重", "judgement": "重复数 0", "rounds": 100, "automated": false, "note": "IV 由调用方提供，库不生成 IV；唯一性由调用方保证（demo 演示）"},
+    {"id": "R6", "item": "签名 k 值检测（r 重复）", "method": "N 次签名比较 r", "judgement": "r 不重复", "rounds": 20, "automated": true},
+    {"id": "R7", "item": "掉电后计数器回退", "method": "加密过程中掉电重启", "judgement": "计数器不回退", "automated": false, "note": "无持久化计数器；记为 NOT_RUN"},
+    {"id": "R11", "item": "弱随机兜底", "method": "模拟 TRNG 故障", "judgement": "必须拒绝生成，不得 fallback 到 rand()", "automated": false, "note": "os.urandom 失败会抛 OSError；无兜底路径，静态检查覆盖"}
+  ]
+}

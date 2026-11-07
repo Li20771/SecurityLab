@@ -1,0 +1,23 @@
+===== labs/vehicle/ota demo @ 2026-11-07T13:18:04 =====
+[INIT] current_version = 2.3.0
+[1] 编程会话 + 解锁（10 02 -> 27 01/02）
+  session=0x02 security=0x01
+[2] 合法签名包 v2.4.0（min_version=2.3.0）
+  34 -> 74 20 00 80
+  36 01 (126B) -> 76 01
+  36 02 (126B) -> 76 02
+  37 -> 77
+  verdict=pass  current_version -> 2.4.0
+[3] 攻击者密钥签名 v9.9.9 -> 必须拒绝（先验签）
+  34 -> 74 20 00 80
+  36 01 (126B) -> 76 01
+  36 02 (126B) -> 76 02
+  37 -> 7f 37 72
+  verdict=signature_invalid
+[4] 签名合法的旧版本 v2.3.0 -> 必须拒绝（防降级）
+  34 -> 74 20 00 80
+  36 01 (126B) -> 76 01
+  36 02 (126B) -> 76 02
+  37 -> 7f 37 72
+  verdict=version_not_monotonic
+===== result: PASS =====
